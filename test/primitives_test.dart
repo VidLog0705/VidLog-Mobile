@@ -61,35 +61,62 @@ void main() {
   });
 
   group('WaybillNumber —— 不变量 I5：单号是唯一事实标识', () {
-    const withWhitespace = <String>[
-      'SF 1234567890',
-      'SF\t1234567890',
-      'SF1234567890\n',
+    const whitespaceCases = <List<String>>[
+      ['SF 1234567890', 'SF1234567890'],
+      ['SF\t1234567890', 'SF1234567890'],
+      ['SF1234567890\n', 'SF1234567890'],
+      ['  SF1234567890  ', 'SF1234567890'],
     ];
 
-    for (final raw in withWhitespace) {
-      test('拒绝含空白字符的未归一化单号: ${raw.trim()}', () {
-        // 归一化（§3.2.3）负责去除空白；到达本类型时应当已经去过。
-        expect(WaybillNumber.tryParse(raw), isNull);
-        expect(() => WaybillNumber.parse(raw), throwsFormatException);
+    for (final pair in whitespaceCases) {
+      test('归一化去除空白: ${pair[0].trim()}', () {
+        expect(WaybillNumber.normalize(pair[0]), pair[1]);
       });
     }
 
-    test('拒绝空单号', () {
-      expect(WaybillNumber.tryParse(null), isNull);
-      expect(WaybillNumber.tryParse(''), isNull);
+    const caseCases = <List<String>>[
+      ['sf1234567890', 'SF1234567890'],
+      ['Sf1234567890', 'SF1234567890'],
+    ];
+
+    for (final pair in caseCases) {
+      test('归一化统一为大写: ${pair[0]}', () {
+        expect(WaybillNumber.normalize(pair[0]), pair[1]);
+      });
+    }
+
+    test('归一化后为空则视为非法', () {
+      for (final raw in <String?>[null, '', '   ', '\t\r\n']) {
+        expect(WaybillNumber.normalize(raw), isNull);
+        expect(WaybillNumber.tryParse(raw), isNull);
+        expect(() => WaybillNumber.parse(raw), throwsFormatException);
+      }
     });
 
-    test('接受归一化后的单号', () {
-      expect(WaybillNumber.parse('SF1234567890').value, 'SF1234567890');
+    test('Parse 先归一化再构造', () {
+      expect(WaybillNumber.parse(' sf 1234567890\n').value, 'SF1234567890');
     });
 
-    test('同值相等，可作为标识使用', () {
-      expect(WaybillNumber.parse('SF1234567890'), WaybillNumber.parse('SF1234567890'));
+    test('不同写法必须归一到同一单号', () {
+      // 扫码枪带换行、人工输入带空格或小写 —— 归一化后必须是同一个单号，
+      // 否则同一件包裹会被记成两条证据（违反 I5）。
+      expect(WaybillNumber.parse('SF1234567890\r\n'), WaybillNumber.parse(' sf 1234567890 '));
+    });
+
+    test('不同单号不相等', () {
       expect(
         WaybillNumber.parse('SF1234567890'),
         isNot(WaybillNumber.parse('SF1234567891')),
       );
+    });
+
+    test('校验位与分隔符保留原样，这是刻意的', () {
+      // §3.2.3 要求「处理校验位」，但规格没给适用算法。
+      // 凭空剥离会改变单号的同一性（I5），所以这里断言的是「不动它」。
+      // 等拿到具体承运商的校验位规则再改这条测试。
+      for (final raw in <String>['SF-1234567890', 'SF1234567890-1']) {
+        expect(WaybillNumber.normalize(raw), raw);
+      }
     });
   });
 

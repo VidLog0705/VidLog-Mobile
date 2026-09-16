@@ -57,28 +57,47 @@ final class RelativePath {
 /// 都只是可修正标签。这里用独立类型而不是裸 [String]，是为了让
 /// 「这个位置传进来的确实是单号」在类型层面就成立。
 ///
-/// 归一化算法本身（规格 §3.2.3，含校验位处理）留到 M4 落定；本类型只守住
-/// 「已归一化形态非空、不含空白字符」这条与生俱来的性质。
+/// 规格 §3.2.3：**归一化后的结果才是单号，一切关联以此为准** ——
+/// 所以 [parse] / [tryParse] 都先归一化再构造。
+///
+/// **已知缺口**：§3.2.3 还要求「处理校验位」，本实现**刻意没做**。
+/// 校验位规则按承运商而异，规格没有给出适用算法；凭空实现会改变单号的同一性，
+/// 而 I5 说单号是唯一事实标识 —— 改错了等于毁掉证据关联。
+/// 补这个之前必须先拿到具体承运商的校验位规则。
+///
+/// 与电脑端 `VidLog.Desktop.Core/Primitives.cs` 的 `WaybillNumber` **行为一致**，
+/// 两边必须同时改。
 final class WaybillNumber {
   final String value;
 
   const WaybillNumber._(this.value);
 
+  /// 规格 §3.2.3 的归一化：去除空白、统一大小写。
+  ///
+  /// 「统一大小写」规格没规定方向，本实现定为**大写**（母仓
+  /// `docs/02-数据模型.md` §5.1 记录该决策）。校验位与分隔符**一律保留原样**。
+  ///
+  /// 归一化后为空则返回 null。
+  static String? normalize(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+
+    final stripped = raw.replaceAll(_whitespace, '').toUpperCase();
+    return stripped.isEmpty ? null : stripped;
+  }
+
   static WaybillNumber parse(String? raw) {
     final result = tryParse(raw);
     if (result == null) {
-      throw FormatException('不是合法的单号', raw);
+      throw FormatException('不是合法的单号（归一化后没有任何有效字符）', raw);
     }
     return result;
   }
 
   static WaybillNumber? tryParse(String? raw) {
-    if (raw == null || raw.isEmpty) return null;
+    final normalized = normalize(raw);
+    if (normalized == null) return null;
 
-    // 归一化（§3.2.3）负责去除空白；到达本类型时应当已经去过。
-    if (_whitespace.hasMatch(raw)) return null;
-
-    return WaybillNumber._(raw);
+    return WaybillNumber._(normalized);
   }
 
   @override
