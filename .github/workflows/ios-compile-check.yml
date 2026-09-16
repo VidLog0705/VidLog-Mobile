@@ -1,0 +1,72 @@
+name: iOS compile check
+
+# ─────────────────────────────────────────────────────────────
+# 为什么单独一个 workflow，而且不挂在 push 上
+# ─────────────────────────────────────────────────────────────
+# macOS runner 计费倍率 10×，免费额度只有约 200 macOS 分钟/月。
+#
+# 拆仓之前这套东西在单仓里，靠 paths: ['mobile/**'] 过滤 ——
+# 只有手机端目录动了才触发。拆仓之后本仓**每次 push 都是手机端改动**，
+# paths 过滤已经失去意义，再挂 push 就等于每次推送都烧一次 iOS 构建。
+#
+# 所以这里**刻意只在 pull_request 与手动触发时跑**：
+#   - 日常推送到 main：不跑（省钱）
+#   - 开 PR：跑（这是质量闸门）
+#   - 每个里程碑收尾：手动 Run 一次（M0 验收就要求 iOS 编译通过一次）
+#
+# 别把 workflow_dispatch 去掉，也别加 push 触发。
+# ─────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-compile:
+    name: iOS compile (no codesign)
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检测 iOS 工程
+        id: probe
+        run: |
+          if [ -d ios ] && [ -f pubspec.yaml ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "::error::ios/ 不存在，无法做 iOS 编译验证"
+          fi
+
+      - uses: subosito/flutter-action@v2
+        if: steps.probe.outputs.found == 'true'
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+
+      - name: 显示 Xcode 版本
+        if: steps.probe.outputs.found == 'true'
+        run: xcodebuild -version
+
+      - name: pub get
+        if: steps.probe.outputs.found == 'true'
+        run: flutter pub get
+
+      - name: 无签名编译
+        if: steps.probe.outputs.found == 'true'
+        run: flutter build ios --release --no-codesign
+
+      - name: 编译失败时导出诊断
+        if: failure() && steps.probe.outputs.found == 'true'
+        run: |
+          echo "--- flutter doctor ---"
+          flutter doctor -v || true
+          echo "--- iOS 目录 ---"
+          ls -la ios/ || true

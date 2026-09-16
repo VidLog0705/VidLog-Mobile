@@ -1,0 +1,101 @@
+name: iOS package (unsigned .ipa)
+
+# ─────────────────────────────────────────────────────────────
+# 手动触发，产未签名 .ipa 供 Sideloadly 装真机。
+#
+# ⚠️ 不要改成 push 触发。macOS runner 是 10× 计费，
+#    每次推送都打一次包会迅速烧光每月约 200 分钟的额度。
+#
+# 真机流程：
+#   Actions 页面手动 Run → 下载 artifact → Sideloadly 装机
+#   （免费 Apple ID 签的应用 7 天过期，过期后重新下载安装即可）
+# ─────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: '构建号（留空则用 pubspec 里的）'
+        required: false
+        type: string
+      flavor:
+        description: '构建类型'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - profile
+
+concurrency:
+  group: ios-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build unsigned .ipa
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检测 iOS 工程
+        id: probe
+        run: |
+          if [ -d ios ] && [ -f pubspec.yaml ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "::error::ios/ 不存在，无法打包"
+          fi
+
+      - uses: subosito/flutter-action@v2
+        if: steps.probe.outputs.found == 'true'
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+
+      - name: 显示 Xcode 版本
+        if: steps.probe.outputs.found == 'true'
+        run: xcodebuild -version
+
+      - name: pub get
+        if: steps.probe.outputs.found == 'true'
+        run: flutter pub get
+
+      - name: 构建（无签名）
+        if: steps.probe.outputs.found == 'true'
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ -n "${{ inputs.build_number }}" ]; then
+            EXTRA="--build-number=${{ inputs.build_number }}"
+          fi
+          flutter build ios --${{ inputs.flavor }} --no-codesign $EXTRA
+
+      - name: 打包成 .ipa
+        if: steps.probe.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find build/ios -name 'Runner.app' -maxdepth 4 -type d | head -1)
+          if [ -z "$APP" ]; then echo "找不到 Runner.app"; exit 1; fi
+          echo "APP=$APP"
+          rm -rf /tmp/ipa && mkdir -p /tmp/ipa/Payload
+          cp -R "$APP" /tmp/ipa/Payload/
+          # 未签名包：去掉 _CodeSignature，避免 Sideloadly 因签名残留报错
+          rm -rf /tmp/ipa/Payload/Runner.app/_CodeSignature || true
+          cd /tmp/ipa
+          zip -qry VidLog-unsigned.ipa Payload
+          ls -lh VidLog-unsigned.ipa
+          cp VidLog-unsigned.ipa "$GITHUB_WORKSPACE/"
+
+      - name: 上传 .ipa
+        if: steps.probe.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vidlog-ios-unsigned-${{ github.run_number }}
+          path: VidLog-unsigned.ipa
+          retention-days: 30
+          if-no-files-found: error

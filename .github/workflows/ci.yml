@@ -1,0 +1,63 @@
+name: CI
+
+# 成本约束（重要）
+# ─────────────────────────────────────────────────────────────
+# 私有仓库的 GitHub-hosted runner 计费倍率：Linux 1× / Windows 2× / macOS 10×
+# 本仓是 Flutter 手机端，主 CI 走 ubuntu-latest —— 最便宜的 1×。
+# iOS 编译**不在这个 workflow 里**：macOS 是 10×，单独触发。
+# 推送前请先跑 scripts/precheck.ps1。
+# ─────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flutter:
+    name: Flutter (analyze / test / apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: 分析
+        run: flutter analyze --no-fatal-infos
+
+      - name: 测试
+        run: flutter test
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 构建 Debug APK（验证 Kotlin 能真编译）
+        run: flutter build apk --debug
+
+      - name: 上传 APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────
+  # iOS 编译验证不在这里 —— 见 ios-compile-check.yml
+  # macOS runner 是 10× 计费，不适合挂在每次 push 都会跑的主 CI 上。
+  # ─────────────────────────────────────────────
