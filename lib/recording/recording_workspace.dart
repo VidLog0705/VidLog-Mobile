@@ -193,9 +193,34 @@ class RecordingWorkspace {
     return orphans;
   }
 
+  /// 写临时文件再改名。
+  ///
+  /// **Windows 上「改名覆盖已存在的文件」会被拒绝**（`errno = 5 拒绝访问`）——
+  /// 实测：Defender 扫新写的文件时会短暂持有句柄，而开录写一次 manifest、
+  /// 每个分段封闭再写一次，正好每次都撞上。
+  ///
+  /// 所以重试几次；仍不行就**退化成直接写**。宁可失去「原子替换」这一层保护，
+  /// 也不能把 manifest 整个丢掉 —— 那会让这段录像重启后没法被收尾。
   Future<void> _writeAtomically(String destination, String content) async {
     final temporary = File('$destination.tmp');
     await temporary.writeAsString(content, flush: true);
-    await temporary.rename(destination);
+
+    for (var attempt = 0; attempt < 5; attempt++) {
+      try {
+        await temporary.rename(destination);
+        return;
+      } on FileSystemException {
+        if (attempt == 4) break;
+        await Future<void>.delayed(Duration(milliseconds: 20 * (attempt + 1)));
+      }
+    }
+
+    await File(destination).writeAsString(content, flush: true);
+
+    try {
+      await temporary.delete();
+    } on FileSystemException {
+      // 删不掉只是留个 .tmp 垃圾，不影响正确性。
+    }
   }
 }
