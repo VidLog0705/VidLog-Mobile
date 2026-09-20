@@ -161,6 +161,12 @@ final class CameraSegmentRecorder: NSObject {
 
         session.commitConfiguration()
 
+        // 方向必须在 commit 之后设 —— 输出刚 add 进去时它的 connection
+        // 还不一定存在，那时设等于白设，画面会拍成横的。
+        if let output = videoOutput, let connection = output.connection(with: .video) {
+            applyOrientation(to: connection)
+        }
+
         try? FileManager.default.createDirectory(
             at: outputDirectory, withIntermediateDirectories: true)
 
@@ -270,15 +276,15 @@ final class CameraSegmentRecorder: NSObject {
 
         session.addOutput(output)
         videoOutput = output
-
-        if let connection = output.connection(with: .video) {
-            applyOrientation(to: connection)
-        }
-
         return true
     }
 
-    /// 静止检测用一路低分辨率输出，不影响录制。
+    /// 静止检测用的第二路输出。
+    ///
+    /// ⚠️ **它拿到的仍然是会话分辨率**（1280×720）——
+    /// `videoSettings` 只能改像素格式，改不了尺寸。
+    /// 所以真正的降采样在 [handleAnalysisFrame] 里按网格抽样做，
+    /// 这里只是把这一路跟录制那一路分开，免得分析影响编码。
     private func addAnalysisOutput() {
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
@@ -328,6 +334,14 @@ final class CameraSegmentRecorder: NSObject {
         /// 记下来给下一个分段用 —— 轮转时不该再去反推尺寸。
         let width: Int
         let height: Int
+
+        /// 是否已经 `startSession(atSourceTime:)`。
+        ///
+        /// **这个标志是必需的**：`AVAssetWriter` 在 `startWriting()` 之后、
+        /// 追加任何样本之前，**必须**先开一个写入会话。少了这一步，
+        /// 第一次 append 会直接抛 `NSException` —— 应用当场闪退。
+        /// （这个 bug 是真机抓到的：编译全绿，一按开始工作就崩。）
+        var sessionStarted = false
 
         init(sequence: Int, writer: AVAssetWriter, input: AVAssetWriterInput,
              adaptor: AVAssetWriterInputPixelBufferAdaptor, fileURL: URL,
@@ -500,6 +514,14 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         stateLock.unlock()
 
         guard ready, let active = writer else { return }
+
+        // 写入会话要在这里开 —— 因为**起始时间只能是第一帧的时刻**，
+        // 而那个时刻到 append 之前才知道。
+        if !active.sessionStarted {
+            active.writer.startSession(atSourceTime: presentationTime)
+            active.sessionStarted = true
+        }
+
         active.adaptor.append(imageBuffer, withPresentationTime: presentationTime)
     }
 
@@ -539,11 +561,16 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         let sampleHeight = min(Self.analysisHeight, height)
         guard sampleWidth > 0, sampleHeight > 0 else { return }
 
+        // **在整个画面上按网格抽样**，不是只读左上角一块。
+        // 只读一角的话，动作发生在别处、那个角落恰好不动时会被误判成「静止」。
+        let stepX = max(1, width / Self.analysisWidth)
+        let stepY = max(1, height / Self.analysisHeight)
+
         var luma = [UInt8](repeating: 0, count: sampleWidth * sampleHeight)
         for y in 0..<sampleHeight {
-            let row = base.advanced(by: y * bytesPerRow)
+            let row = base.advanced(by: (y * stepY) * bytesPerRow)
             for x in 0..<sampleWidth {
-                luma[y * sampleWidth + x] = row.load(fromByteOffset: x, as: UInt8.self)
+                luma[y * sampleWidth + x] = row.load(fromByteOffset: x * stepX, as: UInt8.self)
             }
         }
 
