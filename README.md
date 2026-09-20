@@ -38,13 +38,16 @@ lib/                      Dart 侧：可测试的逻辑
     recorder_config.dart    阈值与**硬兜底值**（I4）
     recorder_events.dart    喂给状态机的事件 / 它产出的动作
     stop_controller.dart    ★ 停录状态机（错码保护 · 静止封顶 · 时长兜底）
+    recorder_gateway.dart   原生录制器的 Dart 侧接口与通道实现
+    recording_coordinator.dart ★ 把原生、状态机、工作区接起来
     recording_index.dart    录像索引（JSON Lines）
     recording_workspace.dart 会话落盘与孤儿发现
     session_finalizer.dart  ★ 收尾唯一入口（I9）+ 孤儿恢复
   scanning/
     viewfinder.dart         取景框判定（§3.2.2）
-  main.dart               应用外壳
-android/  ios/            原生相机模块（**未编写**，见 docs/实现决策.md §6）
+  main.dart               应用外壳（尚未接编排器）
+android/                  ★ 原生相机（Kotlin）：连续分段录制 + 静止检测 + 变焦
+ios/                      **原生层未写** —— 只有 flutter create 的默认内容
 test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
 ```
@@ -108,11 +111,13 @@ git push
 
 ### ⚠️ M4 未完成
 
-**原生连续分段相机尚未编写。** 当前只有 Dart 侧的逻辑 —— 状态机、取景框判定、
-会话收尾都完整且带测试，但**没有原生层就没有录像**。
+**iOS 原生层未写**（`ios/` 下只有 `flutter create` 的默认内容）。
+Android 侧的连续分段录制已写，但**只验证到能编译** ——
+本机没有摄像头、没有真机、不跑模拟器，相机时序与轮转行为都没跑过。
 
-其余未做：镜头缩放、语音播报（TTS）、目标跟踪、打点持久化、界面。
-详见 [`docs/实现决策.md`](docs/实现决策.md) §6。
+其余未做：条码识码、目标跟踪、语音播报（TTS）、半轮盘缩放 UI、打点持久化、
+把编排器接进界面。
+详见 [`docs/实现决策.md`](docs/实现决策.md) §7。
 
 ### ⚠️ 真机验收一条都没做
 
@@ -120,7 +125,7 @@ M4 的六条验收**全部需要真机**。按 `AGENTS.md` §9：
 **编译全绿但真机行为错误的问题，只有真机能暴露。** M4 不能算完成。
 
 其中五条（孤儿收尾、静止停录、封顶修正、错码保护、时长兜底）的**逻辑已经完整测过**，
-差的只是原生层接线与真机回归；「连续录 30 分钟不断」则完全依赖尚未编写的原生相机。
+差的只是上真机；「连续录 30 分钟不断」则完全没验。
 
 CI 见 [`.github/workflows/`](.github/workflows/)。
 
