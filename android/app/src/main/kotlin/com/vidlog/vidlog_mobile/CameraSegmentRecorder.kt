@@ -104,9 +104,14 @@ class CameraSegmentRecorder(
         private const val MAX_WIDTH = 1920
         private const val MAX_HEIGHT = 1080
 
-        /** 静止检测用的低分辨率采样，越小越省电。 */
-        private const val ANALYSIS_WIDTH = 160
-        private const val ANALYSIS_HEIGHT = 120
+        /**
+         * 静止检测的抽样网格大小。
+         *
+         * 注意这是**抽样后的格数**，不是采集尺寸 —— 采集尺寸由相机支持的
+         * 列表决定（见 `pickAnalysisSize`），这里只决定从中抽多少个点。
+         */
+        private const val ANALYSIS_SAMPLE_WIDTH = 160
+        private const val ANALYSIS_SAMPLE_HEIGHT = 120
 
         /** 相邻两次采样之间，亮度平均绝对差低于这个值就算「没动」。 */
         private const val STATIC_DIFF_THRESHOLD = 3.0
@@ -199,7 +204,7 @@ class CameraSegmentRecorder(
         running = true
 
         return try {
-            openCamera(manager, cameraId)
+            openCamera(manager, cameraId, characteristics)
             true
         } catch (error: Exception) {
             Log.e(TAG, "开相机失败", error)
@@ -298,6 +303,24 @@ class CameraSegmentRecorder(
         return ids.firstOrNull()
     }
 
+    /**
+     * 静止检测用的尺寸。
+     *
+     * 挑相机**支持**的最小一档：分析用不上大图，越小越省。
+     * 找不到任何支持尺寸时退回 320x240 并寄希望于它可用 ——
+     * 那种情况下会话可能建不起来，但那属于相机本身异常。
+     */
+    private fun pickAnalysisSize(characteristics: CameraCharacteristics): Size {
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return Size(320, 240)
+
+        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+            ?.filter { it.width <= 640 && it.height <= 480 }
+            ?: return Size(320, 240)
+
+        return sizes.minByOrNull { it.width.toLong() * it.height } ?: Size(320, 240)
+    }
+
     private fun pickVideoSize(characteristics: CameraCharacteristics): Size? {
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return null
@@ -311,7 +334,11 @@ class CameraSegmentRecorder(
                 ?.maxByOrNull { it.width.toLong() * it.height }
     }
 
-    private fun openCamera(manager: CameraManager, cameraId: String) {
+    private fun openCamera(
+        manager: CameraManager,
+        cameraId: String,
+        characteristics: CameraCharacteristics,
+    ) {
         // 先建编码器，拿到 input surface，再把它作为相机的输出目标。
         val codec = MediaCodec.createEncoderByType(MIME_TYPE)
 
@@ -332,10 +359,14 @@ class CameraSegmentRecorder(
 
         startEncoderLoop()
 
-        // 静止检测用一路低分辨率输出，不影响录制。
-
+        // 静止检测用一路单独的输出，不影响录制。
+        //
+        // ⚠️ 尺寸**必须从相机支持的列表里挑**：ImageReader 作为会话的一个目标时，
+        // 尺寸不在 `getOutputSizes` 里会让整个 `createCaptureSession` 失败 ——
+        // 连录制都起不来。硬编码一个 160x120 是很容易踩的坑。
+        val analysisSize = pickAnalysisSize(characteristics)
         val reader = ImageReader.newInstance(
-            ANALYSIS_WIDTH, ANALYSIS_HEIGHT, ImageFormat.YUV_420_888, 2,
+            analysisSize.width, analysisSize.height, ImageFormat.YUV_420_888, 2,
         )
         reader.setOnImageAvailableListener({ onAnalysisFrame(it) }, cameraHandler)
         analysisReader = reader
@@ -471,11 +502,23 @@ class CameraSegmentRecorder(
             val rowStride = plane.rowStride
             val pixelStride = plane.pixelStride
 
-            val luma = ByteArray(ANALYSIS_WIDTH * ANALYSIS_HEIGHT)
-            for (y in 0 until ANALYSIS_HEIGHT) {
-                val rowStart = y * rowStride
-                for (x in 0 until ANALYSIS_WIDTH) {
-                    luma[y * ANALYSIS_WIDTH + x] = buffer.get(rowStart + x * pixelStride)
+            val width = image.width
+            val height = image.height
+
+            val sampleWidth = minOf(ANALYSIS_SAMPLE_WIDTH, width)
+            val sampleHeight = minOf(ANALYSIS_SAMPLE_HEIGHT, height)
+            if (sampleWidth <= 0 || sampleHeight <= 0) return
+
+            // **在整个画面上按网格抽样**，不是只读左上角一块。
+            // 只读一角的话，动作发生在别处、那个角落恰好不动时会被误判成「静止」。
+            val stepX = maxOf(1, width / ANALYSIS_SAMPLE_WIDTH)
+            val stepY = maxOf(1, height / ANALYSIS_SAMPLE_HEIGHT)
+
+            val luma = ByteArray(sampleWidth * sampleHeight)
+            for (y in 0 until sampleHeight) {
+                val rowStart = (y * stepY) * rowStride
+                for (x in 0 until sampleWidth) {
+                    luma[y * sampleWidth + x] = buffer.get(rowStart + x * stepX * pixelStride)
                 }
             }
 
