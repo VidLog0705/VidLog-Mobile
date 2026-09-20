@@ -192,7 +192,12 @@ final class CameraSegmentRecorder: NSObject {
         running = false
         let writer = currentWriter
         currentWriter = nil
-        pendingStopCompletion = completion
+
+        // 只在真的需要等的时候挂上 —— 否则下面那条 `completion()` 直通路径
+        // 会让同一个 completion 被调两次，而 FlutterResult 提交两次会直接崩。
+        if wasRunning {
+            pendingStopCompletion = completion
+        }
         stateLock.unlock()
 
         guard wasRunning else {
@@ -206,9 +211,16 @@ final class CameraSegmentRecorder: NSObject {
 
         if let writer {
             finish(writer)
+
+            // 兜底：万一 finishWriting 的回调没来（文件已被移走、writer 处于
+            // 异常态等等），stopSession 会**永久挂住**，Dart 侧跟着卡死。
+            // 到点强制作答一次；正常路径已经答过的话这里是空操作。
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.completeStopIfNeeded()
+            }
         } else {
             // 一段都没录到（比如刚开就停）。
-            self.completeStopIfNeeded()
+            completeStopIfNeeded()
         }
     }
 

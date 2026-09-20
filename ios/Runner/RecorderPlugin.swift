@@ -66,7 +66,13 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     // MARK: - MethodChannel
 
-    private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    /// 方法分发。
+    ///
+    /// **不能声明成 `private`** —— 这个签名与 `FlutterPlugin` 协议的要求同名同形，
+    /// 可见性必须不低于协议要求（internal），否则编译报
+    /// 「must be as accessible as its enclosing type」。
+    /// （这个错是 CI 的 macOS 编译抓出来的，Windows 上发现不了。）
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "hasCameraPermission":
             result(CameraSegmentRecorder.hasCameraPermission)
