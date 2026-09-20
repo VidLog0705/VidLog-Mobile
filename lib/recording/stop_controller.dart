@@ -1,0 +1,254 @@
+import '../primitives.dart';
+import 'recorder_config.dart';
+import 'recorder_events.dart';
+import 'work_mode.dart';
+
+/// 停录决策状态机。
+///
+/// 规格 §3.3 是「本系统**行为最复杂、也最容易出错**的部分」，所以它被单独实现成
+/// 一个对事件流的纯状态机 —— 不碰相机、不碰 UI、不碰网络。
+///
+/// ## 它只吃本地可观测的事实
+///
+/// 规格 §3.3.5：
+/// > 任何自动停录机制都不得因为网络、配置、服务端异常而提前触发。
+/// > 停录判断只依赖本地可观测的事实（画面、时长、扫码）。
+///
+/// 本类的输入只有 [RecorderEvent]（扫码、画面、追踪、心跳），
+/// **没有任何一个事件来自网络** —— 这是结构上的保证，不是约定。
+///
+/// ## 三种停录机制
+///
+/// | 机制 | 规格 | 在哪些模式下生效 |
+/// |---|---|---|
+/// | 同码复扫 | §3.3.2 | 同码停、扫码静止停录 |
+/// | 画面静止 | §3.3.3 | 全部（可设为「关闭」） |
+/// | 时长兜底 | §3.3.4 | **全部，含「关闭」档** |
+///
+/// 「扫码静止停录」比其余模式多一个门槛：静止计时只在
+/// **同码包裹离场、再入场之后**才开始（[WorkMode.staticStopRequiresPackageReturn]）。
+class StopController {
+  StopController({
+    required this.mode,
+    this.config = RecorderConfig.hardFallback,
+  });
+
+  final WorkMode mode;
+  final RecorderConfig config;
+
+  bool _recording = false;
+  WaybillNumber? _waybill;
+  int _startedAtMs = 0;
+
+  /// 画面最近一次**有活动**的时刻。静止时长 = now - 这个值（且不早于开录时刻）。
+  int _lastMotionAtMs = 0;
+  bool _packageLeft = false;
+  bool _packageReturned = false;
+
+  /// 正在等用户回应时长兜底的询问；null 表示没在问。
+  int? _promptShownAtMs;
+
+  /// 下一次该问的时刻；null 表示不用问了。
+  int? _nextPromptAtMs;
+
+  bool get isRecording => _recording;
+
+  /// 本次录音的开启单号（规格 §3.3.2 的「首扫面单」）。
+  WaybillNumber? get currentWaybill => _waybill;
+
+  /// 是否正在显示时长兜底的询问。
+  bool get isAskingToContinue => _promptShownAtMs != null;
+
+  /// 已录时长。基于**单调时钟**（规格 §3.6.3），不受用户改系统时间影响。
+  int elapsedMs(int nowMs) => _recording ? nowMs - _startedAtMs : 0;
+
+  /// 画面已静止的时长。**已被「已录时长」封顶**（不变量 I12）——
+  /// 上限就是开录那一刻，所以刚开录时它从 0 开始，不会带着开录前的静止时长进来。
+  int staticForMs(int nowMs) => _recording ? nowMs - _lastMotionAtMs : 0;
+
+  /// 处理一个事件，返回宿主应当执行的动作。
+  List<RecorderAction> handle(RecorderEvent event) {
+    final actions = <RecorderAction>[];
+
+    switch (event) {
+      case WaybillDetected(:final waybill, :final monotonicMs):
+        if (_recording) {
+          actions.addAll(_onRescan(monotonicMs, waybill));
+        } else {
+          _start(monotonicMs, waybill);
+          actions.add(const StartRecording());
+        }
+
+      case ManualStopRequested():
+        if (_recording) {
+          actions.addAll(_stop(StopTrigger.manual));
+        }
+
+      case TrackedPackageLeft():
+        if (_recording) {
+          _packageLeft = true;
+        }
+
+      case TrackedPackageEntered(:final monotonicMs):
+        if (_recording) {
+          _packageReturned = true;
+
+          // 入场本身是一次画面活动 —— 静止时钟从这里**重新计**。
+          // 规格 §3.3.1 要的是「离场后再入场**并**静止达设定时长」，
+          // 静止是从入场之后开始算的，不是从离场前那次活动算的。
+          _lastMotionAtMs = monotonicMs;
+        }
+
+      case SceneSampled(:final isStatic, :final monotonicMs):
+        if (_recording && !isStatic) {
+          _lastMotionAtMs = monotonicMs;
+        }
+
+      case DurationPromptAnswered(:final continueRecording, :final monotonicMs):
+        if (_recording && _promptShownAtMs != null) {
+          actions.add(const HideDurationPrompt());
+          _promptShownAtMs = null;
+
+          if (continueRecording) {
+            // 规格 §3.3.4：点「继续」→ 取消本轮上限，进入下一轮。
+            _nextPromptAtMs = monotonicMs + config.durationPromptRepeatEvery.inMilliseconds;
+          } else {
+            actions.addAll(_stop(StopTrigger.durationFallback));
+          }
+        }
+
+      case ResourceReported():
+        if (_recording) {
+          actions.addAll(_onResource(event));
+        }
+
+      case Heartbeat():
+        break;
+    }
+
+    // 时间驱动的判定放在最后：前面刚停下来的话这里不会再跑（_recording 已为 false）。
+    if (_recording) {
+      actions.addAll(_evaluateTimers(event.monotonicMs));
+    }
+
+    return actions;
+  }
+
+  // ─────────────────────────────────────────────
+  // 内部
+  // ─────────────────────────────────────────────
+
+  void _start(int nowMs, WaybillNumber waybill) {
+    _recording = true;
+    _startedAtMs = nowMs;
+    _waybill = waybill;
+    _packageLeft = false;
+    _packageReturned = false;
+    _promptShownAtMs = null;
+    _nextPromptAtMs = nowMs + config.durationPromptAfter.inMilliseconds;
+
+    // 静止时钟从**开录这一刻**起算 —— 这就是不变量 I12 的落点。
+    //
+    // 若不加这个封顶，架机 30 分钟无人后再开录，采样一进来就会看到
+    // 「画面已经静止了 30 分钟」而当场把录制停掉。规格 §3.3.3 点名了这个后果。
+    _lastMotionAtMs = nowMs;
+  }
+
+  List<RecorderAction> _onRescan(int nowMs, WaybillNumber scanned) {
+    if (scanned != _waybill) {
+      // 规格 §3.3.2 错码保护：**不停录**，只语音提示，直到扫到正确面单才停。
+      return const [Speak(VoicePrompt.differentWaybill)];
+    }
+
+    return mode.stopsOnSameWaybillRescan
+        ? _stop(StopTrigger.sameWaybillRescan)
+        : const [];
+  }
+
+  List<RecorderAction> _onResource(ResourceReported report) {
+    final reasons = <String>[];
+
+    final free = report.freeStorageBytes;
+    if (free != null && free < config.storageFreeWarningBytes) {
+      reasons.add('存储将满');
+    }
+
+    final battery = report.batteryPercent;
+    if (battery != null && battery < config.batteryWarningPercent) {
+      reasons.add('电量过低');
+    }
+
+    final thermal = report.thermal;
+    if (thermal != null && thermal.reaches(config.thermalWarning)) {
+      reasons.add('设备过热');
+    }
+
+    if (reasons.isEmpty) {
+      return const [];
+    }
+
+    // 规格 §3.1.1：**提前告警，并主动安全收尾**（正常关闭当前分段、写指纹、入库），
+    // 而不是等崩溃。
+    final stopActions = _stop(StopTrigger.resourceCritical);
+    return [
+      const Speak(VoicePrompt.resourceWarning),
+      WarnResource(reasons.join('、')),
+      ...stopActions,
+    ];
+  }
+
+  List<RecorderAction> _evaluateTimers(int nowMs) {
+    // 1. 画面静止停录（§3.3.3）
+    if (config.staticStop.isEnabled && _staticGateOpen) {
+      if (nowMs - _lastMotionAtMs >= config.staticStop.duration.inMilliseconds) {
+        return _stop(StopTrigger.sceneStatic);
+      }
+    }
+
+    // 2. 时长兜底（§3.3.4）—— 对所有档位生效，含静止设为「关闭」时
+    final shownAt = _promptShownAtMs;
+    if (shownAt != null) {
+      // 问了没人理 → 视为用户不在场 → 默认继续，随后按上限停止。
+      if (nowMs - shownAt >= config.durationPromptGrace.inMilliseconds) {
+        return _stop(StopTrigger.durationFallback);
+      }
+
+      return const [];
+    }
+
+    final promptAt = _nextPromptAtMs;
+    if (promptAt != null && nowMs >= promptAt) {
+      _promptShownAtMs = nowMs;
+      _nextPromptAtMs = null;
+
+      return const [
+        Speak(VoicePrompt.durationTimeout),
+        ShowDurationPrompt(),
+      ];
+    }
+
+    return const [];
+  }
+
+  /// 静止判定的门槛是否已满足。
+  bool get _staticGateOpen =>
+      !mode.staticStopRequiresPackageReturn || (_packageLeft && _packageReturned);
+
+  List<RecorderAction> _stop(StopTrigger trigger) {
+    final actions = <RecorderAction>[];
+
+    if (_promptShownAtMs != null) {
+      actions.add(const HideDurationPrompt());
+    }
+
+    _recording = false;
+    _waybill = null;
+    _packageLeft = false;
+    _packageReturned = false;
+    _promptShownAtMs = null;
+    _nextPromptAtMs = null;
+
+    actions.add(StopRecording(trigger));
+    return actions;
+  }
+}
