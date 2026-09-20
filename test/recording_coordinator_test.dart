@@ -267,6 +267,35 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('停止时最后一段也要被收尾', () async {
+      // 原生层的契约是「stopSession 返回前最后一段已封闭并投递」，
+      // 但事件走另一条通道、异步到达。少了那一步等待，
+      // 最后一段 —— 刚刚录完、最不该丢的那段 —— 会被漏掉。
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      final sessionId = coordinator.sessionId!;
+
+      // 停止的**那一刻**原生层才把最后一段封完
+      gateway.emitOnStop = SegmentClosedEvent(
+        filePath: '${workspace.sessionDirectory(sessionId)}/segment-000.mp4',
+        sequence: 0,
+        startedAtMs: 0,
+        endedAtMs: 30_000,
+      );
+      Directory(workspace.sessionDirectory(sessionId)).createSync(recursive: true);
+      File('${workspace.sessionDirectory(sessionId)}/segment-000.mp4')
+          .writeAsBytesSync([1, 2, 3]);
+
+      await coordinator.onManualStop();
+
+      final entries = await index.loadAll();
+      expect(entries, hasLength(1), reason: '最后一段不能被漏掉');
+      expect(entries.single.evidenceId, '$sessionId-000');
+
+      await coordinator.dispose();
+    });
+
     test('收尾失败时不打标记，保持孤儿身份', () async {
       // 索引写不进去 —— 文件在盘上但检索不到，不算收尾成功。
       final coordinator = RecordingCoordinator(
@@ -344,8 +373,14 @@ class FakeGateway implements RecorderGateway {
     this.segmentDuration = segmentDuration;
   }
 
+  /// 停止时补投一个分段事件 —— 模拟原生层「停止时才封完最后一段」的行为。
+  SegmentClosedEvent? emitOnStop;
+
   @override
-  Future<void> stopSession() async => stopped = true;
+  Future<void> stopSession() async {
+    stopped = true;
+    if (emitOnStop != null) emit(emitOnStop!);
+  }
 
   @override
   Future<void> setZoom(double ratio) async {}

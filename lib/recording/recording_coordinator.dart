@@ -201,6 +201,11 @@ class RecordingCoordinator {
 
     await _gateway.stopSession();
 
+    // 原生层的契约是「停止返回时最后一段已经封完并投递」，
+    // 但事件走的是另一条通道，这里再等一次在途事件。
+    // 少了这一步，最后一段会被漏掉 —— 而它是刚刚录完的那段，最不该丢。
+    await waitForPendingEvents();
+
     final outcome = await _finalizer.finalize(
       sessionId: _sessionId!,
       waybill: _waybill!,

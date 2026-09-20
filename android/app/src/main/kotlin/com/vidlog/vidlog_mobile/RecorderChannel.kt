@@ -98,10 +98,18 @@ class RecorderChannel(private val activity: FlutterActivity) :
 
             "startSession" -> startSession(call, result)
 
+            // 在**主线程**上停，并在同一线程回 result。
+            //
+            // 理由：stop() 会封闭当前分段并通过 runOnUiThread 投递 segmentClosed。
+            // 如果在别的线程调用 stop() 再立刻 result.success，那一事件还在队列里，
+            // Dart 拿到「已停止」就去做收尾 —— **最后一段会被漏掉**。
+            // 都在主线程执行就能保证「先投递事件，再回结果」这个顺序。
             "stopSession" -> {
-                recorder?.stop()
-                recorder = null
-                result.success(null)
+                activity.runOnUiThread {
+                    recorder?.stop()
+                    recorder = null
+                    result.success(null)
+                }
             }
 
             "setZoom" -> {
