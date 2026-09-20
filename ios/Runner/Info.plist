@@ -26,6 +26,11 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- 现场采集要录像（规格 §3.1）。**这条不能少** ——
+	     iOS 上没声明就请求相机权限，系统会直接终止进程。
+	     文案要说清用途：这是给用户看的，也是上架审核会看的。 -->
+	<key>NSCameraUsageDescription</key>
+	<string>VidLog 需要使用摄像头录制打包过程，作为售后纠纷时的凭证。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

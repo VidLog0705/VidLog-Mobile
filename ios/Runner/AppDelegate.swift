@@ -12,5 +12,11 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
+    // 原生录制器的通道。它不是 pub 包，所以 GeneratedPluginRegistrant 不会管它，
+    // 得在这里手动挂上。
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "VidLogRecorder") {
+      RecorderPlugin.register(with: registrar)
+    }
   }
 }
