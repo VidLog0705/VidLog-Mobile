@@ -47,7 +47,7 @@ lib/                      Dart 侧：可测试的逻辑
     viewfinder.dart         取景框判定（§3.2.2）
   main.dart               应用外壳（尚未接编排器）
 android/                  ★ 原生相机（Kotlin）：连续分段录制 + 静止检测 + 变焦
-ios/                      **原生层未写** —— 只有 flutter create 的默认内容
+ios/                      ★ 原生相机（Swift）：同上，轮转模型不同（见 docs/实现决策.md §6B）
 test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
 ```
@@ -111,9 +111,8 @@ git push
 
 ### ⚠️ M4 未完成
 
-**iOS 原生层未写**（`ios/` 下只有 `flutter create` 的默认内容）。
-Android 侧的连续分段录制已写，但**只验证到能编译** ——
-本机没有摄像头、没有真机、不跑模拟器，相机时序与轮转行为都没跑过。
+两端原生层都已写，但**只验证到「能编译」** —— Android 出 APK、iOS 过 macOS 编译检查。
+本机是 Windows：没有摄像头、没有真机、不跑模拟器，相机时序与轮转行为都没跑过。
 
 其余未做：条码识码、目标跟踪、语音播报（TTS）、半轮盘缩放 UI、打点持久化、
 把编排器接进界面。
