@@ -30,11 +30,21 @@ Flutter + 原生相机模块（Kotlin / Swift）。
 ## 仓库结构
 
 ```
-lib/                      Dart 侧：可测试的逻辑与 UI
+lib/                      Dart 侧：可测试的逻辑
   primitives.dart         跨端共享的硬约束值对象
   states.dart             三个显式建模的状态机（规格 §4）
+  recording/
+    work_mode.dart          三种工作模式（§3.3.1）
+    recorder_config.dart    阈值与**硬兜底值**（I4）
+    recorder_events.dart    喂给状态机的事件 / 它产出的动作
+    stop_controller.dart    ★ 停录状态机（错码保护 · 静止封顶 · 时长兜底）
+    recording_index.dart    录像索引（JSON Lines）
+    recording_workspace.dart 会话落盘与孤儿发现
+    session_finalizer.dart  ★ 收尾唯一入口（I9）+ 孤儿恢复
+  scanning/
+    viewfinder.dart         取景框判定（§3.2.2）
   main.dart               应用外壳
-android/  ios/            原生相机模块（M4 起）
+android/  ios/            原生相机模块（**未编写**，见 docs/实现决策.md §6）
 test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
 ```
@@ -83,15 +93,34 @@ git push
 
 ## 当前进度
 
-**M0 骨架 + M1 契约** —— 工程能编译、analyze 无 issue、测试能跑、模型与状态机已定。
+**M0 骨架 + M1 契约 + M4 采集（Dart 侧逻辑）**
 
 已落地：
 
-- Flutter 应用外壳（Android / iOS 两个 platform 目录已生成）
-- `RelativePath` / `WaybillNumber` / `ContentHash` 三个硬约束值对象
-- 三个状态机枚举（录制会话 / 上传任务 / 证据生命周期），规格 §4
+- **M1**：`RelativePath` / `WaybillNumber` / `ContentHash` 三个硬约束值对象；
+  三个状态机枚举（规格 §4）；单号归一化（§3.2.3）
+- **M4 停录**：`StopController` —— 错码保护（§3.3.2）、画面静止含**封顶修正**
+  （§3.3.3 / 不变量 I12）、时长兜底（§3.3.4）、三种工作模式（§3.3.1）
+- **M4 取景框**：只有框内的面单被识别（§3.2.2）
+- **M4 会话**：录制会话落盘、**收尾唯一入口**（I9）、孤儿分段恢复（§3.1.1）
+- **M4 资源**：存储将满 / 低电量 / 过热 → 告警 + 主动收尾（§3.1.1），
+  阈值带**硬兜底值**（I4）
 
-未做（按里程碑推进）：原生连续分段相机、取景框识别、工作模式与停录机制、上传队列。
+### ⚠️ M4 未完成
+
+**原生连续分段相机尚未编写。** 当前只有 Dart 侧的逻辑 —— 状态机、取景框判定、
+会话收尾都完整且带测试，但**没有原生层就没有录像**。
+
+其余未做：镜头缩放、语音播报（TTS）、目标跟踪、打点持久化、界面。
+详见 [`docs/实现决策.md`](docs/实现决策.md) §6。
+
+### ⚠️ 真机验收一条都没做
+
+M4 的六条验收**全部需要真机**。按 `AGENTS.md` §9：
+**编译全绿但真机行为错误的问题，只有真机能暴露。** M4 不能算完成。
+
+其中五条（孤儿收尾、静止停录、封顶修正、错码保护、时长兜底）的**逻辑已经完整测过**，
+差的只是原生层接线与真机回归；「连续录 30 分钟不断」则完全依赖尚未编写的原生相机。
 
 CI 见 [`.github/workflows/`](.github/workflows/)。
 
