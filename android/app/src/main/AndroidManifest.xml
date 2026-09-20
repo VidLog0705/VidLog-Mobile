@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 现场采集要录像（规格 §3.1）。录制中不需要麦克风：证据是画面的，
+         收一个用不上的权限只会让用户多一层顾虑。 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- 相机是核心功能，没有它这个应用没有意义。 -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="true"/>
+
     <application
         android:label="vidlog_mobile"
         android:name="${applicationName}"
