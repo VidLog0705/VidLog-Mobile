@@ -68,3 +68,9 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# ---------- 本地打包产物（绝不入库） ----------
+# Sideloadly 用的未签名 .ipa，从 CI 的 artifact 下载到这儿。
+/dist/
+*.ipa
+*.dSYM.zip
