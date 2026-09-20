@@ -40,6 +40,11 @@ dependencies:
   # 许可证：BSD-3-Clause，Dart 官方维护（dart.dev）。
   crypto: ^3.0.6
 
+  # 数据目录。工作区必须落在**持久**目录里，不能用临时目录 ——
+  # 「重启后收尾孤儿」靠的就是那些文件还在原处。
+  # 许可证：BSD-3-Clause，Flutter 官方。
+  path_provider: ^2.1.5
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

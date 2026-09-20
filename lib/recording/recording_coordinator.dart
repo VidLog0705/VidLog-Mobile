@@ -84,6 +84,12 @@ class RecordingCoordinator {
   bool get isRecording => _stopController.isRecording;
   String? get sessionId => _sessionId;
 
+  /// 本次录制已录时长。
+  ///
+  /// 用的是**编排器自己的单调时钟**，不是墙钟（规格 §3.6.3 / I11）。
+  /// 界面拿墙钟去算会得到没意义的数 —— 两把尺子不一样。
+  Duration get elapsed => Duration(milliseconds: _stopController.elapsedMs(_clock()));
+
   /// 原生层最近一次报的错；没有则为 null。
   String? get lastError => _lastError;
 
