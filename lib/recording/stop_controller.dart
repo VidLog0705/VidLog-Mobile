@@ -23,7 +23,11 @@ import 'work_mode.dart';
 /// |---|---|---|
 /// | 同码复扫 | §3.3.2 | 同码停、扫码静止停录 |
 /// | 画面静止 | §3.3.3 | 全部（可设为「关闭」） |
-/// | 时长兜底 | §3.3.4 | **全部，含「关闭」档** |
+/// | 时长兜底 | §3.3.4 | 全部（**可设为「关闭」**） |
+///
+/// **两项防忘停录各自独立可选**：静止档位关掉不会连带关掉时长兜底，反之亦然。
+/// （规格原文写的是时长兜底「对所有档位生效（含关闭）」，后来改成可选 ——
+/// 因为它会在每次录制超过设定分钟数时打断正常的长录制。）
 ///
 /// 「扫码静止停录」比其余模式多一个门槛：静止计时只在
 /// **同码包裹离场、再入场之后**才开始（[WorkMode.staticStopRequiresPackageReturn]）。
@@ -145,7 +149,12 @@ class StopController {
     _packageLeft = false;
     _packageReturned = false;
     _promptShownAtMs = null;
-    _nextPromptAtMs = nowMs + config.durationPromptAfter.inMilliseconds;
+
+    // 时长兜底是**可选档位**（关闭 / 4 / 5 / 6 分钟）：
+    // 关掉时把下次询问的时刻置空，那样一圈定时判定里就不会再问、也不会停。
+    _nextPromptAtMs = config.durationFallback.isEnabled
+        ? nowMs + config.effectivePromptAfter.inMilliseconds
+        : null;
 
     // 静止时钟从**开录这一刻**起算 —— 这就是不变量 I12 的落点。
     //
@@ -205,7 +214,8 @@ class StopController {
       }
     }
 
-    // 2. 时长兜底（§3.3.4）—— 对所有档位生效，含静止设为「关闭」时
+    // 2. 时长兜底（§3.3.4）—— **独立的可选档位**，与静止档位互不影响。
+    //    `_nextPromptAtMs` 为 null 就表示它被关掉了，这里整段跳过。
     final shownAt = _promptShownAtMs;
     if (shownAt != null) {
       // 问了没人理 → 视为用户不在场 → 默认继续，随后按上限停止。

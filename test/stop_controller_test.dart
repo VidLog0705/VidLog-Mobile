@@ -15,9 +15,6 @@ void main() {
   const minute = 60 * 1000;
   const t0 = 1000000;
 
-  /// 把时长兜底推到很远 —— 只在专门验它的时候才用正常值。
-  const farFuture = Duration(days: 365);
-
   final waybillA = WaybillNumber.parse('SF1000000001');
   final waybillB = WaybillNumber.parse('YT9999999999');
 
@@ -29,20 +26,33 @@ void main() {
       StopController(mode: mode, config: config ?? const RecorderConfig());
 
   /// 隔离时长兜底 —— 单独验工作模式 / 错码保护 / 静止判定时用。
+  ///
+  /// 因为时长兜底现在是**独立可选档位**，这里直接把它关掉即可，
+  /// 不用再靠「把询问时刻推到很远」那种 hack。
   StopController isolated({
     WorkMode mode = WorkMode.continuousScan,
     StaticStopSetting staticStop = StaticStopSetting.off,
+    DurationFallbackSetting durationFallback = DurationFallbackSetting.off,
   }) =>
       StopController(
         mode: mode,
-        config: RecorderConfig(staticStop: staticStop, durationPromptAfter: farFuture),
+        config: RecorderConfig(
+          staticStop: staticStop,
+          durationFallback: durationFallback,
+        ),
       );
 
   /// 隔离静止停录 —— 单独验时长兜底时用。
   /// 不关掉静止的话，画面一直没动，静止会在 3 分钟先把录制停掉。
-  StopController durationOnly() => StopController(
+  StopController durationOnly({
+    DurationFallbackSetting setting = DurationFallbackSetting.minutes4,
+  }) =>
+      StopController(
         mode: WorkMode.continuousScan,
-        config: const RecorderConfig(staticStop: StaticStopSetting.off),
+        config: RecorderConfig(
+          staticStop: StaticStopSetting.off,
+          durationFallback: setting,
+        ),
       );
 
   List<RecorderAction> start(StopController controller, {int at = t0}) =>
@@ -287,6 +297,70 @@ void main() {
   // ─────────────────────────────────────────────
 
   group('时长兜底', () {
+    test('关闭档：既不出询问，也不自动停', () {
+      final controller = durationOnly(setting: DurationFallbackSetting.off);
+      start(controller);
+
+      for (final minutes in [5, 30, 120]) {
+        expect(controller.handle(Heartbeat(t0 + minutes * minute)), isEmpty,
+            reason: '关掉之后第 $minutes 分钟也不该有任何动静');
+      }
+      expect(controller.isRecording, isTrue);
+    });
+
+    test('各档位按各自的分钟数询问', () {
+      for (final setting in [
+        DurationFallbackSetting.minutes4,
+        DurationFallbackSetting.minutes5,
+        DurationFallbackSetting.minutes6,
+      ]) {
+        final controller = durationOnly(setting: setting);
+        start(controller);
+
+        final before = (setting.minutes - 1) * minute;
+        expect(controller.handle(Heartbeat(t0 + before)), isEmpty,
+            reason: '${setting.minutes} 分钟档：第 $before 毫秒不该问');
+
+        expect(
+          controller
+              .handle(Heartbeat(t0 + setting.minutes * minute))
+              .whereType<ShowDurationPrompt>(),
+          hasLength(1),
+          reason: '${setting.minutes} 分钟档：到点该问',
+        );
+      }
+    });
+
+    test('★ 两个防忘停录档位互相独立', () {
+      // 需求方明确要求「让用户自己选」——所以关掉一个不该连带关掉另一个。
+
+      // 静止关 + 兜底开 → 只有兜底生效
+      final onlyFallback = isolated(
+          durationFallback: DurationFallbackSetting.minutes4);
+      start(onlyFallback);
+      expect(
+        onlyFallback
+            .handle(Heartbeat(t0 + 4 * minute))
+            .whereType<ShowDurationPrompt>(),
+        hasLength(1),
+      );
+
+      // 静止开 + 兜底关 → 只有静止生效（3 分钟静止停，而不是 4 分钟被问）
+      final onlyStatic = isolated(staticStop: StaticStopSetting.minutes3);
+      start(onlyStatic);
+      expect(onlyStatic.handle(Heartbeat(t0 + 2 * minute + 59000)), isEmpty);
+      expect(stops(onlyStatic.handle(Heartbeat(t0 + 3 * minute))).single.trigger,
+          StopTrigger.sceneStatic);
+    });
+
+    test('两个都关 → 录制不会因为任何一项自动停', () {
+      final controller = isolated();
+      start(controller);
+
+      expect(controller.handle(Heartbeat(t0 + 180 * minute)), isEmpty);
+      expect(controller.isRecording, isTrue);
+    });
+
     test('4 分钟出现语音与按钮', () {
       final controller = durationOnly();
       start(controller);
@@ -479,6 +553,21 @@ void main() {
       expect(StaticStopSetting.fromConfig(0), StaticStopSetting.off);
       expect(StaticStopSetting.fromConfig(2), StaticStopSetting.minutes2);
       expect(StaticStopSetting.fromConfig('5'), StaticStopSetting.minutes5);
+    });
+
+    test('非法时长兜底档位一律回落到默认 4 分钟', () {
+      for (final bad in <Object?>[null, 'x', 999, -1, 3, 4.5, <String>[], true]) {
+        expect(DurationFallbackSetting.fromConfig(bad),
+            DurationFallbackSetting.fallback,
+            reason: '输入 $bad 应当回落到默认值');
+      }
+    });
+
+    test('合法时长兜底档位正常解析', () {
+      expect(DurationFallbackSetting.fromConfig(0), DurationFallbackSetting.off);
+      expect(DurationFallbackSetting.fromConfig(4), DurationFallbackSetting.minutes4);
+      expect(DurationFallbackSetting.fromConfig('6'),
+          DurationFallbackSetting.minutes6);
     });
 
     test('非法热度值回落到不告警', () {

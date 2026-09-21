@@ -44,8 +44,11 @@ class _RecorderPageState extends State<RecorderPage> {
   WorkMode _mode = WorkMode.sameWaybillStop;
   StaticStopSetting _staticStop = StaticStopSetting.fallback;
 
-  /// 把时长兜底缩短，好让验收不必真的等 4 分钟。
-  /// **只影响时长兜底**，静止档位保持真实值 —— 那一条本来就该按真实时长验。
+  /// 时长兜底档位。**与静止档位互相独立** —— 关一个不影响另一个。
+  DurationFallbackSetting _durationFallback = DurationFallbackSetting.fallback;
+
+  /// 把时长兜底的首次询问时机缩短，好让验收不必真的等 4 分钟。
+  /// **只压首次询问时机**，不动档位本身，也不碰静止档位。
   bool _accelerated = false;
 
   final _waybillController = TextEditingController();
@@ -75,14 +78,16 @@ class _RecorderPageState extends State<RecorderPage> {
     super.dispose();
   }
 
-  RecorderConfig get _config => _accelerated
-      ? const RecorderConfig(
-          staticStop: StaticStopSetting.fallback,
-          durationPromptAfter: Duration(seconds: 20),
-          durationPromptRepeatEvery: Duration(seconds: 30),
-          durationPromptGrace: Duration(seconds: 10),
-        )
-      : RecorderConfig(staticStop: _staticStop);
+  RecorderConfig get _config => RecorderConfig(
+        // 两个档位都**原样保留用户的选择** —— 加速只压时长兜底的首次询问时机。
+        staticStop: _staticStop,
+        durationFallback: _durationFallback,
+        promptAfterOverride: _accelerated ? const Duration(seconds: 20) : null,
+        durationPromptRepeatEvery:
+            _accelerated ? const Duration(seconds: 30) : const Duration(minutes: 5),
+        durationPromptGrace:
+            _accelerated ? const Duration(seconds: 10) : const Duration(minutes: 1),
+      );
 
   // ─────────────────────────────────────────────
   // 启动
@@ -374,13 +379,33 @@ class _RecorderPageState extends State<RecorderPage> {
               selected: {_staticStop},
               onSelectionChanged: (value) => setState(() => _staticStop = value.first),
             ),
+            const SizedBox(height: 16),
+            const Text('时长兜底档位（§3.3.4）', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              '与上面的静止档位**互相独立**：关一个不影响另一个。'
+              '录制满设定分钟数会问一次「是否停止」，不操作 1 分钟后自动停。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<DurationFallbackSetting>(
+              segments: const [
+                ButtonSegment(value: DurationFallbackSetting.off, label: Text('关闭')),
+                ButtonSegment(value: DurationFallbackSetting.minutes4, label: Text('4')),
+                ButtonSegment(value: DurationFallbackSetting.minutes5, label: Text('5')),
+                ButtonSegment(value: DurationFallbackSetting.minutes6, label: Text('6')),
+              ],
+              selected: {_durationFallback},
+              onSelectionChanged: (value) =>
+                  setState(() => _durationFallback = value.first),
+            ),
             const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _accelerated,
               onChanged: (value) => setState(() => _accelerated = value),
               title: const Text('时长兜底加速（验收用）'),
-              subtitle: const Text('4 分钟 → 20 秒，1 分钟 → 10 秒。只影响时长兜底。'),
+              subtitle: const Text('首次询问压到 20 秒、宽限 10 秒。只压时长兜底，不动档位。'),
             ),
           ],
         ),
