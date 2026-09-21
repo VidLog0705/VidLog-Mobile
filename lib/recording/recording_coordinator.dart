@@ -47,9 +47,22 @@ class RecordingCoordinator {
         _stopController = StopController(mode: mode, config: config),
         _clock = clock ?? _defaultClock(),
         _scanGate = scanGate ?? ScanGate() {
-    // 事件**串行**处理：链在同一个 Future 上。
-    // 并发处理会让两个分段事件同时改 manifest，后写的覆盖先写的。
     _subscription = _gateway.events.listen((event) {
+      // ⚠️ **分段落盘走单独一条链**，不跟别的事件挤在一起。
+      //
+      // 理由是死锁：画面静止 / 扫码复扫触发停录时，处理它的那个处理器
+      // 正卡在事件链里等「最后一段封完」；而最后一段的 segmentClosed
+      // **排在这个处理器后面**，要等它跑完才能跑 —— 互相等，永远收不了尾。
+      // 真机上表现为「停了，但一直卡在『正在收尾』」。
+      //
+      // 分段落盘只需要在**自己的**几条之间保序（别让两个写 manifest 撞车），
+      // 不需要跟开录 / 复扫 / 画面事件串行。
+      if (event is SegmentClosedEvent) {
+        _segmentWrites = _segmentWrites.then((_) => _onSegmentClosed(event));
+        return;
+      }
+
+      // 其余事件串行处理：并发会让它们同时改 manifest，后写的覆盖先写的。
       _queuedEvents++;
       _pending = _pending.then((_) async {
         try {
@@ -86,10 +99,23 @@ class RecordingCoordinator {
   /// 界面拿它显示「扫到了什么」，人才能判断是没扫到还是扫到了没认。
   void Function(WaybillNumber waybill)? onBarcodeAccepted;
 
+  /// 一段录制**收尾完成**（已入库或失败）。
+  ///
+  /// 界面必须接这个来更新状态 —— 停录时界面只来得及显示「正在收尾」，
+  /// 而收尾是异步的。不接的话界面会**永远停在「正在收尾」**，
+  /// 看起来像卡住了，其实早就收完了。真机上就是这么被误会的。
+  void Function(FinalizeOutcome outcome)? onFinalized;
+
   StreamSubscription<NativeRecorderEvent>? _subscription;
 
   /// 在途事件的处理链。
   Future<void> _pending = Future<void>.value();
+
+  /// **分段落盘**的处理链，与 [_pending] 分开 —— 见监听处的说明。
+  ///
+  /// 收尾时等的是这一条（`await _segmentWrites`），而不是事件链：
+  /// 事件链里排着「正在收尾」的那个处理器，等它等于等自己。
+  Future<void> _segmentWrites = Future<void>.value();
 
   /// 已入队 / 已处理完的事件数。用来判断「还有没有没处理完的事件」。
   int _queuedEvents = 0;
@@ -149,7 +175,11 @@ class RecordingCoordinator {
   /// **从链内部**调用（扫码复扫、画面静止这两条停录路径都走事件链）。
   /// 从链内部 await 整条链，等于等自己 —— 死锁，表现为「一扫码就卡住」。
   /// 所以这里等的是**除当前处理器之外**的那些。
-  Future<void> waitForPendingEvents() => _settleEventQueue(excludeSelf: false);
+  Future<void> waitForPendingEvents() async {
+    await _settleEventQueue(excludeSelf: false);
+    // 分段落盘走的是另一条链，也要等。
+    await _segmentWrites;
+  }
 
   /// [excludeSelf] 表示调用者**自己就是正在跑的那个处理器** ——
   /// 这时要等的是排在它后面的那些，不能把自己算进去。
@@ -257,12 +287,9 @@ class RecordingCoordinator {
   ///
   /// 错码保护（规格 §3.3.2）就发生在状态机里：不同单号只提示、不停止。
   Future<void> onWaybillDetected(WaybillNumber waybill) =>
-      _handleWaybill(waybill, fromEventChain: false);
+      _handleWaybill(waybill);
 
-  Future<void> _handleWaybill(
-    WaybillNumber waybill, {
-    required bool fromEventChain,
-  }) async {
+  Future<void> _handleWaybill(WaybillNumber waybill) async {
     if (!_armed) return;
 
     // 还没在录 → 这是「首次识别到单号」，开一段。
@@ -273,10 +300,7 @@ class RecordingCoordinator {
     }
 
     // 已经在录 → 走复扫路径（同码停 / 错码保护都在状态机里判）。
-    await _dispatch(
-      [WaybillDetected(_clock(), waybill)],
-      fromEventChain: fromEventChain,
-    );
+    await _dispatch([WaybillDetected(_clock(), waybill)]);
   }
 
   /// 被追踪的包裹离开取景框。
@@ -331,22 +355,21 @@ class RecordingCoordinator {
   }
 
   /// 收尾并返回结果；没在录时返回 null。
-  ///
-  /// [fromEventChain] 由 `_dispatch` 传入：从事件处理器里触发停录时（扫码复扫、
-  /// 画面静止都走这条路），等待队列时**不能把自己算进去**，否则死锁。
-  Future<FinalizeOutcome?> finish(
-    StopTrigger trigger, {
-    bool fromEventChain = false,
-  }) async {
+  Future<FinalizeOutcome?> finish(StopTrigger trigger) async {
     if (_sessionId == null) return null;
 
     // 只停这一段录制 —— **相机保持开着**，取景框还在，下件包裹接着扫。
     await _gateway.stopRecording();
 
+    // 等**分段落盘那条链**（不是事件链）。
+    //
     // 原生层的契约是「停止返回时最后一段已经封完并投递」，
-    // 但事件走的是另一条通道，这里再等一次队列。
-    // 少了这一步，最后一段会被漏掉 —— 而它是刚刚录完的那段，最不该丢。
-    await _settleEventQueue(excludeSelf: fromEventChain);
+    // 所以此刻最后一段的 segmentClosed 已经排在 `_segmentWrites` 上了。
+    // 少了这一步，最后一段会被漏掉 —— 而它是刚录完的那段，最不该丢。
+    //
+    // **不能等事件链**：停录可能是从事件处理器里触发的（画面静止、扫码复扫），
+    // 而那个处理器本身就排在事件链上、正在等这里 —— 等事件链就是等自己。
+    await _segmentWrites;
 
     final outcome = await _finalizer.finalize(
       sessionId: _sessionId!,
@@ -362,6 +385,9 @@ class RecordingCoordinator {
     }
 
     _sessionId = null;
+
+    // 通知界面 —— 停录时界面只显示了「正在收尾」，到这里才算真的完了。
+    onFinalized?.call(outcome);
 
     return outcome;
   }
@@ -387,17 +413,14 @@ class RecordingCoordinator {
   /// 把事件喂给状态机，并把它的动作落到界面与原生层。
   ///
   /// 返回的 Future 会等到「收尾完成」—— 调用方可以 await 它来确保落盘结束。
-  Future<void> _dispatch(
-    List<RecorderEvent> events, {
-    bool fromEventChain = false,
-  }) async {
+  Future<void> _dispatch(List<RecorderEvent> events) async {
     for (final event in events) {
       for (final action in _stopController.handle(event)) {
         // 先告诉界面（停录要立刻有反馈），再去做收尾（收尾要落盘，慢）。
         onAction?.call(action);
 
         if (action is StopRecording) {
-          await finish(action.trigger, fromEventChain: fromEventChain);
+          await finish(action.trigger);
         }
       }
     }
@@ -410,10 +433,7 @@ class RecordingCoordinator {
 
       case SceneSampledEvent():
         if (_stopController.isRecording) {
-          await _dispatch(
-            [SceneSampled(_clock(), isStatic: event.isStatic)],
-            fromEventChain: true,
-          );
+          await _dispatch([SceneSampled(_clock(), isStatic: event.isStatic)]);
         }
 
       case BarcodeDetectedEvent():
@@ -431,7 +451,7 @@ class RecordingCoordinator {
 
         if (waybill != null) {
           onBarcodeAccepted?.call(waybill);
-          await _handleWaybill(waybill, fromEventChain: true);
+          await _handleWaybill(waybill);
         }
 
       case RecorderFailedEvent():

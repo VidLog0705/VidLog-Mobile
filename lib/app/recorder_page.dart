@@ -63,7 +63,11 @@ class _RecorderPageState extends State<RecorderPage> {
   List<FinalizeOutcome> _recovered = const [];
 
   /// 当前会话已录时长。
-  Duration _elapsed = Duration.zero;
+  ///
+  /// 用 [ValueNotifier] 而不是 `setState`：秒数是**每秒都变**的，
+  /// 走 `setState` 会把整个页面（含原生预览视图）重建一遍 ——
+  /// 真机上表现就是上下滑动发卡。让只有那一行文字跟着刷新。
+  final _elapsedNotifier = ValueNotifier<Duration>(Duration.zero);
 
   /// 盘上的实况：工作区有几个会话、其中几个还没收尾、索引里几条。
   ///
@@ -84,6 +88,7 @@ class _RecorderPageState extends State<RecorderPage> {
     _heartbeat?.cancel();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
+    _elapsedNotifier.dispose();
     super.dispose();
   }
 
@@ -148,6 +153,27 @@ class _RecorderPageState extends State<RecorderPage> {
       config: _config,
       onAction: _onAction,
     )..onBarcodeAccepted = _onBarcodeAccepted;
+    _coordinator!.onFinalized = _onFinalized;
+  }
+
+  /// 一段录制收尾完成。
+  ///
+  /// **必须接这个**：停录时界面只来得及显示「正在收尾」，而收尾是异步的。
+  /// 不接的话界面会**永远停在「正在收尾」**—— 看起来像卡住了，其实早就收完了。
+  /// 真机上就是这么被误会的。
+  Future<void> _onFinalized(FinalizeOutcome outcome) async {
+    if (!mounted) return;
+
+    _log(outcome.succeeded ? '✓ 已收尾入库' : '✗ 收尾失败：${outcome.failureReason}');
+
+    await _refreshDiagnostics();
+    if (!mounted) return;
+
+    setState(() {
+      _status = outcome.succeeded
+          ? '已收尾 · 索引里共 $_entryCount 条'
+          : '收尾失败：${outcome.failureReason}';
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -171,7 +197,7 @@ class _RecorderPageState extends State<RecorderPage> {
         setState(() {
           _status = '已停止（${_triggerLabel(trigger)}）· 正在收尾';
           _askingToContinue = false;
-          _elapsed = Duration.zero;
+          _elapsedNotifier.value = Duration.zero;
         });
         _log('停录 · ${_triggerLabel(trigger)}');
         unawaited(_refreshDiagnostics());
@@ -252,7 +278,7 @@ class _RecorderPageState extends State<RecorderPage> {
       setState(() {
         _status = '已结束工作';
         _askingToContinue = false;
-        _elapsed = Duration.zero;
+        _elapsedNotifier.value = Duration.zero;
       });
     }
     await _refreshDiagnostics();
@@ -264,10 +290,10 @@ class _RecorderPageState extends State<RecorderPage> {
     _heartbeat?.cancel();
     _heartbeat = Timer.periodic(const Duration(seconds: 1), (_) {
       unawaited(_coordinator?.handleHeartbeat());
-      if (mounted) {
-        // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
-        setState(() => _elapsed = _coordinator?.elapsed ?? Duration.zero);
-      }
+
+      // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
+      // 只推给那一行文字，**不 setState**（见 _elapsedNotifier 的说明）。
+      _elapsedNotifier.value = _coordinator?.elapsed ?? Duration.zero;
     });
   }
 
@@ -337,40 +363,46 @@ class _RecorderPageState extends State<RecorderPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('VidLog · 采集')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
+      body: Column(
         children: [
-          _statusCard(recording, working),
-          const SizedBox(height: 12),
-          if (working) ...[
-            _previewCard(),
-            const SizedBox(height: 12),
-          ],
-          if (_recovered.isNotEmpty) _recoveredCard(),
-          const SizedBox(height: 12),
-          _settingsCard(),
-          const SizedBox(height: 12),
-          _controlsCard(recording, working),
-          const SizedBox(height: 12),
-          _eventsCard(),
+          // ⚠️ 预览放在**可滚动区域之外**。
+          //
+          // 平台视图（UiKitView）放进滚动容器里，iOS 上会随滚动反复重组，
+          // 真机上的表现就是上下滑动发卡。单独占一块固定区域最稳。
+          if (working) _previewArea(),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _statusCard(recording, working),
+                const SizedBox(height: 12),
+                if (_recovered.isNotEmpty) _recoveredCard(),
+                const SizedBox(height: 12),
+                _settingsCard(),
+                const SizedBox(height: 12),
+                _controlsCard(recording, working),
+                const SizedBox(height: 12),
+                _eventsCard(),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  /// 相机预览 + 取景框。
-  ///
-  /// 框用的是**编排器里那个正在生效的 [ScanGate]** ——
-  /// 画出来的框和实际判定的范围读的是同一份数据，不会漂移。
-  Widget _previewCard() {
+  Widget _previewArea() {
     final gate = _coordinator?.scanGate;
     if (gate == null) return const SizedBox.shrink();
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: AspectRatio(
-        aspectRatio: kVideoAspectRatio,
-        child: CameraPreview(viewfinder: gate.viewfinder),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: AspectRatio(
+          aspectRatio: kVideoAspectRatio,
+          child: CameraPreview(viewfinder: gate.viewfinder),
+        ),
       ),
     );
   }
@@ -409,9 +441,13 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             if (recording) ...[
               const SizedBox(height: 8),
-              Text(
-                '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
-                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
+              // 只让这一行跟着秒数刷新，不重建整个页面（见 _elapsedNotifier）。
+              ValueListenableBuilder<Duration>(
+                valueListenable: _elapsedNotifier,
+                builder: (context, elapsed, _) => Text(
+                  '已录 ${_two(elapsed.inMinutes)}:${_two(elapsed.inSeconds % 60)}',
+                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
+                ),
               ),
             ],
             const SizedBox(height: 8),

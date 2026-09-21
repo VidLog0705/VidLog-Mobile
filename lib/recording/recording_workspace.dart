@@ -115,9 +115,29 @@ class RecordingWorkspace {
 
   final String rootDirectory;
 
+  /// manifest 写入的**内部串行闸**。
+  ///
+  /// 为什么需要它：调用方那边，「开录时写 manifest」与「每个分段封闭时写 manifest」
+  /// 现在跑在**两条不同的链**上（原因是收尾时的一条死锁，见
+  /// `RecordingCoordinator` 里监听处的说明）。两条链会并发写同一个文件，
+  /// 而原子写用的临时文件名是固定的 —— 并发时两个写会撞在同一个 `.tmp` 上。
+  ///
+  /// 把串行化放进 workspace 而不是靠调用方排队，是因为「同一个文件别被并发写」
+  /// 是这个类自己的不变式，不该指望每个调用方都记得。
+  Future<void> _writeGate = Future<void>.value();
+
   String sessionDirectory(String sessionId) => '$rootDirectory/$sessionId';
 
-  Future<void> writeManifest(SessionManifest manifest) async {
+  Future<void> writeManifest(SessionManifest manifest) {
+    final result = _writeGate.then((_) => _writeManifestNow(manifest));
+
+    // 闸门要吞掉异常继续放行，否则一次失败会把后续所有写入都堵死。
+    _writeGate = result.then((_) {}, onError: (_) {});
+
+    return result;
+  }
+
+  Future<void> _writeManifestNow(SessionManifest manifest) async {
     final directory = Directory(sessionDirectory(manifest.sessionId));
     await directory.create(recursive: true);
 
