@@ -146,7 +146,7 @@ class _RecorderPageState extends State<RecorderPage> {
       mode: _mode,
       config: _config,
       onAction: _onAction,
-    );
+    )..onBarcodeAccepted = _onBarcodeAccepted;
   }
 
   // ─────────────────────────────────────────────
@@ -187,6 +187,15 @@ class _RecorderPageState extends State<RecorderPage> {
       case WarnResource(:final reason):
         _log('⚠️ $reason');
     }
+  }
+
+  /// 原生层报来一次识码时记一行 —— 但**只记被采纳的**，
+  /// 否则相机每秒报好几次会把事件列表刷爆。
+  ///
+  /// 这里不重复判定，只是把「Dart 层认了哪一次」显示出来：
+  /// 真正决定采纳与否的是 `ScanGate`（框外忽略 + 去重），那层有测试。
+  void _onBarcodeAccepted(WaybillNumber waybill) {
+    _log('📷 扫到 $waybill');
   }
 
   // ─────────────────────────────────────────────

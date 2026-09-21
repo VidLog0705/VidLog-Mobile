@@ -34,6 +34,28 @@ class SceneSampledEvent extends NativeRecorderEvent {
   final bool isStatic;
 }
 
+/// 原生层识别到一个条码。
+///
+/// ⚠️ **这不等于「用户扫了一次码」。** 相机是连续识码的 ——
+/// 包裹一直摆在取景框里，同一单号每秒会报好几次。
+/// 把它变成「离散的扫码事件」是 `ScanGate` 的职责（那一层带测试）。
+///
+/// 坐标是**归一化**的、**原点在左上**。原生层负责换算：
+/// iOS 的 Vision 原点在左下，要翻 y。
+class BarcodeDetectedEvent extends NativeRecorderEvent {
+  const BarcodeDetectedEvent({
+    required this.text,
+    required this.centerX,
+    required this.centerY,
+    this.confidence = 1.0,
+  });
+
+  final String text;
+  final double centerX;
+  final double centerY;
+  final double confidence;
+}
+
 /// 相机或编码出错。
 class RecorderFailedEvent extends NativeRecorderEvent {
   const RecorderFailedEvent(this.message);
@@ -135,6 +157,17 @@ NativeRecorderEvent? _parse(dynamic raw) {
 
     case 'sceneSampled':
       return SceneSampledEvent(isStatic: raw['isStatic'] == true);
+
+    case 'barcodeDetected':
+      final text = raw['text'];
+      if (text is! String || text.isEmpty) return null;
+
+      return BarcodeDetectedEvent(
+        text: text,
+        centerX: (raw['centerX'] as num?)?.toDouble() ?? 0.5,
+        centerY: (raw['centerY'] as num?)?.toDouble() ?? 0.5,
+        confidence: (raw['confidence'] as num?)?.toDouble() ?? 1.0,
+      );
 
     case 'failed':
       return RecorderFailedEvent(raw['message'] as String? ?? '原生层未给出原因');

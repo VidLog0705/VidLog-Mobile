@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import '../primitives.dart';
+import '../scanning/scan_gate.dart';
 import '../states.dart';
 import 'recorder_config.dart';
 import 'recorder_events.dart';
@@ -38,16 +39,25 @@ class RecordingCoordinator {
     required WorkMode mode,
     RecorderConfig config = RecorderConfig.hardFallback,
     MonotonicClock? clock,
+    ScanGate? scanGate,
     this.onAction,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
         _stopController = StopController(mode: mode, config: config),
-        _clock = clock ?? _defaultClock() {
+        _clock = clock ?? _defaultClock(),
+        _scanGate = scanGate ?? ScanGate() {
     // 事件**串行**处理：链在同一个 Future 上。
     // 并发处理会让两个分段事件同时改 manifest，后写的覆盖先写的。
     _subscription = _gateway.events.listen((event) {
-      _pending = _pending.then((_) => _onNativeEvent(event));
+      _queuedEvents++;
+      _pending = _pending.then((_) async {
+        try {
+          await _onNativeEvent(event);
+        } finally {
+          _completedEvents++;
+        }
+      });
     });
   }
 
@@ -63,14 +73,27 @@ class RecordingCoordinator {
   final StopController _stopController;
   final MonotonicClock _clock;
 
+  /// 把相机的**连续识码**变成**离散的扫码**（框外忽略 + 去重）。
+  final ScanGate _scanGate;
+
   /// 状态机要求宿主做的动作（语音提示、显示按钮、资源告警）。
   /// 界面层接这个。
   final void Function(RecorderAction action)? onAction;
+
+  /// 相机扫到一个单号（**已经过取景框过滤与去重**）。
+  ///
+  /// 与 [onAction] 分开：那个是状态机往外的输出，这个是输入侧的观测。
+  /// 界面拿它显示「扫到了什么」，人才能判断是没扫到还是扫到了没认。
+  void Function(WaybillNumber waybill)? onBarcodeAccepted;
 
   StreamSubscription<NativeRecorderEvent>? _subscription;
 
   /// 在途事件的处理链。
   Future<void> _pending = Future<void>.value();
+
+  /// 已入队 / 已处理完的事件数。用来判断「还有没有没处理完的事件」。
+  int _queuedEvents = 0;
+  int _completedEvents = 0;
 
   String? _sessionId;
   WaybillNumber? _waybill;
@@ -99,11 +122,36 @@ class RecordingCoordinator {
   /// 测试里拿到确定性的时序（事件处理里有真实文件 I/O，靠 sleep 等不准）。
   ///
   /// **为什么内部要先让出一轮事件循环**：[StreamController] 的派发是异步的，
-  /// 刚 `emit` 完就 await 这条链，会读到「新事件还没接上」的旧链而立刻返回。
+  /// 刚 `emit` 完就检查，会读到「事件还没接上」的旧状态而立刻返回。
   /// 这个坑真踩过：测试读到的是上一步写的旧 manifest。
-  Future<void> waitForPendingEvents() async {
-    await Future<void>.delayed(Duration.zero);
-    await _pending;
+  ///
+  /// **为什么不是直接 `await _pending`**：`finish()` 会被事件处理器
+  /// **从链内部**调用（扫码复扫、画面静止这两条停录路径都走事件链）。
+  /// 从链内部 await 整条链，等于等自己 —— 死锁，表现为「一扫码就卡住」。
+  /// 所以这里等的是**除当前处理器之外**的那些。
+  Future<void> waitForPendingEvents() => _settleEventQueue(excludeSelf: false);
+
+  /// [excludeSelf] 表示调用者**自己就是正在跑的那个处理器** ——
+  /// 这时要等的是排在它后面的那些，不能把自己算进去。
+  ///
+  /// 这个参数**必须由调用者显式给**，不能靠「有没有处理器在跑」这种全局状态去猜：
+  /// 外部调用时处理器同样可能在跑（正卡在文件 I/O 上），
+  /// 用全局状态判断会把外部调用误认成内部调用、直接跳过等待。
+  /// 这个错误踩过——表现是「测试读到上一步写的旧 manifest」。
+  Future<void> _settleEventQueue({required bool excludeSelf}) async {
+    // 先让几轮：StreamController 的派发要走微任务队列，
+    // 刚 emit 完就检查会读到「事件还没接上」的旧计数。
+    for (var i = 0; i < 3; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    final expected = excludeSelf ? _queuedEvents - 1 : _queuedEvents;
+
+    // 上界只是防止逻辑写错时无限等下去；正常情况几轮就够。
+    var guard = 0;
+    while (_completedEvents < expected && guard++ < 500) {
+      await Future<void>.delayed(Duration.zero);
+    }
   }
 
   /// 单段默认时长。
@@ -151,15 +199,28 @@ class RecordingCoordinator {
       segmentDuration: segmentDuration ?? defaultSegmentDuration,
     );
 
+    // 开录用的这个单号此刻就在画面里/操作员手上。**必须标记成「刚见过」**，
+    // 否则相机的第一次识码就会把它报成复扫，录制当场被停 —— 一秒都录不到。
+    _scanGate.markSeen(waybill, now);
+
     await _dispatch([WaybillDetected(now, waybill)]);
   }
 
   /// 识别到一个单号（复扫）。
   ///
   /// 错码保护（规格 §3.3.2）就发生在状态机里：不同单号只提示、不停止。
-  Future<void> onWaybillDetected(WaybillNumber waybill) async {
+  Future<void> onWaybillDetected(WaybillNumber waybill) =>
+      _handleWaybill(waybill, fromEventChain: false);
+
+  Future<void> _handleWaybill(
+    WaybillNumber waybill, {
+    required bool fromEventChain,
+  }) async {
     if (!_stopController.isRecording) return;
-    await _dispatch([WaybillDetected(_clock(), waybill)]);
+    await _dispatch(
+      [WaybillDetected(_clock(), waybill)],
+      fromEventChain: fromEventChain,
+    );
   }
 
   /// 被追踪的包裹离开取景框。
@@ -214,15 +275,21 @@ class RecordingCoordinator {
   }
 
   /// 收尾并返回结果；没在录时返回 null。
-  Future<FinalizeOutcome?> finish(StopTrigger trigger) async {
+  ///
+  /// [fromEventChain] 由 `_dispatch` 传入：从事件处理器里触发停录时（扫码复扫、
+  /// 画面静止都走这条路），等待队列时**不能把自己算进去**，否则死锁。
+  Future<FinalizeOutcome?> finish(
+    StopTrigger trigger, {
+    bool fromEventChain = false,
+  }) async {
     if (_sessionId == null) return null;
 
     await _gateway.stopSession();
 
     // 原生层的契约是「停止返回时最后一段已经封完并投递」，
-    // 但事件走的是另一条通道，这里再等一次在途事件。
+    // 但事件走的是另一条通道，这里再等一次队列。
     // 少了这一步，最后一段会被漏掉 —— 而它是刚刚录完的那段，最不该丢。
-    await waitForPendingEvents();
+    await _settleEventQueue(excludeSelf: fromEventChain);
 
     final outcome = await _finalizer.finalize(
       sessionId: _sessionId!,
@@ -254,14 +321,17 @@ class RecordingCoordinator {
   /// 把事件喂给状态机，并把它的动作落到界面与原生层。
   ///
   /// 返回的 Future 会等到「收尾完成」—— 调用方可以 await 它来确保落盘结束。
-  Future<void> _dispatch(List<RecorderEvent> events) async {
+  Future<void> _dispatch(
+    List<RecorderEvent> events, {
+    bool fromEventChain = false,
+  }) async {
     for (final event in events) {
       for (final action in _stopController.handle(event)) {
         // 先告诉界面（停录要立刻有反馈），再去做收尾（收尾要落盘，慢）。
         onAction?.call(action);
 
         if (action is StopRecording) {
-          await finish(action.trigger);
+          await finish(action.trigger, fromEventChain: fromEventChain);
         }
       }
     }
@@ -274,7 +344,28 @@ class RecordingCoordinator {
 
       case SceneSampledEvent():
         if (_stopController.isRecording) {
-          await _dispatch([SceneSampled(_clock(), isStatic: event.isStatic)]);
+          await _dispatch(
+            [SceneSampled(_clock(), isStatic: event.isStatic)],
+            fromEventChain: true,
+          );
+        }
+
+      case BarcodeDetectedEvent():
+        // 相机是连续识码的，先过一道闸：框外的忽略、还在画面里的同一单号也忽略。
+        // 不走这一步的话，包裹一放上去就会被自己的持续识别停掉。
+        final waybill = _scanGate.accept(
+          BarcodeSighting(
+            text: event.text,
+            centerX: event.centerX,
+            centerY: event.centerY,
+            confidence: event.confidence,
+          ),
+          _clock(),
+        );
+
+        if (waybill != null) {
+          onBarcodeAccepted?.call(waybill);
+          await _handleWaybill(waybill, fromEventChain: true);
         }
 
       case RecorderFailedEvent():
