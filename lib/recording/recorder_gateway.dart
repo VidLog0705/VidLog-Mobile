@@ -76,16 +76,30 @@ abstract interface class RecorderGateway {
   /// 应当等用户操作后重新调 [hasCameraPermission]。
   Future<bool> requestCameraPermission();
 
-  /// 开始录制。
+  // ── 相机与录制是两件事 ──
+  //
+  // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**；扫到面单才开录。
+  // 所以 [openCamera]（开相机送预览）与 [startRecording]（开录）必须分开。
+  // 合成一个方法会出现「点了按钮屏幕上什么都没有，但其实在录」——
+  // 这正是之前那版的问题。
+
+  /// 打开相机并开始送预览。**不录。**
+  Future<void> openCamera();
+
+  /// 开始录一段。
   ///
-  /// [directory] 是这个会话的工作目录；
+  /// [directory] 是这一段（= 一个会话）的落盘位置；
   /// [segmentDuration] 决定单段时长 —— 掉电最多丢这么多。
-  Future<void> startSession({
+  Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
   });
 
-  Future<void> stopSession();
+  /// 停止录制。**相机保持开着**，取景框还在，下件包裹接着扫。
+  Future<void> stopRecording();
+
+  /// 关闭相机（结束工作）。
+  Future<void> closeCamera();
 
   Future<void> setZoom(double ratio);
 
@@ -114,17 +128,23 @@ class ChannelRecorderGateway implements RecorderGateway {
       await _methods.invokeMethod<bool>('requestCameraPermission') ?? false;
 
   @override
-  Future<void> startSession({
+  Future<void> openCamera() => _methods.invokeMethod<void>('openCamera');
+
+  @override
+  Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
   }) =>
-      _methods.invokeMethod<void>('startSession', {
+      _methods.invokeMethod<void>('startRecording', {
         'directory': directory,
         'segmentDurationMs': segmentDuration.inMilliseconds,
       });
 
   @override
-  Future<void> stopSession() => _methods.invokeMethod<void>('stopSession');
+  Future<void> stopRecording() => _methods.invokeMethod<void>('stopRecording');
+
+  @override
+  Future<void> closeCamera() => _methods.invokeMethod<void>('closeCamera');
 
   @override
   Future<void> setZoom(double ratio) =>

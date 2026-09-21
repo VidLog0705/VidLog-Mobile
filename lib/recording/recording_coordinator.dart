@@ -95,6 +95,14 @@ class RecordingCoordinator {
   int _queuedEvents = 0;
   int _completedEvents = 0;
 
+  /// 是否处在「工作状态」：相机开着、取景框显示着，但未必在录。
+  ///
+  /// 规格 §3.2.2 的流程是「点开始工作 → 出现取景框 → 扫到面单才开录」，
+  /// 所以「在工作」和「在录」是两个状态。
+  bool _armed = false;
+
+  Duration _segmentDuration = defaultSegmentDuration;
+
   String? _sessionId;
   WaybillNumber? _waybill;
   String _sourceDeviceId = '';
@@ -106,6 +114,18 @@ class RecordingCoordinator {
   StopController get stopController => _stopController;
   bool get isRecording => _stopController.isRecording;
   String? get sessionId => _sessionId;
+
+  /// 是否处在工作状态（相机开着、取景框显示着）。
+  bool get isWorking => _armed;
+
+  /// 当前这一段录制对应的单号；没在录时为 null。
+  WaybillNumber? get currentWaybill => _stopController.currentWaybill;
+
+  /// 正在生效的扫码闸。
+  ///
+  /// 界面要读它的 [ScanGate.viewfinder] 来**画那个框** ——
+  /// 画的和判的必须是同一份数据，否则用户看着框把面单放进去、系统却说不算。
+  ScanGate get scanGate => _scanGate;
 
   /// 本次录制已录时长。
   ///
@@ -170,33 +190,60 @@ class RecordingCoordinator {
   ///
   /// 顺序是刻意的：**先落 manifest 再开相机**。要是反过来，
   /// 相机开成功、manifest 还没写就被杀，那段录像是彻底找不回来的。
-  Future<void> start({
-    required WaybillNumber waybill,
+  Future<void> startWorking({
     required String sourceDeviceId,
     Duration? segmentDuration,
   }) async {
-    if (_stopController.isRecording) return;
+    _sourceDeviceId = sourceDeviceId;
+    _segmentDuration = segmentDuration ?? defaultSegmentDuration;
+
+    // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**。
+    // 到这一步为止**不录** —— 那时还没扫码。
+    await _gateway.openCamera();
+
+    _armed = true;
+    _scanGate.reset();
+  }
+
+  /// 结束工作：停录（如果在录）并关相机。
+  Future<void> stopWorking() async {
+    if (_stopController.isRecording) {
+      await finish(StopTrigger.manual);
+    }
+
+    _armed = false;
+    await _gateway.closeCamera();
+  }
+
+  /// 扫到面单 → 开一段录制。
+  ///
+  /// 每件包裹是**一段独立的录制**（= 一个会话、一个目录、一条证据），
+  /// 收尾之后相机还开着，下件包裹接着扫。
+  Future<void> _beginRecording(WaybillNumber waybill) async {
+    if (!_armed || _stopController.isRecording) return;
 
     _waybill = waybill;
-    _sourceDeviceId = sourceDeviceId;
     _segments.clear();
     _lastError = null;
 
     final now = _clock();
     _sessionStartedWallClock = DateTime.now();
-    _sessionId = 'sess-${_sessionStartedWallClock.millisecondsSinceEpoch}-${Random().nextInt(1 << 20)}';
+    _sessionId =
+        'sess-${_sessionStartedWallClock.millisecondsSinceEpoch}-${Random().nextInt(1 << 20)}';
 
+    // 顺序是刻意的：**先落 manifest 再开录**。反过来的话，
+    // 录到一半被杀、manifest 还没写，那段录像是彻底找不回来的。
     await _workspace.writeManifest(SessionManifest(
       sessionId: _sessionId!,
       waybill: waybill,
-      sourceDeviceId: sourceDeviceId,
+      sourceDeviceId: _sourceDeviceId,
       startedAt: _sessionStartedWallClock,
       segments: const [],
     ));
 
-    await _gateway.startSession(
+    await _gateway.startRecording(
       directory: _workspace.sessionDirectory(_sessionId!),
-      segmentDuration: segmentDuration ?? defaultSegmentDuration,
+      segmentDuration: _segmentDuration,
     );
 
     // 开录用的这个单号此刻就在画面里/操作员手上。**必须标记成「刚见过」**，
@@ -216,7 +263,16 @@ class RecordingCoordinator {
     WaybillNumber waybill, {
     required bool fromEventChain,
   }) async {
-    if (!_stopController.isRecording) return;
+    if (!_armed) return;
+
+    // 还没在录 → 这是「首次识别到单号」，开一段。
+    // 规格 §3.3.1：三种工作模式的开始录制都是「首次识别到单号」。
+    if (!_stopController.isRecording) {
+      await _beginRecording(waybill);
+      return;
+    }
+
+    // 已经在录 → 走复扫路径（同码停 / 错码保护都在状态机里判）。
     await _dispatch(
       [WaybillDetected(_clock(), waybill)],
       fromEventChain: fromEventChain,
@@ -284,7 +340,8 @@ class RecordingCoordinator {
   }) async {
     if (_sessionId == null) return null;
 
-    await _gateway.stopSession();
+    // 只停这一段录制 —— **相机保持开着**，取景框还在，下件包裹接着扫。
+    await _gateway.stopRecording();
 
     // 原生层的契约是「停止返回时最后一段已经封完并投递」，
     // 但事件走的是另一条通道，这里再等一次队列。
@@ -310,6 +367,15 @@ class RecordingCoordinator {
   }
 
   Future<void> dispose() async {
+    if (_stopController.isRecording) {
+      await finish(StopTrigger.manual);
+    }
+
+    if (_armed) {
+      _armed = false;
+      await _gateway.closeCamera();
+    }
+
     await _subscription?.cancel();
     _subscription = null;
   }

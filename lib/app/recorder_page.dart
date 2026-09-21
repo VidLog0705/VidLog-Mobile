@@ -13,6 +13,7 @@ import '../recording/recording_index.dart';
 import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
+import 'camera_preview.dart';
 
 /// 采集页。
 ///
@@ -202,7 +203,12 @@ class _RecorderPageState extends State<RecorderPage> {
   // 操作
   // ─────────────────────────────────────────────
 
-  Future<void> _start() async {
+  /// 开始工作：**开相机、送预览、显示取景框。不录。**
+  ///
+  /// 规格 §3.2.2 的流程是「点开始工作 → 出现取景框 → 扫到面单才开录」。
+  /// 之前把「开相机」和「开录」合成一步，表现是点了按钮屏幕上什么都没有、
+  /// 但其实已经在录 —— 用户既看不到画面、也没法把面单对准。
+  Future<void> _startWorking() async {
     if (_starting) return;
     setState(() => _starting = true);
 
@@ -215,25 +221,15 @@ class _RecorderPageState extends State<RecorderPage> {
         }
       }
 
-      final waybill = WaybillNumber.tryParse(_waybillController.text);
-      if (waybill == null) {
-        setState(() => _status = '先填一个单号再开始');
-        return;
-      }
-
       _buildCoordinator(); // 换模式下重建，配置跟着走
-      await _coordinator!.start(waybill: waybill, sourceDeviceId: 'this-device');
+      await _coordinator!.startWorking(sourceDeviceId: 'this-device');
 
-      // 心跳驱动那些「时间到了就发生」的判定（静止、时长兜底）。
-      // 没有它，画面完全不动时没有任何事件，超时永远不会触发。
-      _heartbeat?.cancel();
-      _heartbeat = Timer.periodic(const Duration(seconds: 1), (_) {
-        unawaited(_coordinator?.handleHeartbeat());
-        if (mounted) {
-          // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
-          setState(() => _elapsed = _coordinator?.elapsed ?? Duration.zero);
-        }
-      });
+      _log('开始工作 · 模式 ${_modeLabel(_mode)}');
+      _startHeartbeat();
+
+      if (mounted) {
+        setState(() => _status = '把面单放进取景框');
+      }
     } on Object catch (error) {
       if (mounted) setState(() => _status = '开始失败：$error');
     } finally {
@@ -241,7 +237,42 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  Future<void> _stop() async {
+  /// 结束工作：停掉在录的那段、关相机。
+  Future<void> _stopWorking() async {
+    _heartbeat?.cancel();
+    _heartbeat = null;
+
+    try {
+      await _coordinator?.stopWorking();
+    } on Object catch (error) {
+      if (mounted) setState(() => _status = '结束失败：$error');
+    }
+
+    if (mounted) {
+      setState(() {
+        _status = '已结束工作';
+        _askingToContinue = false;
+        _elapsed = Duration.zero;
+      });
+    }
+    await _refreshDiagnostics();
+  }
+
+  /// 心跳驱动那些「时间到了就发生」的判定（静止、时长兜底）。
+  /// 没有它，画面完全不动时没有任何事件，超时永远不会触发。
+  void _startHeartbeat() {
+    _heartbeat?.cancel();
+    _heartbeat = Timer.periodic(const Duration(seconds: 1), (_) {
+      unawaited(_coordinator?.handleHeartbeat());
+      if (mounted) {
+        // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
+        setState(() => _elapsed = _coordinator?.elapsed ?? Duration.zero);
+      }
+    });
+  }
+
+  /// 停掉当前这一件包裹的录制（相机保持开着，接着扫下一件）。
+  Future<void> _stopCurrentRecording() async {
     await _coordinator?.onManualStop();
   }
 
@@ -302,19 +333,24 @@ class _RecorderPageState extends State<RecorderPage> {
   @override
   Widget build(BuildContext context) {
     final recording = _coordinator?.isRecording ?? false;
+    final working = _coordinator?.isWorking ?? false;
 
     return Scaffold(
       appBar: AppBar(title: const Text('VidLog · 采集')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _statusCard(recording),
+          _statusCard(recording, working),
           const SizedBox(height: 12),
+          if (working) ...[
+            _previewCard(),
+            const SizedBox(height: 12),
+          ],
           if (_recovered.isNotEmpty) _recoveredCard(),
           const SizedBox(height: 12),
           _settingsCard(),
           const SizedBox(height: 12),
-          _controlsCard(recording),
+          _controlsCard(recording, working),
           const SizedBox(height: 12),
           _eventsCard(),
         ],
@@ -322,7 +358,24 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  Widget _statusCard(bool recording) {
+  /// 相机预览 + 取景框。
+  ///
+  /// 框用的是**编排器里那个正在生效的 [ScanGate]** ——
+  /// 画出来的框和实际判定的范围读的是同一份数据，不会漂移。
+  Widget _previewCard() {
+    final gate = _coordinator?.scanGate;
+    if (gate == null) return const SizedBox.shrink();
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: kVideoAspectRatio,
+        child: CameraPreview(viewfinder: gate.viewfinder),
+      ),
+    );
+  }
+
+  Widget _statusCard(bool recording, bool working) {
     return Card(
       color: recording ? Colors.red.shade50 : null,
       child: Padding(
@@ -333,11 +386,25 @@ class _RecorderPageState extends State<RecorderPage> {
             Row(
               children: [
                 Icon(
-                  recording ? Icons.fiber_manual_record : Icons.stop_circle_outlined,
-                  color: recording ? Colors.red : Colors.grey,
+                  recording
+                      ? Icons.fiber_manual_record
+                      : (working ? Icons.photo_camera : Icons.stop_circle_outlined),
+                  color: recording
+                      ? Colors.red
+                      : (working ? Colors.blueGrey : Colors.grey),
                 ),
                 const SizedBox(width: 8),
-                Text(_status, style: const TextStyle(fontSize: 16)),
+                Expanded(
+                  child: Text(
+                    // 「在工作（相机开着）」和「在录」是两回事，界面上要分得清。
+                    recording
+                        ? '录制中 · ${_coordinator?.currentWaybill ?? ""}'
+                        : _status,
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
+                if (working && !recording)
+                  const Text('取景中', style: TextStyle(fontSize: 12, color: Colors.grey)),
               ],
             ),
             if (recording) ...[
@@ -453,28 +520,18 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  Widget _controlsCard(bool recording) {
+  Widget _controlsCard(bool recording, bool working) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            TextField(
-              controller: _waybillController,
-              decoration: const InputDecoration(
-                labelText: '单号',
-                helperText: '首扫开录；复扫同码停止。换一个单号再扫可验错码保护。',
-                border: OutlineInputBorder(),
-              ),
-              textInputAction: TextInputAction.done,
-            ),
-            const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: recording || _starting ? null : _start,
+                    onPressed: working || _starting ? null : _startWorking,
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('开始工作'),
                   ),
@@ -482,18 +539,45 @@ class _RecorderPageState extends State<RecorderPage> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: recording ? _stop : null,
+                    onPressed: working ? _stopWorking : null,
                     icon: const Icon(Icons.stop),
-                    label: const Text('停止'),
+                    label: const Text('结束工作'),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: recording ? _simulateScan : null,
-              icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('模拟扫码（复扫上面那个单号）'),
+              onPressed: recording ? _stopCurrentRecording : null,
+              icon: const Icon(Icons.crop_free),
+              label: const Text('停止当前录制（相机继续开着）'),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              '手动输入（扫码失灵时的兜底）',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '规格 §3.2.2：框内始终识别不到时，用户必须能手动输入单号兜底，'
+              '且不打断当前录制。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _waybillController,
+              decoration: const InputDecoration(
+                labelText: '单号',
+                helperText: '在录时输入并点下面按钮 = 复扫；未录时 = 开一段新的。',
+                border: OutlineInputBorder(),
+              ),
+              textInputAction: TextInputAction.done,
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: working ? _simulateScan : null,
+              icon: const Icon(Icons.keyboard),
+              label: const Text('当作扫到了这个单号'),
             ),
             if (_askingToContinue) ...[
               const SizedBox(height: 16),
