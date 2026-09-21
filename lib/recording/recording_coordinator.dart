@@ -99,6 +99,14 @@ class RecordingCoordinator {
   /// 界面拿它显示「扫到了什么」，人才能判断是没扫到还是扫到了没认。
   void Function(WaybillNumber waybill)? onBarcodeAccepted;
 
+  /// 画面静止状态发生变化（规格 §3.3.3）。
+  ///
+  /// 界面要靠它才看得懂「静止停录」：**停的是从「画面真的静下来」起算的
+  /// 那几分钟，不是从开录起算的。** 用户在扫码时画面是动的，
+  /// 所以「开录后 4 分钟才停」完全可能是「扫码折腾了 2 分钟 + 静止 2 分钟」——
+  /// 那是正确的，但没有这条观测就没法区分它和「封顶失效」。
+  void Function(bool isStatic)? onSceneChanged;
+
   /// 一段录制**收尾完成**（已入库或失败）。
   ///
   /// 界面必须接这个来更新状态 —— 停录时界面只来得及显示「正在收尾」，
@@ -432,6 +440,9 @@ class RecordingCoordinator {
         await _onSegmentClosed(event);
 
       case SceneSampledEvent():
+        // 原生层只在状态**变化**时上报，所以这条不会刷屏。
+        onSceneChanged?.call(event.isStatic);
+
         if (_stopController.isRecording) {
           await _dispatch([SceneSampled(_clock(), isStatic: event.isStatic)]);
         }

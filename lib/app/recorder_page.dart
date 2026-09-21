@@ -154,6 +154,17 @@ class _RecorderPageState extends State<RecorderPage> {
       onAction: _onAction,
     )..onBarcodeAccepted = _onBarcodeAccepted;
     _coordinator!.onFinalized = _onFinalized;
+    _coordinator!.onSceneChanged = _onSceneChanged;
+  }
+
+  /// 画面静下来 / 又动起来。
+  ///
+  /// 这条观测是给「静止停录」那两条验收用的：**静止计时从画面静下来那一刻起算**，
+  /// 不是从开录起算。扫码时手机在手上、画面在动，所以「开录后 4 分钟才停」
+  /// 完全可能是正确的（扫码 2 分钟 + 静止 2 分钟）。没有这条日志就分不清
+  /// 它和「封顶失效」。
+  void _onSceneChanged(bool isStatic) {
+    _log(isStatic ? '👁 画面静止 —— 静止计时从现在起算' : '👁 画面恢复活动 —— 静止计时重置');
   }
 
   /// 一段录制收尾完成。
