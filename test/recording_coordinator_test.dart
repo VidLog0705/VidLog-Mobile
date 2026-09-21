@@ -127,6 +127,22 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('★ 已录时长要随心跳往上走', () async {
+      // 真机报的：录着，但「已录」一直是 00:00。
+      // 界面那一行读的是 coordinator.elapsed，所以先在这里问清楚它到底涨不涨。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      expect(coordinator.elapsed, Duration.zero, reason: '刚开录应当是 0');
+
+      nowMs = 1000 + 65 * 1000;
+      expect(coordinator.elapsed, const Duration(seconds: 65),
+          reason: '65 秒后应当是 1 分 05 秒 —— 界面显示的就是这个值');
+
+      await coordinator.dispose();
+    });
+
     test('★ 默认单段时长的上限是 2 分钟', () async {
       // 这个值直接决定「崩溃最多丢多少录像」—— 在写的那一段救不回来
       // （MP4 没有 moov 就是播不了），只能靠缩短分段把损失窗口压小。

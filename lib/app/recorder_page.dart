@@ -42,6 +42,9 @@ class _RecorderPageState extends State<RecorderPage> {
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
 
+  /// 临时诊断用：上一次记进事件的秒数，避免每 10 秒重复记。定位完删。
+  int _lastLoggedElapsed = -1;
+
   /// 当前在哪一页：0 = 采集，1 = 设置。
   int _tab = 0;
 
@@ -67,10 +70,11 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 当前会话已录时长。
   ///
-  /// 用 [ValueNotifier] 而不是 `setState`：秒数是**每秒都变**的，
-  /// 走 `setState` 会把整个页面（含原生预览视图）重建一遍 ——
-  /// 真机上表现就是上下滑动发卡。让只有那一行文字跟着刷新。
-  final _elapsedNotifier = ValueNotifier<Duration>(Duration.zero);
+  /// 曾经用 `ValueNotifier` 想省掉每秒重建 —— **那是白费**：
+  /// 卡顿的真因是「原生预览视图在可滚动容器里」（见下方 `_previewArea` 的说明），
+  /// 省掉重建治不了它。而多一层 notifier 反而让「已录一直是 00:00」多了一个可疑点。
+  /// 秒数就老老实实 `setState`。
+  Duration _elapsed = Duration.zero;
 
   /// 盘上的实况：工作区有几个会话、其中几个还没收尾、索引里几条。
   ///
@@ -91,7 +95,6 @@ class _RecorderPageState extends State<RecorderPage> {
     _heartbeat?.cancel();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
-    _elapsedNotifier.dispose();
     super.dispose();
   }
 
@@ -168,6 +171,10 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 完全可能是正确的（扫码 2 分钟 + 静止 2 分钟）。没有这条日志就分不清
   /// 它和「封顶失效」。
   void _onSceneChanged(bool isStatic) {
+    // ⚠️ **静止档位关掉时不要记这条。** 那时静止计时根本没在计，
+    // 打一行「静止计时从现在起算」是误导 —— 真机上就是这么被误会的。
+    if (!_staticStop.isEnabled) return;
+
     _log(isStatic ? '👁 画面静止 —— 静止计时从现在起算' : '👁 画面恢复活动 —— 静止计时重置');
   }
 
@@ -212,7 +219,7 @@ class _RecorderPageState extends State<RecorderPage> {
         setState(() {
           _status = '已停止（${_triggerLabel(trigger)}）· 正在收尾';
           _askingToContinue = false;
-          _elapsedNotifier.value = Duration.zero;
+          _elapsed = Duration.zero;
         });
         _log('停录 · ${_triggerLabel(trigger)}');
         unawaited(_refreshDiagnostics());
@@ -290,7 +297,7 @@ class _RecorderPageState extends State<RecorderPage> {
       setState(() {
         _status = '已结束工作';
         _askingToContinue = false;
-        _elapsedNotifier.value = Duration.zero;
+        _elapsed = Duration.zero;
       });
     }
     await _refreshDiagnostics();
@@ -303,9 +310,19 @@ class _RecorderPageState extends State<RecorderPage> {
     _heartbeat = Timer.periodic(const Duration(seconds: 1), (_) {
       unawaited(_coordinator?.handleHeartbeat());
 
-      // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
-      // 只推给那一行文字，**不 setState**（见 _elapsedNotifier 的说明）。
-      _elapsedNotifier.value = _coordinator?.elapsed ?? Duration.zero;
+      final elapsed = _coordinator?.elapsed ?? Duration.zero;
+
+      // ponytail: 临时诊断 —— 真机上「已录」一直是 00:00，而编排器的值经测试是对的，
+      // 所以要看清到了界面这一层到底是几。定位完删掉。
+      if (elapsed.inSeconds % 10 == 0 && elapsed.inSeconds != _lastLoggedElapsed) {
+        _lastLoggedElapsed = elapsed.inSeconds;
+        _log('⏱ 已录 ${elapsed.inSeconds} 秒');
+      }
+
+      if (mounted) {
+        // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
+        setState(() => _elapsed = elapsed);
+      }
     });
   }
 
@@ -395,33 +412,54 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 采集页：取景、状态、操作、事件。
   ///
-  /// 设置不在这里 —— 操作时要看的东西和「调参数」是两回事，
-  /// 挤在一页上会让两边都不好用。
+  /// ## 为什么是「取景钉住 + 其余滚动」
+  ///
+  /// 这三件事互相顶着，只能这样解：
+  ///
+  /// 1. **取景画面必须一直看得见** —— 那是这个页面存在的意义（要对着面单瞄）
+  /// 2. **其余内容必须能滚** —— 不滚的话小屏直接溢出（真被测试抓到过：
+  ///    800×600 的视口里溢出 237 像素），键盘一弹出来更是必然溢出
+  /// 3. **原生预览视图（`UiKitView`）不能跟着滚** —— iOS 上平台视图在滚动容器里
+  ///    会逐帧重组，真机上的表现就是上下滑动发卡
+  ///
+  /// `CustomScrollView` + **pinned 的 `SliverPersistentHeader`** 同时满足三条：
+  /// 取景钉在顶部不参与滚动，下面的内容正常滚。
   Widget _workPage(bool recording, bool working) {
     final gate = _coordinator?.scanGate;
+    final showPreview = working && gate != null;
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _statusCard(recording, working),
-        const SizedBox(height: 12),
-        if (working && gate != null) ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: AspectRatio(
-              aspectRatio: kVideoAspectRatio,
+    return CustomScrollView(
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          sliver: SliverList(
+            delegate: SliverChildListDelegate([
+              _statusCard(recording, working),
+              if (_recovered.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _recoveredCard(),
+              ],
+            ]),
+          ),
+        ),
+        if (showPreview)
+          SliverPersistentHeader(
+            pinned: true,
+            delegate: _PreviewHeader(
+              height: MediaQuery.sizeOf(context).height * 0.36,
               child: CameraPreview(viewfinder: gate.viewfinder),
             ),
           ),
-          const SizedBox(height: 12),
-        ],
-        if (_recovered.isNotEmpty) ...[
-          _recoveredCard(),
-          const SizedBox(height: 12),
-        ],
-        _controlsCard(recording, working),
-        const SizedBox(height: 12),
-        _eventsCard(),
+        SliverPadding(
+          padding: const EdgeInsets.all(16),
+          sliver: SliverList(
+            delegate: SliverChildListDelegate([
+              _controlsCard(recording, working),
+              const SizedBox(height: 12),
+              _eventsCard(),
+            ]),
+          ),
+        ),
       ],
     );
   }
@@ -484,13 +522,9 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             if (recording) ...[
               const SizedBox(height: 8),
-              // 只让这一行跟着秒数刷新，不重建整个页面（见 _elapsedNotifier）。
-              ValueListenableBuilder<Duration>(
-                valueListenable: _elapsedNotifier,
-                builder: (context, elapsed, _) => Text(
-                  '已录 ${_two(elapsed.inMinutes)}:${_two(elapsed.inSeconds % 60)}',
-                  style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
-                ),
+              Text(
+                '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
+                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
               ),
             ],
             const SizedBox(height: 8),
@@ -695,25 +729,39 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  /// 事件列表。
+  ///
+  /// **可折叠、内部限高自滚。**
+  /// 收录在 `Column` 里（整页不滚），所以它必须有确定的边界；
+  /// 而它内部没有平台视图，滚起来是顺的。
+  /// 折叠起来能把纵向空间让给取景画面 —— 平时不需要盯着事件看。
   Widget _eventsCard() {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('事件', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            if (_events.isEmpty)
-              const Text('（还没有事件）', style: TextStyle(fontSize: 12))
-            else
-              for (final line in _events)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Text(line, style: const TextStyle(fontSize: 12)),
-                ),
-          ],
+      clipBehavior: Clip.antiAlias,
+      margin: EdgeInsets.zero,
+      child: ExpansionTile(
+        initiallyExpanded: true,
+        title: Text(
+          '事件（${_events.length}）',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
         ),
+        children: [
+          SizedBox(
+            height: 140,
+            child: _events.isEmpty
+                ? const Center(
+                    child: Text('（还没有事件）', style: TextStyle(fontSize: 12)))
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    itemCount: _events.length,
+                    itemBuilder: (context, index) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(_events[index],
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -739,4 +787,39 @@ class _RecorderPageState extends State<RecorderPage> {
         VoicePrompt.differentWaybill => '面单不同',
         VoicePrompt.durationTimeout => '录制时间即将超时，是否需要停止录制？',
       };
+}
+
+/// 采集页里那个**钉住不滚**的取景头。
+///
+/// `pinned: true` 的 `SliverPersistentHeader` 要求 min == max（整块固定高度），
+/// 所以高度由调用方算好传进来。
+///
+/// 这么做是为了让原生预览视图**不进入滚动**：iOS 上平台视图在滚动容器里
+/// 会逐帧重组，真机上就是上下滑动发卡。钉住之后它不动，滚动的是它下面的内容。
+class _PreviewHeader extends SliverPersistentHeaderDelegate {
+  const _PreviewHeader({required this.height, required this.child});
+
+  final double height;
+  final Widget child;
+
+  @override
+  double get minExtent => height;
+
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: child,
+      ),
+    );
+  }
+
+  // 只比高度：取景框在同一个工作会话里不会变，没必要因为 widget 实例不同就重建。
+  @override
+  bool shouldRebuild(_PreviewHeader oldDelegate) => oldDelegate.height != height;
 }
