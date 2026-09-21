@@ -42,6 +42,9 @@ class _RecorderPageState extends State<RecorderPage> {
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
 
+  /// 当前在哪一页：0 = 采集，1 = 设置。
+  int _tab = 0;
+
   WorkMode _mode = WorkMode.sameWaybillStop;
   StaticStopSetting _staticStop = StaticStopSetting.fallback;
 
@@ -374,47 +377,78 @@ class _RecorderPageState extends State<RecorderPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('VidLog · 采集')),
-      body: Column(
-        children: [
-          // ⚠️ 预览放在**可滚动区域之外**。
-          //
-          // 平台视图（UiKitView）放进滚动容器里，iOS 上会随滚动反复重组，
-          // 真机上的表现就是上下滑动发卡。单独占一块固定区域最稳。
-          if (working) _previewArea(),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                _statusCard(recording, working),
-                const SizedBox(height: 12),
-                if (_recovered.isNotEmpty) _recoveredCard(),
-                const SizedBox(height: 12),
-                _settingsCard(),
-                const SizedBox(height: 12),
-                _controlsCard(recording, working),
-                const SizedBox(height: 12),
-                _eventsCard(),
-              ],
-            ),
-          ),
+      // 用 IndexedStack 而不是 TabBarView：切到设置页时**不销毁预览视图**，
+      // 切回来不会闪一下。预览层本来就有「布局时重新挂会话」的自愈逻辑，
+      // 但能不重建就别重建。
+      body: IndexedStack(
+        index: _tab,
+        children: [_workPage(recording, working), _settingsPage()],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (index) => setState(() => _tab = index),
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.videocam_outlined), label: '采集'),
+          NavigationDestination(icon: Icon(Icons.tune), label: '设置'),
         ],
       ),
     );
   }
 
-  Widget _previewArea() {
+  /// 采集页：取景、状态、操作、事件。
+  ///
+  /// 设置不在这里 —— 操作时要看的东西和「调参数」是两回事，
+  /// 挤在一页上会让两边都不好用。
+  Widget _workPage(bool recording, bool working) {
     final gate = _coordinator?.scanGate;
-    if (gate == null) return const SizedBox.shrink();
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: AspectRatio(
-          aspectRatio: kVideoAspectRatio,
-          child: CameraPreview(viewfinder: gate.viewfinder),
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _statusCard(recording, working),
+        const SizedBox(height: 12),
+        if (working && gate != null) ...[
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: kVideoAspectRatio,
+              child: CameraPreview(viewfinder: gate.viewfinder),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (_recovered.isNotEmpty) ...[
+          _recoveredCard(),
+          const SizedBox(height: 12),
+        ],
+        _controlsCard(recording, working),
+        const SizedBox(height: 12),
+        _eventsCard(),
+      ],
+    );
+  }
+
+  /// 设置页：工作模式与两个档位。
+  ///
+  /// 都是**开始工作之前**要定的东西，操作中途不会去动它们，
+  /// 所以单独一页，不占采集页的地方。
+  Widget _settingsPage() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _settingsCard(),
+        const SizedBox(height: 12),
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              '这些设置**开始工作之前**改好。中途改了要重新开始工作才会生效 —— '
+              '模式与档位是在开录时定下来的。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 
