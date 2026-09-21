@@ -42,9 +42,6 @@ class _RecorderPageState extends State<RecorderPage> {
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
 
-  /// 临时诊断用：上一次记进事件的秒数，避免每 10 秒重复记。定位完删。
-  int _lastLoggedElapsed = -1;
-
   /// 当前在哪一页：0 = 采集，1 = 设置。
   int _tab = 0;
 
@@ -311,13 +308,6 @@ class _RecorderPageState extends State<RecorderPage> {
       unawaited(_coordinator?.handleHeartbeat());
 
       final elapsed = _coordinator?.elapsed ?? Duration.zero;
-
-      // ponytail: 临时诊断 —— 真机上「已录」一直是 00:00，而编排器的值经测试是对的，
-      // 所以要看清到了界面这一层到底是几。定位完删掉。
-      if (elapsed.inSeconds % 10 == 0 && elapsed.inSeconds != _lastLoggedElapsed) {
-        _lastLoggedElapsed = elapsed.inSeconds;
-        _log('⏱ 已录 ${elapsed.inSeconds} 秒');
-      }
 
       if (mounted) {
         // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
