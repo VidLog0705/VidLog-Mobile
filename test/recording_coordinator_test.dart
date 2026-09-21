@@ -209,6 +209,106 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
+  // 相机识码（原生连续识码 → 离散扫码）
+  // ─────────────────────────────────────────────
+
+  group('相机识码', () {
+    Future<RecordingCoordinator> recording() async {
+      final coordinator = make(mode: WorkMode.sameWaybillStop);
+      nowMs = 1000;
+      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
+      return coordinator;
+    }
+
+    void sight(String text, {double x = 0.5, double y = 0.5}) {
+      gateway.emit(BarcodeDetectedEvent(text: text, centerX: x, centerY: y));
+    }
+
+    test('★ 持续识到同一单号，不会把录制停掉', () async {
+      // 条码一接通最容易坏的地方：包裹就在画面里，相机会一直报它。
+      // 开录时没把它标记成「刚见过」的话，第一次报就会停录 ——
+      // 表现是「一扫就停，一秒都录不到」。
+      final coordinator = await recording();
+
+      for (var i = 1; i <= 10; i++) {
+        nowMs = 1000 + i * 300;
+        sight(waybill.value);
+
+        // **每报一次就等处理器跑完再推进时间。**
+        // 不然十个事件会挤在一起，处理器跑时读到的是同一个最终时间 ——
+        // 去重阈值被一次性跨过去，包裹「一直在画面里」这个前提就不成立了。
+        await coordinator.waitForPendingEvents();
+      }
+
+      expect(coordinator.isRecording, isTrue, reason: '包裹一直在画面里，不该被停');
+
+      await coordinator.dispose();
+    });
+
+    test('拿开一会儿再放回来 → 算复扫，停录', () async {
+      final coordinator = await recording();
+
+      nowMs = 1000 + 300;
+      sight(waybill.value); // 还在画面里
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isTrue);
+
+      nowMs = 1000 + 5000; // 隔了 5 秒，相当于拿开过
+      sight(waybill.value);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('框外的识码一律忽略', () async {
+      final coordinator = await recording();
+
+      nowMs = 1000 + 5000;
+      sight(waybill.value, x: 0.02, y: 0.5); // 画面左上角，框外
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isTrue, reason: '规格 §3.2.2：框外一律忽略');
+
+      await coordinator.dispose();
+    });
+
+    test('扫到别的单号 → 走错码保护：不停、只提示', () async {
+      final coordinator = await recording();
+
+      nowMs = 1000 + 300;
+      sight(otherWaybill.value);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isTrue);
+      expect(
+        actions.whereType<Speak>().map((a) => a.prompt),
+        contains(VoicePrompt.differentWaybill),
+      );
+
+      await coordinator.dispose();
+    });
+
+    test('被采纳的识码会回调给界面，供人判断是没扫到还是没认', () async {
+      final coordinator = await recording();
+      final accepted = <String>[];
+      coordinator.onBarcodeAccepted = (w) => accepted.add(w.value);
+
+      nowMs = 1000 + 300;
+      sight(otherWaybill.value);
+      await coordinator.waitForPendingEvents();
+
+      expect(accepted, [otherWaybill.value]);
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
   // 停录 → 收尾
   // ─────────────────────────────────────────────
 
