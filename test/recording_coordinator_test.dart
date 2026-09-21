@@ -496,6 +496,49 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('★ 画面静止从**事件链**触发停录，也必须收得了尾', () async {
+      // 真机上踩到的：静止停录成功了，但一直卡在「正在收尾」。
+      // 原因是最后一段的 segmentClosed 排在「正在收尾的那个处理器」后面 ——
+      // 收尾等它、它等收尾，互相等。
+      //
+      // 所以这条**必须由场景事件触发**，不能走心跳 ——
+      // 心跳不在事件链里，走心跳验不出这个死锁（这正是当初漏掉它的原因）。
+      final coordinator = make(
+        config: const RecorderConfig(
+          staticStop: StaticStopSetting.minutes3,
+          durationFallback: DurationFallbackSetting.off,
+        ),
+      );
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
+
+      // 原生层停录时会把最后一段补投出来 —— 模拟这个行为。
+      gateway.emitOnStop = SegmentClosedEvent(
+        filePath: '${workspace.sessionDirectory(sessionId)}/segment-001.mp4',
+        sequence: 1,
+        startedAtMs: 30000,
+        endedAtMs: 60000,
+      );
+      File('${workspace.sessionDirectory(sessionId)}/segment-001.mp4')
+          .writeAsBytesSync([4, 5, 6]);
+
+      // 关键：从**场景事件**触发停录（走事件链）
+      nowMs = 1000 + 3 * 60 * 1000;
+      gateway.emit(const SceneSampledEvent(isStatic: true));
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isFalse, reason: '该停下来');
+
+      final entries = await index.loadAll();
+      expect(entries, hasLength(2),
+          reason: '两段都要入库 —— 尤其最后那段，它就是被死锁吃掉的那一段');
+
+      await coordinator.dispose();
+    });
+
     test('画面静止到点会停（心跳驱动）', () async {
       final coordinator = make(
         mode: WorkMode.continuousScan,
