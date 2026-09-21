@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import Vision
 
 /// 一个已经封闭的分段。
 struct ClosedSegment {
@@ -17,6 +18,12 @@ enum RecorderEvent {
     case segmentClosed(ClosedSegment)
     /// 画面是否「连续无显著变化」（规格 §3.3.3）。
     case sceneSampled(isStatic: Bool)
+    /// 识别到一个条码。
+    ///
+    /// ⚠️ **这不等于「用户扫了一次码」** —— 相机是连续识码的，
+    /// 包裹摆在画面里会每秒报好几次。把它变成离散的扫码事件是 Dart 侧
+    /// `ScanGate` 的职责（那一层带测试）。
+    case barcodeDetected(text: String, centerX: Double, centerY: Double, confidence: Double)
     case failed(String)
 }
 
@@ -69,6 +76,28 @@ final class CameraSegmentRecorder: NSObject {
     /// 关键帧间隔（秒）。它决定「单独播放某一段时，开头要等多久才出画面」。
     private static let keyFrameIntervalSeconds = 1
 
+    /// 识码的采样间隔。**不跑满帧** —— 识码比静止检测贵得多，
+    /// 而包裹摆在那儿几秒内扫到就够了。
+    private static let barcodeScanInterval: TimeInterval = 0.3
+
+    /// 支持的条码类型。
+    ///
+    /// 只开了**一维码**：这类条码里装的就是单号本身。
+    ///
+    /// **刻意没开二维码（QR / DataMatrix / PDF417）**：电子面单上的二维码里
+    /// 装的往往是 URL 或一段结构化文本，直接当单号用会往单号字段里灌进
+    /// 一整条 URL。要用得先知道各家承运商的载荷格式、从里面抽出单号 ——
+    /// 那是另一件事，别在这里猜。
+    private static let barcodeSymbologies: [VNBarcodeSymbology] = [
+        .code128,  // 快递面单上最常见
+        .code39,
+        .code93,
+        .itf14,
+        .ean13,
+        .ean8,
+        .upce,
+    ]
+
     // MARK: - 状态
 
     private let session = AVCaptureSession()
@@ -79,9 +108,16 @@ final class CameraSegmentRecorder: NSObject {
     private var analysisOutput: AVCaptureVideoDataOutput?
     private var captureDevice: AVCaptureDevice?
 
-    private let outputDirectory: URL
-    private let segmentDuration: TimeInterval
+    /// 当前录制段的落盘位置。**只在录制期间有效** —— 相机可以开着而不录。
+    private var outputDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
+    private var segmentDuration: TimeInterval = CameraSegmentRecorder.defaultSegmentDuration
     private let onEvent: (RecorderEvent) -> Void
+
+    /// 相机是否已打开（**不等于正在录**）。
+    ///
+    /// 这两件事必须分开：规格 §3.2.2 要求点了「开始工作」就**出现可见的取景框**，
+    /// 而那时还没扫码、还不该录。相机开着预览、等扫到面单才开始录。
+    private var cameraOpen = false
 
     private var currentWriter: SegmentWriter?
     private var segmentSequence = -1
@@ -89,6 +125,7 @@ final class CameraSegmentRecorder: NSObject {
     private var sessionStartedWallClock = Date()
 
     private var lastAnalysisAt: TimeInterval = 0
+    private var lastBarcodeScanAt: TimeInterval = 0
     private var previousLuma: [UInt8]?
     private var lastReportedStatic: Bool?
 
@@ -105,14 +142,16 @@ final class CameraSegmentRecorder: NSObject {
         return running
     }
 
-    init(outputDirectory: URL,
-         segmentDuration: TimeInterval,
-         onEvent: @escaping (RecorderEvent) -> Void) {
-        self.outputDirectory = outputDirectory
-        self.segmentDuration = segmentDuration
+    init(onEvent: @escaping (RecorderEvent) -> Void) {
         self.onEvent = onEvent
         super.init()
     }
+
+    /// 预览层要挂的会话。
+    ///
+    /// 预览与录制共用同一个 `AVCaptureSession` —— 这是必须的：
+    /// 分成两个会话会抢相机，而且用户看到的画面与录下来的画面可能不一致。
+    var captureSession: AVCaptureSession { session }
 
     // MARK: - 权限
 
@@ -126,9 +165,14 @@ final class CameraSegmentRecorder: NSObject {
 
     // MARK: - 生命周期
 
-    /// 开始录制。返回 false 表示相机打不开。
-    func start() -> Bool {
-        guard !isRecording else { return false }
+    /// 打开相机并开始送预览。
+    ///
+    /// **不开始录制。** 规格 §3.2.2：用户点「开始工作」→ 画面出现**可见的取景框**；
+    /// 那时还没扫码，不该录。所以相机开着送预览、等扫到面单才开始录。
+    ///
+    /// 返回 false 表示相机打不开。
+    func openCamera() -> Bool {
+        guard !cameraOpen else { return true }
 
         guard let device = Self.pickBackCamera() else {
             onEvent(.failed("找不到可用的后置摄像头"))
@@ -163,36 +207,58 @@ final class CameraSegmentRecorder: NSObject {
 
         // 方向必须在 commit 之后设 —— 输出刚 add 进去时它的 connection
         // 还不一定存在，那时设等于白设，画面会拍成横的。
-        if let output = videoOutput, let connection = output.connection(with: .video) {
-            applyOrientation(to: connection)
+        //
+        // **分析那一路也要设同样的方向**：识码是在那一路的帧上跑的，
+        // 两边方向不一致的话，录出来的画面和识码看到的画面会差 90°。
+        for output in [videoOutput, analysisOutput].compactMap({ $0 }) {
+            if let connection = output.connection(with: .video) {
+                applyOrientation(to: connection)
+            }
         }
 
-        try? FileManager.default.createDirectory(
-            at: outputDirectory, withIntermediateDirectories: true)
-
-        sessionStartedAt = CACurrentMediaTime()
-        sessionStartedWallClock = Date()
-        segmentSequence = -1
-        currentWriter = nil
-
-        stateLock.lock()
-        running = true
-        stateLock.unlock()
+        cameraOpen = true
 
         sessionQueue.async { [weak self] in
             self?.session.startRunning()
         }
 
+        return true
+    }
+
+    /// 开始录一段。
+    ///
+    /// 与 [openCamera] 分开是刻意的 —— 见那边的说明。
+    /// [directory] 是这一段（= 一个会话）的落盘位置。
+    func startRecording(directory: URL, segmentDuration: TimeInterval) -> Bool {
+        guard cameraOpen, !isRecording else { return false }
+
+        outputDirectory = directory
+        self.segmentDuration = segmentDuration
+
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+
+        sessionStartedAt = CACurrentMediaTime()
+        sessionStartedWallClock = Date()
+        segmentSequence = -1
+        currentWriter = nil
+        previousLuma = nil
+        lastReportedStatic = nil
+
+        stateLock.lock()
+        running = true
+        stateLock.unlock()
+
         // writer 不在这里建 —— 尺寸与像素格式要等第一帧才知道（见 appendFrame）。
         return true
     }
 
-    /// 停止录制。
+    /// 停止录制。**相机保持开着**，取景框还在，下件包裹接着扫。
     ///
     /// **回调在最后一段封闭之后才会触发。** 这是刻意的：
     /// `finishWriting` 是异步的，如果立刻返回，调用方会以为录完了，
     /// 而最后一段还在写 —— 那段录像就被漏掉了。
-    func stop(_ completion: @escaping () -> Void) {
+    func stopRecording(_ completion: @escaping () -> Void) {
         stateLock.lock()
         let wasRunning = running
         running = false
@@ -211,10 +277,6 @@ final class CameraSegmentRecorder: NSObject {
             return
         }
 
-        sessionQueue.async { [weak self] in
-            self?.session.stopRunning()
-        }
-
         if let writer {
             finish(writer)
 
@@ -227,6 +289,24 @@ final class CameraSegmentRecorder: NSObject {
         } else {
             // 一段都没录到（比如刚开就停）。
             completeStopIfNeeded()
+        }
+    }
+
+    /// 关闭相机（结束工作）。会先把在录的那段收干净。
+    func closeCamera(_ completion: (() -> Void)? = nil) {
+        stopRecording { [weak self] in
+            guard let self else {
+                completion?()
+                return
+            }
+
+            self.sessionQueue.async {
+                self.session.stopRunning()
+            }
+
+            self.cameraOpen = false
+            self.captureDevice = nil
+            completion?()
         }
     }
 
@@ -591,6 +671,57 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         if lastReportedStatic != isStatic {
             lastReportedStatic = isStatic
             onEvent(.sceneSampled(isStatic: isStatic))
+        }
+
+        detectBarcodes(in: imageBuffer, now: now)
+    }
+
+    /// 用系统自带的 Vision 识码（规格 §3.2.1「摄像头识码」）。
+    ///
+    /// 选 Vision 而不是第三方库有两个理由：**零新依赖**，
+    /// 以及**没有许可证要逐个核对**（规格 §10 要求核对第三方库的许可证）。
+    ///
+    /// ## ⚠️ 坐标系要翻 y
+    ///
+    /// Vision 的 `boundingBox` 原点在**左下**，而 Dart 侧的约定是**左上**。
+    /// 不翻的话取景框判定会**上下颠倒** —— 框画在下半屏时，
+    /// 会错误地接受上半屏的面单、拒绝框里的那个。
+    ///
+    /// ## ⚠️ 方向（真机上如果扫不到，先查这里）
+    ///
+    /// 这里按 `.up` 处理，依赖的是「分析那一路的 connection 已经设过方向、
+    /// 送来的帧是正的」。本机没法验这一点 —— **如果真机上识不到码，
+    /// 第一个要试的就是把 `orientation` 换成 `.right` 或 `.left`**。
+    private func detectBarcodes(in pixelBuffer: CVPixelBuffer, now: TimeInterval) {
+        guard now - lastBarcodeScanAt >= Self.barcodeScanInterval else { return }
+        lastBarcodeScanAt = now
+
+        let request = VNDetectBarcodesRequest()
+        request.symbologies = Self.barcodeSymbologies
+
+        let handler = VNImageRequestHandler(
+            cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+
+        do {
+            try handler.perform([request])
+        } catch {
+            // 识码失败不该影响录制 —— 它只是个输入通道。
+            return
+        }
+
+        guard let observations = request.results else { return }
+
+        for observation in observations {
+            guard let payload = observation.payloadStringValue, !payload.isEmpty else {
+                continue
+            }
+
+            let box = observation.boundingBox
+            onEvent(.barcodeDetected(
+                text: payload,
+                centerX: Double(box.midX),
+                centerY: Double(1.0 - box.midY),
+                confidence: Double(observation.confidence)))
         }
     }
 }

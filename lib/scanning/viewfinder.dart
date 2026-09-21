@@ -40,15 +40,35 @@ enum ViewfinderPreset {
 
   static const fallback = ViewfinderPreset.medium;
 
-  /// 居中、正方形的框（高按 [span] 算，宽按比例反算以保持像素上正方形）。
+  /// 居中、**像素上是正方形**的框。
+  ///
+  /// [aspectRatio] 是画面宽 / 画面高。
+  ///
+  /// ⚠️ **横竖屏要分开算**，这是踩过的坑：
+  /// 归一化坐标里「正方形」的宽高并不相等 —— 边长 S 像素的框，
+  /// 归一化宽 = S/画面宽，归一化高 = S/画面高，两者差一个 [aspectRatio]。
+  ///
+  /// 只按「高 = span、宽 = span/aspect」算的话，**竖屏（aspect &lt; 1）时宽会超过 1**，
+  /// 框比画面还宽 —— 表现是「框外忽略」形同虚设，画面里的码全被认。
+  /// 而手机正是竖着拿的。
   NormalizedRect rectOn({required double aspectRatio}) {
-    // aspectRatio = 画面宽 / 画面高。
     // 用**正向**判断而不是 `<= 0`：后者对 NaN 是 false，会把 NaN 一路传下去
     // 算出 NaN 宽高（测试抓到的）。
     final ratio = aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 1.0;
 
-    final height = span;
-    final width = span / ratio;
+    // 让**较长的那一边**占 span，较短的按比例缩 —— 这样两个归一化值都不超过 span ≤ 1。
+    final double width;
+    final double height;
+
+    if (ratio >= 1) {
+      // 横屏：宽是长边
+      height = span;
+      width = span / ratio;
+    } else {
+      // 竖屏：高是长边
+      width = span;
+      height = span * ratio;
+    }
 
     return NormalizedRect(
       left: (1 - width) / 2,

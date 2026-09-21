@@ -54,7 +54,10 @@ class ScanGate {
     this.absenceThreshold = const Duration(seconds: 2),
   }) : viewfinder = viewfinder ?? Viewfinder.forPreset(
           ViewfinderPreset.medium,
-          aspectRatio: 3 / 4, // 竖屏持机
+          // 竖屏持机：录像是 720×1280，宽/高 = 0.5625。
+          // 这个值必须与**实际的视频尺寸**一致 —— 不一致的话，
+          // 界面上画的框和实际判定的范围就对不上。
+          aspectRatio: 720 / 1280,
         );
 
   /// 取景框：只有中心点在它里面的识码才会被采纳。

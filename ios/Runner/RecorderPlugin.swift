@@ -35,9 +35,18 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var recorder: CameraSegmentRecorder?
     private var eventSink: FlutterEventSink?
 
+    /// 预览视图的类型名，与 Dart 侧 `UiKitView(viewType:)` 一致。
+    static let previewViewType = "vidlog/camera_preview"
+
     static func register(with registrar: FlutterPluginRegistrar) {
         let instance = RecorderPlugin()
         instance.attach(messenger: registrar.messenger())
+
+        // 预览视图。没有它用户看不到画面、也就没法把面单对准取景框。
+        registrar.register(
+            CameraPreviewFactory(recorderProvider: { [weak instance] in instance?.recorder }),
+            withId: previewViewType)
+
         // 让注册表持住实例 —— 否则它会被释放，通道就成了哑的。
         registrar.publish(instance)
     }
@@ -82,11 +91,22 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 DispatchQueue.main.async { result(granted) }
             }
 
-        case "startSession":
-            startSession(call, result: result)
+        // ── 相机与录制是**两件事** ──
+        // 规格 §3.2.2：点「开始工作」→ 出现可见的取景框（开相机，不录）；
+        // 扫到面单 → 开录。把这两件事合成一个「startSession」是之前的错，
+        // 表现是「点了按钮屏幕上什么都没有，但其实在录」。
 
-        case "stopSession":
-            stopSession(result: result)
+        case "openCamera":
+            openCamera(result: result)
+
+        case "startRecording":
+            startRecording(call, result: result)
+
+        case "stopRecording":
+            stopRecording(result: result)
+
+        case "closeCamera":
+            closeCamera(result: result)
 
         case "setZoom":
             guard let args = call.arguments as? [String: Any],
@@ -103,9 +123,37 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
     }
 
-    private func startSession(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    /// 开相机、开始送预览。**不录。**
+    ///
+    /// 规格 §3.2.2：点「开始工作」→ 出现可见的取景框。那时还没扫码。
+    private func openCamera(result: @escaping FlutterResult) {
         guard CameraSegmentRecorder.hasCameraPermission else {
             result(FlutterError(code: "permission_denied", message: "没有相机权限", details: nil))
+            return
+        }
+
+        if let recorder, recorder.captureSession.isRunning {
+            result(nil)
+            return
+        }
+
+        let created = CameraSegmentRecorder(onEvent: { [weak self] event in
+            self?.emit(event)
+        })
+
+        guard created.openCamera() else {
+            result(FlutterError(code: "camera_failed", message: "相机未能打开", details: nil))
+            return
+        }
+
+        recorder = created
+        result(nil)
+    }
+
+    /// 开始录一段。
+    private func startRecording(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let recorder else {
+            result(FlutterError(code: "no_camera", message: "相机还没打开", details: nil))
             return
         }
 
@@ -118,36 +166,41 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
         let durationMs = (args["segmentDurationMs"] as? NSNumber)?.doubleValue
             ?? CameraSegmentRecorder.defaultSegmentDuration * 1000
-        let segmentDuration = durationMs / 1000
 
-        // 上一次没停干净就先停掉，别让两个录制器抢相机。
-        recorder?.stop {}
+        let started = recorder.startRecording(
+            directory: URL(fileURLWithPath: directory),
+            segmentDuration: durationMs / 1000)
 
-        let created = CameraSegmentRecorder(
-            outputDirectory: URL(fileURLWithPath: directory),
-            segmentDuration: segmentDuration,
-            onEvent: { [weak self] event in self?.emit(event) })
-
-        guard created.start() else {
-            result(FlutterError(code: "start_failed", message: "相机未能启动", details: nil))
-            return
+        if started {
+            result(nil)
+        } else {
+            result(FlutterError(code: "record_failed", message: "未能开始录制", details: nil))
         }
-
-        recorder = created
-        result(nil)
     }
 
-    /// 停止录制。
+    /// 停止录制。相机保持开着。
     ///
     /// **result 要等最后一段封完才回。** 这是刻意的：`finishWriting` 是异步的，
     /// 立刻返回的话 Dart 会以为录完了而马上收尾 —— 最后一段还在写，就被漏掉了。
-    private func stopSession(result: @escaping FlutterResult) {
+    private func stopRecording(result: @escaping FlutterResult) {
         guard let recorder else {
             result(nil)
             return
         }
 
-        recorder.stop { [weak self] in
+        recorder.stopRecording {
+            DispatchQueue.main.async { result(nil) }
+        }
+    }
+
+    /// 关闭相机（结束工作）。
+    private func closeCamera(result: @escaping FlutterResult) {
+        guard let recorder else {
+            result(nil)
+            return
+        }
+
+        recorder.closeCamera { [weak self] in
             DispatchQueue.main.async {
                 self?.recorder = nil
                 result(nil)
@@ -176,6 +229,15 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 sink([
                     "type": "sceneSampled",
                     "isStatic": isStatic,
+                ])
+
+            case .barcodeDetected(let text, let centerX, let centerY, let confidence):
+                sink([
+                    "type": "barcodeDetected",
+                    "text": text,
+                    "centerX": centerX,
+                    "centerY": centerY,
+                    "confidence": confidence,
                 ])
 
             case .failed(let message):
