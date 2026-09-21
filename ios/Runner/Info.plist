@@ -31,6 +31,14 @@
 	     文案要说清用途：这是给用户看的，也是上架审核会看的。 -->
 	<key>NSCameraUsageDescription</key>
 	<string>VidLog 需要使用摄像头录制打包过程，作为售后纠纷时的凭证。</string>
+	<!-- 让 App 沙盒里的 Documents 出现在「文件」App 里（On My iPhone → Vidlog Mobile）。
+	     录像、索引、打点都在那儿 —— 没有这两条，真机验收时**根本拿不到那些文件**，
+	     只能隔着界面猜。（LSSupportsOpeningDocumentsInPlace 是让「文件」能就地打开，
+	     少了它目录可见但点进去是空的。） -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

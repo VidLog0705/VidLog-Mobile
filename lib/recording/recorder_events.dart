@@ -32,12 +32,15 @@ final class SceneSampled extends RecorderEvent {
   final bool isStatic;
 }
 
-/// 被追踪的包裹离开取景框（原生层做目标跟踪后上报）。
+/// 被追踪的包裹离开取景框。
+///
+/// 由 [PackageTracker] 产出（**在 Dart 里**，不由原生上报）——
+/// 判据是「多久没再见到那个条码」，由心跳驱动。见 `package_tracker.dart`。
 final class TrackedPackageLeft extends RecorderEvent {
   const TrackedPackageLeft(super.monotonicMs);
 }
 
-/// 被追踪的包裹重新进入取景框。
+/// 被追踪的包裹重新进入取景框（同上，由 [PackageTracker] 产出）。
 final class TrackedPackageEntered extends RecorderEvent {
   const TrackedPackageEntered(super.monotonicMs);
 }

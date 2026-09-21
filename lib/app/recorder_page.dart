@@ -94,6 +94,13 @@ class _RecorderPageState extends State<RecorderPage> {
   int _pendingCount = 0;
   int _entryCount = 0;
 
+  /// 打点日志累积了多少条。
+  ///
+  /// 与上面几个同理：打点是**独立于收尾**的一条链（收尾失败不该吞掉打点，
+  /// 反过来也一样），所以它得单独有个数字可看。
+  /// 打点是「产生即持久化」的，这一条就等于盘上真有的条数。
+  int _punchCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -175,6 +182,8 @@ class _RecorderPageState extends State<RecorderPage> {
     )..onBarcodeAccepted = _onBarcodeAccepted;
     _coordinator!.onFinalized = _onFinalized;
     _coordinator!.onSceneChanged = _onSceneChanged;
+    _coordinator!.onPackageTrackingChanged = (left) =>
+        _log(left ? '📦 包裹离开取景框' : '📦 包裹回到取景框');
     _coordinator!.onNativeFailure = (message) => _log('⚠️ $message');
   }
 
@@ -377,9 +386,10 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 模拟一次扫码。
   ///
-  /// 真机上还没有条码识码（那需要额外的库与许可证核对），
-  /// 但**错码保护验的是状态机**：首扫 A 开录、扫 B 只提示不停、扫回 A 才停。
-  /// 用手输单号就能把这条链路验完整。
+  /// **摄像头识码已经接上了**（iOS 用系统自带的 Vision），但这个按钮仍然有用：
+  /// 它走的是[PunchSource.manualEntry]，且不经过 [ScanGate] 的框内判定 ——
+  /// 验状态机时不必去凑一张恰好落在取景框里的面单。
+  /// 错码保护验的是状态机：首扫 A 开录、扫 B 只提示不停、扫回 A 才停。
   Future<void> _simulateScan() async {
     final waybill = WaybillNumber.tryParse(_waybillController.text);
     if (waybill == null) {
@@ -400,12 +410,14 @@ class _RecorderPageState extends State<RecorderPage> {
           : 0;
       final pending = (await _workspace.listOrphans()).length;
       final entries = (await _index.loadAll()).length;
+      final punches = (await _punchLog.loadAll()).length;
 
       if (!mounted) return;
       setState(() {
         _sessionCount = sessions;
         _pendingCount = pending;
         _entryCount = entries;
+        _punchCount = punches;
       });
     } on Object catch (error) {
       if (mounted) setState(() => _status = '读取工作区失败：$error');
@@ -592,7 +604,8 @@ class _RecorderPageState extends State<RecorderPage> {
             const SizedBox(height: 8),
             Text(
               '工作区 ${_sessionCount} 个会话'
-              '（未收尾 $_pendingCount）· 索引 $_entryCount 条\n'
+              '（未收尾 $_pendingCount）· 索引 $_entryCount 条'
+              ' · 打点 $_punchCount 条\n'
               '单段时长 ${RecordingCoordinator.defaultSegmentDuration.inMinutes} 分钟 —— '
               '崩溃最多丢这一段，所以每录满一段就自动封一个文件',
               style: const TextStyle(fontSize: 12, color: Colors.black54),

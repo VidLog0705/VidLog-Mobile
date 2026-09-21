@@ -783,6 +783,29 @@ void main() {
 
       await coordinator.dispose();
     });
+
+    test('离场 / 入场都报给界面（验收时靠它分辨是哪种坏）', () async {
+      // 没有这条观测，「扫码静止停录没停」在真机上是**分不清原因**的：
+      // 可能是跟踪没认出离场，也可能是跟踪认出来了而静止判定坏了。
+      final coordinator = staticOnly();
+      final seen = <bool>[];
+      coordinator.onPackageTrackingChanged = seen.add;
+
+      nowMs = 1000;
+      await begin(coordinator);
+
+      nowMs += 3 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+
+      nowMs += 1000;
+      sighting(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(seen, [true, false], reason: '先离场，后入场');
+
+      await coordinator.dispose();
+    });
   });
 
   // ─────────────────────────────────────────────

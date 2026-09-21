@@ -120,6 +120,14 @@ class RecordingCoordinator {
   /// 那是正确的，但没有这条观测就没法区分它和「封顶失效」。
   void Function(bool isStatic)? onSceneChanged;
 
+  /// 被跟踪的那件包裹离开了 / 回到了取景框（规格 §3.3.1 扫码静止停录）。
+  ///
+  /// 界面拿它显示「包裹离场 / 回到画面」。这条观测是为了**把一次失败的验收
+  /// 拆成两个可分辨的原因**：「扫码静止停录没停」既可能是跟踪没认出离场，
+  /// 也可能是跟踪认出来了而静止判定坏了 —— 没有这条日志，
+  /// 真机上只能等满一个档位才知道没停，而且分不清是哪个。
+  void Function(bool left)? onPackageTrackingChanged;
+
   /// 原生层报错（相机打不开、编码出错等）。
   void Function(String message)? onNativeFailure;
 
@@ -398,7 +406,10 @@ class RecordingCoordinator {
     // 相机只报「见到了什么」，不报「没见到什么」——
     // 所以「包裹离场」只能靠心跳推出来（多久没再见到它）。
     final left = _packageTracker.onTick(now);
-    if (left != null) await _dispatch([left]);
+    if (left != null) {
+      onPackageTrackingChanged?.call(true);
+      await _dispatch([left]);
+    }
 
     await _dispatch([Heartbeat(now)]);
   }
@@ -512,7 +523,10 @@ class RecordingCoordinator {
           WaybillNumber.tryParse(event.text),
           _clock(),
         );
-        if (entered != null) await _dispatch([entered]);
+        if (entered != null) {
+          onPackageTrackingChanged?.call(false);
+          await _dispatch([entered]);
+        }
 
         // 相机是连续识码的，先过一道闸：框外的忽略、还在画面里的同一单号也忽略。
         // 不走这一步的话，包裹一放上去就会被自己的持续识别停掉。
