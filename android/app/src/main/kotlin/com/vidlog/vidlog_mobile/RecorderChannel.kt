@@ -2,6 +2,7 @@ package com.vidlog.vidlog_mobile
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.speech.tts.TextToSpeech
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -9,6 +10,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.Locale
 
 /**
  * 原生录制器 ↔ Dart 的桥。
@@ -28,9 +30,26 @@ import java.io.File
  * | `startSession` | Dart → 原生 | 开始录制，参数含工作区目录、单号、单段时长 |
  * | `stopSession` | Dart → 原生 | 停止并封掉当前分段 |
  * | `setZoom` | Dart → 原生 | 变焦 |
+ * | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4） |
  * | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
  * | `sceneSampled` | 原生 → Dart | 画面是否静止 |
  * | `failed` | 原生 → Dart | 相机/编码出错 |
+ *
+ * ## ⚠️ 与 Dart 侧的方法名对不上（已知缺口，未修）
+ *
+ * Dart 的 `ChannelRecorderGateway` 调的是 `openCamera` / `startRecording` /
+ * `stopRecording` / `closeCamera`，而本类实现的是 `startSession` / `stopSession`
+ * —— 每次调用都会落到 `notImplemented`，**Android 端目前整条链路是通的不了**。
+ * iOS 侧（`RecorderPlugin.swift`）是对的。
+ *
+ * 不能只把名字改过来完事：规格 §3.2.2 要的是「点开始工作 → 出现取景框（**不录**）
+ * → 扫到面单才开录」，而 [CameraSegmentRecorder.start] 是**开相机与开录一起做**的，
+ * `stop` 又把相机一起关掉。照现在的名字硬接，`openCamera` 会变成「一点按钮就在录」
+ * —— 那正是 iOS 那边注释里记着的、已经犯过一次的错。
+ *
+ * 所以修它要先拆 [CameraSegmentRecorder] 的生命周期（相机常开、只换编码器与封装器），
+ * 那是 Android 原生层的一件独立工作，不在 M4 的四项之内。
+ * 见 `docs/实现决策.md`。
  *
  * ⚠️ **未在真机上验证。** 见 `docs/实现决策.md`。
  */
@@ -51,6 +70,9 @@ class RecorderChannel(private val activity: FlutterActivity) :
     /** 等待授权结果的 Dart 回调。授权框是异步的，只能存下来等系统回调。 */
     private var pendingPermissionResult: MethodChannel.Result? = null
 
+    /** 语音播报。规格 §3.3.2 / §3.3.4 的两句提示。 */
+    private var tts: TextToSpeech? = null
+
     fun attach(messenger: io.flutter.plugin.common.BinaryMessenger) {
         MethodChannel(messenger, METHOD_CHANNEL).setMethodCallHandler(this)
         EventChannel(messenger, EVENT_CHANNEL).setStreamHandler(this)
@@ -60,6 +82,10 @@ class RecorderChannel(private val activity: FlutterActivity) :
         recorder?.stop()
         recorder = null
         events = null
+
+        // TTS 持有系统服务，不关会漏一路音频。
+        tts?.shutdown()
+        tts = null
     }
 
     // ─────────────────────────────────────────────
@@ -122,8 +148,49 @@ class RecorderChannel(private val activity: FlutterActivity) :
                 }
             }
 
+            // 相机没开时回 null（与 iOS 一致）—— Dart 侧据此用保守的默认值。
+            "maxZoom" -> result.success(recorder?.maxZoomRatio?.toDouble())
+
+            "speak" -> {
+                val text = call.argument<String>("text")
+                if (text.isNullOrBlank()) {
+                    result.error("bad_args", "缺少 text", null)
+                } else {
+                    // QUEUE_FLUSH：新提示顶掉旧的那句。
+                    // 两句提示本来就不会同时出现，而「面单不同」连着报两次时
+                    // 叠着念比只念一遍更糟 —— 用户要先听完才知道是同一句。
+                    //
+                    // 引擎还没就绪时这次调用会静默失败，**这是可接受的**：
+                    // 播报是尽力而为，Dart 侧也按成功处理（见 RecorderGateway.speak）。
+                    tts().speak(text, TextToSpeech.QUEUE_FLUSH, null, "vidlog-prompt")
+                    result.success(null)
+                }
+            }
+
             else -> result.notImplemented()
         }
+    }
+
+    /**
+     * 拿到（必要时建好）TTS 引擎。
+     *
+     * 第一次调用时才建：用户可能整场都没扫错过一次码，那就一次都不用播报。
+     * 引擎初始化是异步的，`onInit` 回调时 [tts] 已经赋好值。
+     */
+    private fun tts(): TextToSpeech {
+        tts?.let { return it }
+
+        val created = TextToSpeech(activity) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val chinese = Locale.SIMPLIFIED_CHINESE
+                if (tts?.isLanguageAvailable(chinese) == TextToSpeech.LANG_AVAILABLE) {
+                    tts?.language = chinese
+                }
+            }
+        }
+
+        tts = created
+        return created
     }
 
     private fun startSession(call: MethodCall, result: MethodChannel.Result) {

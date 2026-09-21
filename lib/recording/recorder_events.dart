@@ -77,12 +77,20 @@ enum StopTrigger {
 }
 
 /// 要播放的语音提示。
+///
+/// 措辞**直接来自规格原文**（§3.3.2 / §3.3.4），写在这里一处，
+/// 播报与界面日志都取它 —— 两处各写一遍的话，改了一处就慢慢说岔了。
 enum VoicePrompt {
   /// 规格 §3.3.2：扫到不同面单时提示「面单不同」。
-  differentWaybill,
+  differentWaybill('面单不同'),
 
   /// 规格 §3.3.4：「录制时间即将超时，是否需要停止录制？」
-  durationTimeout,
+  durationTimeout('录制时间即将超时，是否需要停止录制？');
+
+  const VoicePrompt(this.spokenText);
+
+  /// 读出来的原文。
+  final String spokenText;
 }
 
 /// 状态机要宿主执行的动作。

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../primitives.dart';
+import '../recording/punch_log.dart';
 import '../recording/recorder_config.dart';
 import '../recording/recorder_events.dart';
 import '../recording/recorder_gateway.dart';
@@ -14,6 +15,7 @@ import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
 import 'camera_preview.dart';
+import 'zoom_dial.dart';
 
 /// 采集页。
 ///
@@ -38,6 +40,7 @@ class _RecorderPageState extends State<RecorderPage> {
   late RecordingWorkspace _workspace;
   late SessionFinalizer _finalizer;
   late RecordingIndex _index;
+  late PunchLog _punchLog;
 
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
@@ -64,6 +67,16 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 启动时收尾的孤儿。
   List<FinalizeOutcome> _recovered = const [];
+
+  /// 当前变焦倍率（规格 §3.1.2）。
+  ///
+  /// 只在内存里 —— 规格要的是「在本次工作期间保持」，
+  /// 「按设备记忆」是**建议**（原文如此），要做得先有个按设备存的配置区，
+  /// 而 M4 的配置区还没到那一步。
+  double _zoom = 1;
+
+  /// 表盘刻度画到哪 —— 设备的真实上限，问不到时用 [zoomMaxRatio]。
+  double _maxZoom = zoomMaxRatio;
 
   /// 当前会话已录时长。
   ///
@@ -119,6 +132,9 @@ class _RecorderPageState extends State<RecorderPage> {
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
       _finalizer = SessionFinalizer(rootDirectory: root.path, index: _index);
+      // 与电脑端同一个位置（`<root>/punches.jsonl`），键名也逐字相同 ——
+      // 两端的打点日志是同一份形态。
+      _punchLog = PunchLog('${root.path}/punches.jsonl');
 
       _buildCoordinator();
 
@@ -152,6 +168,7 @@ class _RecorderPageState extends State<RecorderPage> {
       gateway: _gateway,
       workspace: _workspace,
       finalizer: _finalizer,
+      punchLog: _punchLog,
       mode: _mode,
       config: _config,
       onAction: _onAction,
@@ -222,7 +239,9 @@ class _RecorderPageState extends State<RecorderPage> {
         unawaited(_refreshDiagnostics());
 
       case Speak(:final prompt):
-        _log('🔊 ${_promptLabel(prompt)}');
+        // 播报本身在编排层里发给原生（`VoicePrompt.spokenText` 是唯一措辞来源），
+        // 这里只留一条可见的日志。
+        _log('🔊 ${prompt.spokenText}');
 
       case ShowDurationPrompt():
         setState(() => _askingToContinue = true);
@@ -269,6 +288,10 @@ class _RecorderPageState extends State<RecorderPage> {
       _log('开始工作 · 模式 ${_modeLabel(_mode)}');
       _startHeartbeat();
 
+      // 相机开起来之后才问得到设备上限（规格 §3.1.2）——
+      // 表盘的刻度要画到设备的真实上限，不然划到底是 8 倍、画面却停在 2 倍。
+      await _readDeviceMaxZoom();
+
       if (mounted) {
         setState(() => _status = '把面单放进取景框');
       }
@@ -276,6 +299,37 @@ class _RecorderPageState extends State<RecorderPage> {
       if (mounted) setState(() => _status = '开始失败：$error');
     } finally {
       if (mounted) setState(() => _starting = false);
+    }
+  }
+
+  /// 问一次设备支持的变焦上限，用来定表盘刻度（规格 §3.1.2）。
+  ///
+  /// **拿不到就用默认值**：问了不代表问得到（Android 端的通道还没接上、
+  /// 或者相机刚开、设备还没报能力）。为这个把「开始工作」弄失败是本末倒置。
+  Future<void> _readDeviceMaxZoom() async {
+    double? max;
+    try {
+      max = await _gateway.maxZoom();
+    } on Object {
+      max = null;
+    }
+
+    // `>= 1` 而不是 `> 1`：设备报 1.0 就是「不能变焦」，那也是实话，
+    // 表盘会画成划不动 —— 比骗用户「能划到 8 倍」强。
+    if (!mounted) return;
+    setState(() => _maxZoom = (max != null && max >= 1) ? max : zoomMaxRatio);
+  }
+
+  /// 用户滑动半圆刻度盘。
+  Future<void> _onZoomChanged(double ratio) async {
+    // 先更新表盘再发命令：原生变焦是异步的，等它回来再画会明显跟手不上。
+    setState(() => _zoom = ratio);
+
+    try {
+      await _gateway.setZoom(ratio);
+    } on Object catch (error) {
+      // 变焦失败不该中断录制（原生层也是这个态度），只留一条日志。
+      _log('⚠️ 变焦失败：$error');
     }
   }
 
@@ -333,7 +387,8 @@ class _RecorderPageState extends State<RecorderPage> {
       return;
     }
 
-    await _coordinator?.onWaybillDetected(waybill);
+    await _coordinator?.onWaybillDetected(waybill,
+        source: PunchSource.manualEntry);
   }
 
   /// 重新读一遍盘上的实况。
@@ -437,7 +492,24 @@ class _RecorderPageState extends State<RecorderPage> {
             pinned: true,
             delegate: _PreviewHeader(
               height: MediaQuery.sizeOf(context).height * 0.36,
-              child: CameraPreview(viewfinder: gate.viewfinder),
+              child: Stack(
+                children: [
+                  CameraPreview(viewfinder: gate.viewfinder),
+
+                  // 半圆刻度盘（规格 §3.1.2「屏幕边缘的半圆刻度盘」）。
+                  // 贴右边缘、靠下放 —— 手指从边缘划过来顺手，也不挡住取景框中心，
+                  // 而面单必须放进中心框才认（§3.2.2）。
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: ZoomDial(
+                      ratio: _zoom,
+                      maxZoom: _maxZoom,
+                      onChanged: _onZoomChanged,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         SliverPadding(
@@ -771,11 +843,6 @@ class _RecorderPageState extends State<RecorderPage> {
         StopTrigger.durationFallback => '时长兜底',
         StopTrigger.resourceCritical => '资源告警',
         StopTrigger.processKilled => '进程被杀',
-      };
-
-  static String _promptLabel(VoicePrompt prompt) => switch (prompt) {
-        VoicePrompt.differentWaybill => '面单不同',
-        VoicePrompt.durationTimeout => '录制时间即将超时，是否需要停止录制？',
       };
 }
 

@@ -103,6 +103,25 @@ abstract interface class RecorderGateway {
 
   Future<void> setZoom(double ratio);
 
+  /// 设备支持的最大变焦倍率。
+  ///
+  /// 规格 §3.1.2：「倍率不得超过设备能力上限」。原生层本来就会钳，
+  /// 这个方法是为了**让表盘的刻度对得上** —— 否则设备只支持 2 倍时，
+  /// 用户把表盘划到 5 倍、画面却停在 2 倍，表盘在骗人。
+  ///
+  /// **相机没开时拿不到**（返回 null）：上限来自相机设备本身。
+  /// 调用方拿不到时用一个保守的默认值即可。
+  Future<double?> maxZoom();
+
+  /// 读出一句提示（规格 §3.3.2 的「面单不同」、§3.3.4 的时长询问）。
+  ///
+  /// 为什么交给原生而不是放音频文件：措辞是中文、要能改，
+  /// 而系统 TTS 不需要多带一份音频资源，也不用核对它的许可证（规格 §10）。
+  ///
+  /// **失败不是错误**：设备可能没装中文语音包、或用户关了朗读。
+  /// 提示丢一句是小事，不能让它拖垮停录。
+  Future<void> speak(String text);
+
   /// 原生事件流。
   Stream<NativeRecorderEvent> get events;
 }
@@ -149,6 +168,13 @@ class ChannelRecorderGateway implements RecorderGateway {
   @override
   Future<void> setZoom(double ratio) =>
       _methods.invokeMethod<void>('setZoom', {'ratio': ratio});
+
+  @override
+  Future<double?> maxZoom() => _methods.invokeMethod<double>('maxZoom');
+
+  @override
+  Future<void> speak(String text) =>
+      _methods.invokeMethod<void>('speak', {'text': text});
 
   @override
   Stream<NativeRecorderEvent> get events =>

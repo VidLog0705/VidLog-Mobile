@@ -153,8 +153,13 @@ class CameraSegmentRecorder(
     private var sensorOrientation = 0
     private var zoomRatio = 1.0f
 
-    /** 设备支持的变焦上限。规格 §3.1.2：倍率不得超过设备能力。 */
-    private var maxZoomRatio = 1.0f
+    /**
+     * 设备支持的变焦上限。规格 §3.1.2：倍率不得超过设备能力。
+     *
+     * 相机开起来之前是 1.0（还不知道设备能力）。
+     */
+    var maxZoomRatio = 1.0f
+        private set
 
     private var cropRegion: android.graphics.Rect? = null
 

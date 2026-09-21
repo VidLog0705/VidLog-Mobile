@@ -4,6 +4,8 @@ import 'dart:math';
 
 import '../primitives.dart';
 import '../scanning/scan_gate.dart';
+import 'package_tracker.dart';
+import 'punch_log.dart';
 import 'recorder_config.dart';
 import 'recorder_events.dart';
 import 'recorder_gateway.dart';
@@ -24,6 +26,7 @@ typedef MonotonicClock = int Function();
 ///
 /// - 开录前**先写 manifest**，哪怕立刻被杀也留下可发现的会话
 /// - 每个分段一封闭就**立刻**追加进 manifest —— 这是孤儿恢复的前提
+/// - 每次识别到单号就**立刻**落一条打点（§3.2.4），不等会话结束批量写
 /// - 原生事件转成状态机输入，状态机的动作转成原生调用与 UI 回调
 ///
 /// ## 时钟
@@ -35,17 +38,21 @@ class RecordingCoordinator {
     required RecorderGateway gateway,
     required RecordingWorkspace workspace,
     required SessionFinalizer finalizer,
+    required PunchLog punchLog,
     required WorkMode mode,
     RecorderConfig config = RecorderConfig.hardFallback,
     MonotonicClock? clock,
     ScanGate? scanGate,
+    PackageTracker? packageTracker,
     this.onAction,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
+        _punchLog = punchLog,
         _stopController = StopController(mode: mode, config: config),
         _clock = clock ?? _defaultClock(),
-        _scanGate = scanGate ?? ScanGate() {
+        _scanGate = scanGate ?? ScanGate(),
+        _packageTracker = packageTracker ?? PackageTracker() {
     _subscription = _gateway.events.listen((event) {
       // ⚠️ **分段落盘走单独一条链**，不跟别的事件挤在一起。
       //
@@ -82,11 +89,18 @@ class RecordingCoordinator {
   final RecorderGateway _gateway;
   final RecordingWorkspace _workspace;
   final SessionFinalizer _finalizer;
+
+  /// 打点日志（规格 §3.2.4：识别到就立刻落盘，不等会话结束）。
+  final PunchLog _punchLog;
+
   final StopController _stopController;
   final MonotonicClock _clock;
 
   /// 把相机的**连续识码**变成**离散的扫码**（框外忽略 + 去重）。
   final ScanGate _scanGate;
+
+  /// 跟踪开录那件包裹的离场 / 入场（规格 §3.3.1 扫码静止停录）。
+  final PackageTracker _packageTracker;
 
   /// 状态机要求宿主做的动作（语音提示、显示按钮、资源告警）。
   /// 界面层接这个。
@@ -141,6 +155,10 @@ class RecordingCoordinator {
 
   String? _sessionId;
   WaybillNumber? _waybill;
+
+  /// 会话起点的**单调**刻度。打点的 `MonotonicOffset` 相对它算，
+  /// 所以用的必须与状态机同一个时钟 —— 两把尺子混用算出来的位置是错的。
+  int? _sessionStartedMs;
   String _sourceDeviceId = '';
   DateTime _sessionStartedWallClock = DateTime.now();
   final List<SegmentProduct> _segments = [];
@@ -243,6 +261,7 @@ class RecordingCoordinator {
 
     _armed = true;
     _scanGate.reset();
+    _packageTracker.reset();
   }
 
   /// 结束工作：停录（如果在录）并关相机。
@@ -259,7 +278,7 @@ class RecordingCoordinator {
   ///
   /// 每件包裹是**一段独立的录制**（= 一个会话、一个目录、一条证据），
   /// 收尾之后相机还开着，下件包裹接着扫。
-  Future<void> _beginRecording(WaybillNumber waybill) async {
+  Future<void> _beginRecording(WaybillNumber waybill, PunchSource source) async {
     if (!_armed || _stopController.isRecording) return;
 
     _waybill = waybill;
@@ -267,6 +286,7 @@ class RecordingCoordinator {
     _lastError = null;
 
     final now = _clock();
+    _sessionStartedMs = now;
     _sessionStartedWallClock = DateTime.now();
     _sessionId =
         'sess-${_sessionStartedWallClock.millisecondsSinceEpoch}-${Random().nextInt(1 << 20)}';
@@ -289,6 +309,11 @@ class RecordingCoordinator {
     // 开录用的这个单号此刻就在画面里/操作员手上。**必须标记成「刚见过」**，
     // 否则相机的第一次识码就会把它报成复扫，录制当场被停 —— 一秒都录不到。
     _scanGate.markSeen(waybill, now);
+    _packageTracker.track(waybill, now);
+
+    // 落在开录之后：会话此刻才存在，打点必须挂在它上面。
+    // 偏移按 `now` 算，所以这次打点的偏移正好是 0。
+    await _recordPunch(waybill, source, atMs: now);
 
     await _dispatch([WaybillDetected(now, waybill)]);
   }
@@ -296,21 +321,56 @@ class RecordingCoordinator {
   /// 识别到一个单号（复扫）。
   ///
   /// 错码保护（规格 §3.3.2）就发生在状态机里：不同单号只提示、不停止。
-  Future<void> onWaybillDetected(WaybillNumber waybill) =>
-      _handleWaybill(waybill);
+  Future<void> onWaybillDetected(
+    WaybillNumber waybill, {
+    PunchSource source = PunchSource.cameraDecoder,
+  }) =>
+      _handleWaybill(waybill, source);
 
-  Future<void> _handleWaybill(WaybillNumber waybill) async {
+  Future<void> _handleWaybill(WaybillNumber waybill, PunchSource source) async {
     if (!_armed) return;
 
     // 还没在录 → 这是「首次识别到单号」，开一段。
     // 规格 §3.3.1：三种工作模式的开始录制都是「首次识别到单号」。
     if (!_stopController.isRecording) {
-      await _beginRecording(waybill);
+      await _beginRecording(waybill, source);
       return;
     }
 
     // 已经在录 → 走复扫路径（同码停 / 错码保护都在状态机里判）。
+    //
+    // **扫错码也要打点**：规格 §3.2.4 说的是「识别到单号 → 记录该时刻与该单号的
+    // 关联」，没把「认出来的正好是本件」当条件。而且扫错的那一下恰恰是
+    // 最需要留痕的 —— 事后看不出操作员那一刻扫到了什么，就没法解释录像里的动作。
+    await _recordPunch(waybill, source);
+
     await _dispatch([WaybillDetected(_clock(), waybill)]);
+  }
+
+  /// 落一条打点（规格 §3.2.4：**产生即持久化**，不能等会话结束批量写）。
+  ///
+  /// [atMs] 是调用方已经取好的单调刻度；不给就现取。
+  /// 为什么要能传进来：开录那条打点的偏移必须是 0，而再取一次时钟
+  /// 会得到几毫秒之后的值 —— 一次打包的第一条打点不在 0 上，
+  /// 回放跳转就会偏离它该在的位置。
+  Future<void> _recordPunch(
+    WaybillNumber waybill,
+    PunchSource source, {
+    int? atMs,
+  }) async {
+    final sessionId = _sessionId;
+    final startedMs = _sessionStartedMs;
+    if (sessionId == null || startedMs == null) return;
+
+    final wallClock = DateTime.now();
+    await _punchLog.append(Punch(
+      punchId: 'punch-${wallClock.millisecondsSinceEpoch}-${Random().nextInt(1 << 20)}',
+      sessionId: sessionId,
+      waybill: waybill,
+      punchedAt: wallClock,
+      monotonicOffsetMilliseconds: (atMs ?? _clock()) - startedMs,
+      source: source,
+    ));
   }
 
   /// 用户点了时长兜底里的【继续】或【停止】。
@@ -332,7 +392,15 @@ class RecordingCoordinator {
   /// 就没有任何事件，静止超时与时长兜底永远不会触发。
   Future<void> handleHeartbeat() async {
     if (!_stopController.isRecording) return;
-    await _dispatch([Heartbeat(_clock())]);
+
+    final now = _clock();
+
+    // 相机只报「见到了什么」，不报「没见到什么」——
+    // 所以「包裹离场」只能靠心跳推出来（多久没再见到它）。
+    final left = _packageTracker.onTick(now);
+    if (left != null) await _dispatch([left]);
+
+    await _dispatch([Heartbeat(now)]);
   }
 
   /// 收尾并返回结果；没在录时返回 null。
@@ -366,6 +434,10 @@ class RecordingCoordinator {
     }
 
     _sessionId = null;
+    _sessionStartedMs = null;
+    // 这一段录完了，别再跟踪它 —— 否则下件包裹还没扫到时，
+    // 上一件的离场会算到下一段头上。
+    _packageTracker.reset();
 
     // 通知界面 —— 停录时界面只显示了「正在收尾」，到这里才算真的完了。
     onFinalized?.call(outcome);
@@ -400,6 +472,18 @@ class RecordingCoordinator {
         // 先告诉界面（停录要立刻有反馈），再去做收尾（收尾要落盘，慢）。
         onAction?.call(action);
 
+        if (action is Speak) {
+          // 播报是**尽力而为**的：设备可能没装中文语音包、通道可能没接上。
+          // 提示丢一句是小事，把它抛上去会让「错码保护」这条路径整个失败 ——
+          // 而那一下本该只是提示一下、继续录。所以这里吞掉异常。
+          // 界面上的日志照旧（onAction 已经先调用过了），用户仍然看得到提示。
+          try {
+            await _gateway.speak(action.prompt.spokenText);
+          } on Object {
+            // 忽略。
+          }
+        }
+
         if (action is StopRecording) {
           await finish(action.trigger);
         }
@@ -421,6 +505,15 @@ class RecordingCoordinator {
         }
 
       case BarcodeDetectedEvent():
+        // 跟踪吃**每一次**识码，与下面那道闸无关：闸要的是「离散的一次扫码」
+        // （持续识码会被它抑制掉），而跟踪要的是「这一刻它还在不在画面里」。
+        // 用闸的输出喂跟踪的话，包裹一直摆在画面里反而永远等不到「还在」的信号。
+        final entered = _packageTracker.onSighting(
+          WaybillNumber.tryParse(event.text),
+          _clock(),
+        );
+        if (entered != null) await _dispatch([entered]);
+
         // 相机是连续识码的，先过一道闸：框外的忽略、还在画面里的同一单号也忽略。
         // 不走这一步的话，包裹一放上去就会被自己的持续识别停掉。
         final waybill = _scanGate.accept(
@@ -435,7 +528,8 @@ class RecordingCoordinator {
 
         if (waybill != null) {
           onBarcodeAccepted?.call(waybill);
-          await _handleWaybill(waybill);
+          // 摄像头识码 —— 来源写实，回放时能看出这一下是机器认的还是人敲的。
+          await _handleWaybill(waybill, PunchSource.cameraDecoder);
         }
 
       case RecorderFailedEvent():

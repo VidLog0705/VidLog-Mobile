@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/package_tracker.dart';
+import 'package:vidlog_mobile/recording/punch_log.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart';
 import 'package:vidlog_mobile/recording/recorder_gateway.dart';
@@ -40,6 +42,8 @@ void main() {
   late FakeGateway gateway;
   late RecordingWorkspace workspace;
   late JsonLinesRecordingIndex index;
+  late PunchLog punchLog;
+  late PackageTracker tracker;
   late List<RecorderAction> actions;
 
   RecordingCoordinator make({
@@ -53,14 +57,18 @@ void main() {
     gateway = FakeGateway();
     workspace = RecordingWorkspace('$root/work');
     index = JsonLinesRecordingIndex('$root/index.jsonl');
+    punchLog = PunchLog('$root/punches.jsonl');
+    tracker = PackageTracker();
 
     return RecordingCoordinator(
       gateway: gateway,
       workspace: workspace,
       finalizer: SessionFinalizer(rootDirectory: root, index: index),
+      punchLog: punchLog,
       mode: mode,
       config: config,
       clock: clock,
+      packageTracker: tracker,
       onAction: actions.add,
     );
   }
@@ -612,6 +620,7 @@ void main() {
         gateway: gateway = FakeGateway(),
         workspace: workspace = RecordingWorkspace('$root/work'),
         finalizer: SessionFinalizer(rootDirectory: root, index: _ThrowingIndex()),
+        punchLog: punchLog = PunchLog('$root/punches.jsonl'),
         mode: WorkMode.sameWaybillStop,
         config: const RecorderConfig(staticStop: StaticStopSetting.off),
         clock: clock,
@@ -639,6 +648,300 @@ void main() {
       await coordinator.onWaybillDetected(waybill);
 
       expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 目标跟踪（§3.3.1 扫码静止停录）
+  // ─────────────────────────────────────────────
+
+  group('目标跟踪', () {
+    /// 扫码静止停录 + 只留静止这一条停录路径。
+    ///
+    /// 时长兜底必须关掉：它将在这几条测试的时间轴里先触发，
+    /// 那时测到的就是它、不是静止门槛了。
+    RecordingCoordinator staticOnly() => make(
+          mode: WorkMode.scanThenStaticStop,
+          config: const RecorderConfig(
+            staticStop: StaticStopSetting.minutes3,
+            durationFallback: DurationFallbackSetting.off,
+          ),
+        );
+
+    /// 造一次识码，走的是与相机同一条路（取景框正中，不会被框滤掉）。
+    void sighting(WaybillNumber bill) {
+      gateway.emit(BarcodeDetectedEvent(
+        text: bill.value,
+        centerX: 0.5,
+        centerY: 0.5,
+      ));
+    }
+
+    test('★ 包裹离场 → 入场 → 静止到设定时长才停', () async {
+      // 这是「扫码静止停录」与「同码停」的区别所在：
+      // 复扫同码**不停**（2026-09-21 裁定），只有这条链才停。
+      final coordinator = staticOnly();
+      nowMs = 1000;
+      await begin(coordinator);
+      expect(coordinator.isRecording, isTrue);
+
+      // 包裹离开取景框 —— 相机不会报「没见到」，所以靠心跳推出来。
+      nowMs += 3 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+
+      // 包裹回到画面：静止时钟从这一刻重新计。
+      nowMs += 1000;
+      sighting(waybill);
+      await coordinator.waitForPendingEvents();
+
+      // 入场后只静止 2 分钟：不够。
+      nowMs += 2 * 60 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isTrue, reason: '入场后只静止了 2 分钟');
+
+      // 满 3 分钟：停。
+      nowMs += 61 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 包裹一直没离场，静止再久也不停', () async {
+      // 这个模式的停止条件是「离场后再入场」，不是「画面静了」——
+      // 后者是「画面静止停录」那一档的事。
+      final coordinator = staticOnly();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      // 每 10 秒见到一次 = 包裹一直摆在画面里，累计 5 分钟。
+      for (var i = 0; i < 30; i++) {
+        nowMs += 10 * 1000;
+        sighting(waybill);
+        await coordinator.handleHeartbeat();
+        await coordinator.waitForPendingEvents();
+      }
+
+      expect(coordinator.isRecording, isTrue, reason: '没离场过就不该被静止停掉');
+      await coordinator.dispose();
+    });
+
+    test('★ 扫到别的单号，不取消被跟踪那件的离场', () async {
+      // 错码保护：B 出现时 A 还在。若 B 的识码被算成「A 还在画面里」，
+      // 离场就永远报不出来 —— 这个模式再也停不下来。
+      final coordinator = staticOnly();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      nowMs += 3 * 1000;
+      sighting(otherWaybill);
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+
+      // A 回来 —— 只有在「A 确实被判过离场」的前提下，静止时钟才会
+      // 从这一刻重新计（`TrackedPackageEntered` 会把时钟推到现在）。
+      // 没推开的话，下面这 3 分钟里静止早该满了。
+      nowMs += 1000;
+      sighting(waybill);
+      await coordinator.waitForPendingEvents();
+
+      nowMs += 2 * 60 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isTrue, reason: '静止时钟必须从入场重新计');
+
+      nowMs += 61 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 收尾之后不再跟踪上一件', () async {
+      // 不收干净的话，上一件的离场会算到下一段头上 —— 而下一段
+      // 是另一件包裹，那个「离场」根本不存在。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      expect(tracker.tracked, waybill);
+
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+      expect(tracker.tracked, isNull, reason: '这一件已经收了尾');
+
+      // 下件包裹：跟踪对象换成它，而不是接着跟上一件。
+      nowMs += 1000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      expect(tracker.tracked, otherWaybill);
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 语音播报（§3.3.2 / §3.3.4）
+  // ─────────────────────────────────────────────
+
+  group('语音播报', () {
+    test('扫到不同面单 → 读出规格里那句话', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.spoken, ['面单不同']);
+      await coordinator.dispose();
+    });
+
+    test('★ 播报失败不拖垮停录 —— 提示丢了是小事', () async {
+      // 设备没装中文语音包时，通道会抛。抛上去的话「扫回正确面单」这条
+      // 停录路径会整个失败 —— 那一下本该只是提示一下就接着录。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      gateway.speakThrows = true;
+
+      // 扫错码：只提示不停。这一步不能因为播报抛了就出事。
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isTrue);
+
+      // 扫回正确面单：靠的就是这条路径停录，播报仍然在抛。
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isFalse, reason: '播报坏了也必须停得下来');
+
+      await coordinator.dispose();
+    });
+
+    test('没扫错时不播报', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      expect(gateway.spoken, isEmpty);
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 打点持久化（§3.2.4）
+  // ─────────────────────────────────────────────
+
+  group('打点', () {
+    test('★ 开录取到单号那一刻就落盘，偏移为 0', () async {
+      // 规格 §3.2.4 要的是**立即**持久化，不是会话结束时批量写 ——
+      // 所以这里不等收尾，开录之后就查盘。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+
+      final punches = await punchLog.forSession(sessionId);
+      expect(punches, hasLength(1));
+      expect(punches.single.waybill, waybill);
+      expect(punches.single.monotonicOffsetMilliseconds, 0,
+          reason: '第一条打点就是会话起点，偏移必须是 0（回放跳转按它定位）');
+      expect(punches.single.source, PunchSource.cameraDecoder);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 落盘不依赖收尾 —— 收尾失败也照样在盘上', () async {
+      // 「打点丢了」和「录像没收尾」是两个独立的坏结果，不能绑在一起。
+      final coordinator = RecordingCoordinator(
+        gateway: gateway = FakeGateway(),
+        workspace: workspace = RecordingWorkspace('$root/work'),
+        finalizer: SessionFinalizer(rootDirectory: root, index: _ThrowingIndex()),
+        punchLog: punchLog = PunchLog('$root/punches.jsonl'),
+        mode: WorkMode.sameWaybillStop,
+        config: const RecorderConfig(staticStop: StaticStopSetting.off),
+        clock: clock,
+      );
+      nowMs = 1000;
+      await begin(coordinator);
+
+      await coordinator.onManualStop();
+
+      expect(await punchLog.loadAll(), hasLength(1));
+      await coordinator.dispose();
+    });
+
+    test('复扫再落一条，偏移按会话起点算', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+
+      nowMs = 1000 + 90 * 1000;
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      final punches = await punchLog.forSession(sessionId);
+      expect(punches.map((p) => p.monotonicOffsetMilliseconds), [0, 90 * 1000]);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 扫错码也打点 —— 那一刻扫到了什么必须留痕', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+
+      nowMs = 1000 + 30 * 1000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      final punches = await punchLog.forSession(sessionId);
+      expect(punches.map((p) => p.waybill.value), [waybill.value, otherWaybill.value]);
+
+      await coordinator.dispose();
+    });
+
+    test('手动输入的单号，来源标成手动', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      final sessionId = coordinator.sessionId!;
+      // 同一单号 = 复扫，这个模式（同码停）会就此停录并清空 sessionId，
+      // 所以要在调它之前把会话号记下来。
+      await coordinator.onWaybillDetected(waybill, source: PunchSource.manualEntry);
+      await coordinator.waitForPendingEvents();
+
+      final punches = await punchLog.forSession(sessionId);
+      expect(punches.map((p) => p.source),
+          [PunchSource.cameraDecoder, PunchSource.manualEntry]);
+      await coordinator.dispose();
+    });
+
+    test('收尾之后再扫不会挂到刚结束的那个会话上', () async {
+      // 会话一收尾就该断开关系。否则下件包裹的第一条打点会被写进
+      // 上一件录像里，回放时那件录像上会多出一个不属于它的跳转点。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      final first = coordinator.sessionId!;
+
+      await coordinator.onManualStop();
+      await coordinator.onWaybillDetected(waybill);
+      final second = coordinator.sessionId!;
+
+      expect(second, isNot(first));
+      expect(await punchLog.forSession(first), hasLength(1));
+      expect(await punchLog.forSession(second), hasLength(1));
 
       await coordinator.dispose();
     });
@@ -709,5 +1012,22 @@ class FakeGateway implements RecorderGateway {
   Future<void> closeCamera() async => cameraOpened = false;
 
   @override
-  Future<void> setZoom(double ratio) async {}
+  Future<void> setZoom(double ratio) async => zoomRatio = ratio;
+
+  double? zoomRatio;
+
+  @override
+  Future<double?> maxZoom() async => 4.0;
+
+  /// 读出来的提示，按顺序记下。
+  final spoken = <String>[];
+
+  /// 让下一次 `speak` 抛异常 —— 验「播报失败不能拖垮停录」。
+  bool speakThrows = false;
+
+  @override
+  Future<void> speak(String text) async {
+    if (speakThrows) throw Exception('这台设备没有 TTS');
+    spoken.add(text);
+  }
 }

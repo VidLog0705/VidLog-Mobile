@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import Foundation
 
@@ -17,9 +18,12 @@ import Foundation
 /// |---|---|---|
 /// | `hasCameraPermission` | Dart → 原生 | 是否已授权 |
 /// | `requestCameraPermission` | Dart → 原生 | 弹授权框 |
-/// | `startSession` | Dart → 原生 | 开始录制，参数含工作区目录、单段时长 |
-/// | `stopSession` | Dart → 原生 | 停止；**等最后一段封完才返回** |
+/// | `openCamera` | Dart → 原生 | 开相机送预览，**不录** |
+/// | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长 |
+/// | `stopRecording` | Dart → 原生 | 停止；**等最后一段封完才返回** |
+/// | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
 /// | `setZoom` | Dart → 原生 | 变焦 |
+/// | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4） |
 /// | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
 /// | `sceneSampled` | 原生 → Dart | 画面是否静止 |
 /// | `failed` | Dart ← 原生 | 相机/编码出错 |
@@ -34,6 +38,12 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     private var recorder: CameraSegmentRecorder?
     private var eventSink: FlutterEventSink?
+
+    /// 语音播报（规格 §3.3.2 / §3.3.4）。
+    ///
+    /// 用系统 TTS：不用多带一份音频资源，也**没有许可证要核对**（规格 §10）。
+    /// 持住这个实例 —— `AVSpeechSynthesizer` 被释放时会把没念完的话一起丢掉。
+    private let speaker = AVSpeechSynthesizer()
 
     /// 预览视图的类型名，与 Dart 侧 `UiKitView(viewType:)` 一致。
     static let previewViewType = "vidlog/camera_preview"
@@ -118,9 +128,43 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             recorder?.setZoom(CGFloat(truncating: ratio))
             result(nil)
 
+        case "maxZoom":
+            // 相机没开时给 nil —— Dart 侧用保守的默认值，不去猜设备。
+            result(recorder?.maxZoomRatio.map { Double($0) })
+
+        case "speak":
+            speak(call, result: result)
+
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// 读出一句提示。
+    ///
+    /// 引擎没装中文语音时 `voice` 会给 nil —— **不能因此判定失败**：
+    /// 那时系统会退化成默认语音，用户至少还听得见有提示。
+    /// 播报是尽力而为的，Dart 侧也按成功处理（见 `RecorderGateway.speak`）。
+    private func speak(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let text = args["text"] as? String, !text.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 text", details: nil))
+            return
+        }
+
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+
+        // 新提示顶掉旧的那句。两句提示本来就不会同时出现，
+        // 而「面单不同」连着报两次时，叠着念比只念一遍更糟 ——
+        // 用户要先听完才知道是同一句。
+        if speaker.isSpeaking {
+            speaker.stopSpeaking(at: .immediate)
+        }
+        speaker.speak(utterance)
+
+        result(nil)
     }
 
     /// 开相机、开始送预览。**不录。**

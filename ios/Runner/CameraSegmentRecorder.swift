@@ -310,6 +310,14 @@ final class CameraSegmentRecorder: NSObject {
         }
     }
 
+    /// 设备支持的变焦上限。相机没开时为 nil。
+    ///
+    /// 规格 §3.1.2：半圆刻度盘的刻度要画到哪，取决于这个值 ——
+    /// 表盘划到底就该是设备的上限，不然表盘在骗用户。
+    var maxZoomRatio: CGFloat? {
+        captureDevice?.maxAvailableVideoZoomFactor
+    }
+
     /// 设置缩放倍率。规格 §3.1.2：倍率不得超过设备能力上限。
     func setZoom(_ ratio: CGFloat) {
         guard let device = captureDevice else { return }

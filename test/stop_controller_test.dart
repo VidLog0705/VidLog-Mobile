@@ -102,6 +102,18 @@ void main() {
       expect(controller.isRecording, isFalse);
     });
 
+    test('扫码静止停录：复扫同码**不**停止（2026-09-21 裁定）', () {
+      // 曾经取的是 §3.3.2 的字面读法（复扫也停），那会让这个模式
+      // 与「同码停」完全等价、目标跟踪做了也永远不会被触发。
+      // 裁定取 §3.3.1：只能靠「离场→入场→静止」停。
+      final controller = isolated(
+          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
+      start(controller);
+
+      expect(stops(controller.handle(WaybillDetected(t0 + minute, waybillA))), isEmpty);
+      expect(controller.isRecording, isTrue);
+    });
+
     test('停止之后可以重新开录', () {
       final controller = isolated(mode: WorkMode.sameWaybillStop);
       start(controller);
