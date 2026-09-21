@@ -6,14 +6,10 @@ import '../primitives.dart';
 /// 索引里的一条录像记录。
 ///
 /// 字段与电脑端 `VidLog.Desktop.Core/Index/RecordingIndex.cs` 的
-/// `RecordingEntry` **一一对应**，契约以母仓 `docs/02-数据模型.md` 为准。
-///
-/// 注意 [sessionId] 是必需的：打点记的是**会话内偏移**，而一次打包可能横跨
-/// 多个分段文件，没有它就拼不出时间轴（母仓 §5.4）。
+/// `RecordingEntry` 对应，契约以母仓 `docs/02-数据模型.md` 为准。
 class RecordingEntry {
   const RecordingEntry({
     required this.evidenceId,
-    required this.sessionId,
     required this.waybill,
     required this.startedAt,
     required this.endedAt,
@@ -24,7 +20,6 @@ class RecordingEntry {
   });
 
   final String evidenceId;
-  final String sessionId;
   final WaybillNumber waybill;
   final DateTime startedAt;
   final DateTime endedAt;
@@ -38,7 +33,6 @@ class RecordingEntry {
 
   Map<String, Object?> toJson() => {
         'evidenceId': evidenceId,
-        'sessionId': sessionId,
         'waybill': waybill.value,
         'startedAt': startedAt.toUtc().toIso8601String(),
         'endedAt': endedAt.toUtc().toIso8601String(),
@@ -53,9 +47,6 @@ class RecordingEntry {
 
     return RecordingEntry(
       evidenceId: evidenceId,
-      // 早期记录可能没有这个字段 —— 退化成「自己是自己的会话」，
-      // 至少不会把不同会话错并到一起。
-      sessionId: (json['sessionId'] as String?) ?? evidenceId,
       waybill: WaybillNumber.parse(json['waybill'] as String?),
       startedAt: DateTime.parse(json['startedAt']! as String).toLocal(),
       endedAt: DateTime.parse(json['endedAt']! as String).toLocal(),

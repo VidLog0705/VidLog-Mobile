@@ -120,7 +120,7 @@ void main() {
 
       final entry = (await index.loadAll()).single;
       expect(entry.waybill, waybill);
-      expect(entry.sessionId, 's1');
+      expect(entry.evidenceId, 's1-000');
       expect(entry.duration, const Duration(seconds: 30));
       expect(entry.sourceDeviceId, 'device-1');
     });
@@ -176,7 +176,6 @@ void main() {
 
       final entries = await index.loadAll();
       expect(entries, hasLength(3));
-      expect(entries.map((e) => e.sessionId).toSet(), {'s1'});
       expect(entries.map((e) => e.evidenceId).toSet(), {'s1-000', 's1-001', 's1-002'});
     });
   });

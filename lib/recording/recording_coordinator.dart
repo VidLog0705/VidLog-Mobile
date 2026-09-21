@@ -4,7 +4,6 @@ import 'dart:math';
 
 import '../primitives.dart';
 import '../scanning/scan_gate.dart';
-import '../states.dart';
 import 'recorder_config.dart';
 import 'recorder_events.dart';
 import 'recorder_gateway.dart';
@@ -106,6 +105,9 @@ class RecordingCoordinator {
   /// 所以「开录后 4 分钟才停」完全可能是「扫码折腾了 2 分钟 + 静止 2 分钟」——
   /// 那是正确的，但没有这条观测就没法区分它和「封顶失效」。
   void Function(bool isStatic)? onSceneChanged;
+
+  /// 原生层报错（相机打不开、编码出错等）。
+  void Function(String message)? onNativeFailure;
 
   /// 一段录制**收尾完成**（已入库或失败）。
   ///
@@ -311,18 +313,6 @@ class RecordingCoordinator {
     await _dispatch([WaybillDetected(_clock(), waybill)]);
   }
 
-  /// 被追踪的包裹离开取景框。
-  Future<void> onPackageLeft() async {
-    if (!_stopController.isRecording) return;
-    await _dispatch([TrackedPackageLeft(_clock())]);
-  }
-
-  /// 被追踪的包裹重新进入取景框。
-  Future<void> onPackageEntered() async {
-    if (!_stopController.isRecording) return;
-    await _dispatch([TrackedPackageEntered(_clock())]);
-  }
-
   /// 用户点了时长兜底里的【继续】或【停止】。
   Future<void> onDurationPromptAnswered({required bool continueRecording}) async {
     if (!_stopController.isRecording) return;
@@ -334,23 +324,6 @@ class RecordingCoordinator {
   Future<void> onManualStop() async {
     if (!_stopController.isRecording) return;
     await _dispatch([ManualStopRequested(_clock())]);
-  }
-
-  /// 上报资源状况（存储、电量、热度）。
-  Future<void> onResourceReported({
-    int? freeStorageBytes,
-    int? batteryPercent,
-    ThermalLevel? thermal,
-  }) async {
-    if (!_stopController.isRecording) return;
-    await _dispatch([
-      ResourceReported(
-        _clock(),
-        freeStorageBytes: freeStorageBytes,
-        batteryPercent: batteryPercent,
-        thermal: thermal,
-      ),
-    ]);
   }
 
   /// 时间驱动的心跳。
@@ -467,7 +440,8 @@ class RecordingCoordinator {
 
       case RecorderFailedEvent():
         _lastError = event.message;
-        onAction?.call(WarnResource(event.message));
+        // 原生层报错**必须让用户看见** —— 静默失败是规格明确禁止的。
+        onNativeFailure?.call(event.message);
     }
   }
 
@@ -517,11 +491,3 @@ class RecordingCoordinator {
   static final _separators = RegExp(r'[/\\]');
 }
 
-/// 会话状态机的状态名，供界面显示。
-String describeState(RecordingSessionState state) => switch (state) {
-      RecordingSessionState.idle => '空闲',
-      RecordingSessionState.recording => '录制中',
-      RecordingSessionState.finalizing => '收尾中',
-      RecordingSessionState.indexed => '已入库',
-      RecordingSessionState.finalizeFailed => '收尾失败',
-    };

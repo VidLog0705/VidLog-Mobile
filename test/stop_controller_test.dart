@@ -370,7 +370,6 @@ void main() {
       expect(actions.whereType<Speak>().single.prompt, VoicePrompt.durationTimeout);
       expect(actions.whereType<ShowDurationPrompt>(), hasLength(1));
       expect(stops(actions), isEmpty, reason: '问了不等于停');
-      expect(controller.isAskingToContinue, isTrue);
     });
 
     test('不操作 → 5 分钟自动停止', () {
@@ -403,7 +402,6 @@ void main() {
           DurationPromptAnswered(t0 + 4 * minute + 1000, continueRecording: true));
 
       expect(controller.isRecording, isTrue);
-      expect(controller.isAskingToContinue, isFalse);
 
       final askAt = t0 + 4 * minute + 1000 + 5 * minute;
       expect(controller.handle(Heartbeat(askAt - 1000)), isEmpty);
@@ -458,83 +456,6 @@ void main() {
           reason: '停下来时要把询问收掉，不能留个死按钮在屏幕上');
     });
 
-    test('资源告警优先于其它机制（它不等时间）', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions = controller.handle(ResourceReported(t0 + 1000, batteryPercent: 3));
-
-      expect(stops(actions).single.trigger, StopTrigger.resourceCritical);
-    });
-  });
-
-  // ─────────────────────────────────────────────
-  // 资源告警（§3.1.1）
-  // ─────────────────────────────────────────────
-
-  group('存储 / 电量 / 过热', () {
-    test('存储将满 → 告警并主动收尾', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions = controller.handle(
-          ResourceReported(t0 + minute, freeStorageBytes: 100 * 1024 * 1024));
-
-      expect(actions.whereType<Speak>().single.prompt, VoicePrompt.resourceWarning);
-      expect(actions.whereType<WarnResource>().single.reason, contains('存储将满'));
-      expect(stops(actions).single.trigger, StopTrigger.resourceCritical);
-    });
-
-    test('电量过低 → 告警并主动收尾', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions = controller.handle(ResourceReported(t0 + minute, batteryPercent: 5));
-
-      expect(actions.whereType<WarnResource>().single.reason, contains('电量过低'));
-      expect(stops(actions), hasLength(1));
-    });
-
-    test('过热 → 告警并主动收尾', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions =
-          controller.handle(ResourceReported(t0 + minute, thermal: ThermalLevel.critical));
-
-      expect(actions.whereType<WarnResource>().single.reason, contains('过热'));
-      expect(stops(actions), hasLength(1));
-    });
-
-    test('资源正常时不受影响', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions = controller.handle(ResourceReported(t0 + minute,
-          freeStorageBytes: 50 * 1024 * 1024 * 1024,
-          batteryPercent: 90,
-          thermal: ThermalLevel.nominal));
-
-      expect(actions, isEmpty);
-      expect(controller.isRecording, isTrue);
-    });
-
-    test('多项同时超标时原因合并', () {
-      final controller = durationOnly();
-      start(controller);
-
-      final actions = controller.handle(
-          ResourceReported(t0 + minute, freeStorageBytes: 1024, batteryPercent: 1));
-
-      expect(actions.whereType<WarnResource>().single.reason, contains('存储将满'));
-      expect(actions.whereType<WarnResource>().single.reason, contains('电量过低'));
-    });
-
-    test('未在录制时资源告警不触发停止', () {
-      final controller = full();
-
-      expect(controller.handle(ResourceReported(t0, batteryPercent: 1)), isEmpty);
-    });
   });
 
   // ─────────────────────────────────────────────
@@ -570,17 +491,6 @@ void main() {
           DurationFallbackSetting.minutes6);
     });
 
-    test('非法热度值回落到不告警', () {
-      expect(ThermalLevel.fromConfig('垃圾'), ThermalLevel.nominal);
-      expect(ThermalLevel.fromConfig(999), ThermalLevel.nominal);
-      expect(ThermalLevel.fromConfig('severe'), ThermalLevel.severe);
-    });
-
-    test('热度档位是有序的', () {
-      expect(ThermalLevel.critical.reaches(ThermalLevel.severe), isTrue);
-      expect(ThermalLevel.light.reaches(ThermalLevel.severe), isFalse);
-    });
-
     test('坏配置不会让录制起不来', () {
       // I4：任何远端配置的缺失 / 错误 / 异常，都不得导致录制无法开始或异常停止。
       final config = RecorderConfig(staticStop: StaticStopSetting.fromConfig('垃圾'));
@@ -603,7 +513,6 @@ void main() {
 
       expect(controller.isRecording, isFalse);
       expect(controller.elapsedMs(t0 + 60 * minute), 0);
-      expect(controller.staticForMs(t0 + 60 * minute), 0);
     });
 
     test('已录时长基于单调时钟，与墙钟无关', () {

@@ -31,10 +31,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
-
   # 内容哈希（规格 §3.6.1：指纹 = 内容哈希 + 单号 + 录制时间）。
   # dart:core 没有 SHA-256，而指纹是证据能力的基石。
   # 许可证：BSD-3-Clause，Dart 官方维护（dart.dev）。

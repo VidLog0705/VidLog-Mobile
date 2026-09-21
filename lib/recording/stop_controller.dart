@@ -60,15 +60,8 @@ class StopController {
   /// 本次录音的开启单号（规格 §3.3.2 的「首扫面单」）。
   WaybillNumber? get currentWaybill => _waybill;
 
-  /// 是否正在显示时长兜底的询问。
-  bool get isAskingToContinue => _promptShownAtMs != null;
-
   /// 已录时长。基于**单调时钟**（规格 §3.6.3），不受用户改系统时间影响。
   int elapsedMs(int nowMs) => _recording ? nowMs - _startedAtMs : 0;
-
-  /// 画面已静止的时长。**已被「已录时长」封顶**（不变量 I12）——
-  /// 上限就是开录那一刻，所以刚开录时它从 0 开始，不会带着开录前的静止时长进来。
-  int staticForMs(int nowMs) => _recording ? nowMs - _lastMotionAtMs : 0;
 
   /// 处理一个事件，返回宿主应当执行的动作。
   List<RecorderAction> handle(RecorderEvent event) {
@@ -121,11 +114,6 @@ class StopController {
           }
         }
 
-      case ResourceReported():
-        if (_recording) {
-          actions.addAll(_onResource(event));
-        }
-
       case Heartbeat():
         break;
     }
@@ -172,38 +160,6 @@ class StopController {
     return mode.stopsOnSameWaybillRescan
         ? _stop(StopTrigger.sameWaybillRescan)
         : const [];
-  }
-
-  List<RecorderAction> _onResource(ResourceReported report) {
-    final reasons = <String>[];
-
-    final free = report.freeStorageBytes;
-    if (free != null && free < config.storageFreeWarningBytes) {
-      reasons.add('存储将满');
-    }
-
-    final battery = report.batteryPercent;
-    if (battery != null && battery < config.batteryWarningPercent) {
-      reasons.add('电量过低');
-    }
-
-    final thermal = report.thermal;
-    if (thermal != null && thermal.reaches(config.thermalWarning)) {
-      reasons.add('设备过热');
-    }
-
-    if (reasons.isEmpty) {
-      return const [];
-    }
-
-    // 规格 §3.1.1：**提前告警，并主动安全收尾**（正常关闭当前分段、写指纹、入库），
-    // 而不是等崩溃。
-    final stopActions = _stop(StopTrigger.resourceCritical);
-    return [
-      const Speak(VoicePrompt.resourceWarning),
-      WarnResource(reasons.join('、')),
-      ...stopActions,
-    ];
   }
 
   List<RecorderAction> _evaluateTimers(int nowMs) {

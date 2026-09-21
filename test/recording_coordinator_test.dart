@@ -213,11 +213,14 @@ void main() {
       nowMs = 1000;
       await begin(coordinator);
 
+      final failures = <String>[];
+      coordinator.onNativeFailure = failures.add;
+
       gateway.emit(const RecorderFailedEvent('相机被抢占'));
       await pumpEventQueue();
 
       expect(coordinator.lastError, '相机被抢占');
-      expect(actions.whereType<WarnResource>(), isNotEmpty,
+      expect(failures, ['相机被抢占'],
           reason: '原生错误必须让用户看见，不能静默');
 
       await coordinator.dispose();

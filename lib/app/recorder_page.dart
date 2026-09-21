@@ -158,6 +158,7 @@ class _RecorderPageState extends State<RecorderPage> {
     )..onBarcodeAccepted = _onBarcodeAccepted;
     _coordinator!.onFinalized = _onFinalized;
     _coordinator!.onSceneChanged = _onSceneChanged;
+    _coordinator!.onNativeFailure = (message) => _log('⚠️ $message');
   }
 
   /// 画面静下来 / 又动起来。
@@ -224,9 +225,6 @@ class _RecorderPageState extends State<RecorderPage> {
 
       case HideDurationPrompt():
         setState(() => _askingToContinue = false);
-
-      case WarnResource(:final reason):
-        _log('⚠️ $reason');
     }
   }
 
@@ -740,6 +738,5 @@ class _RecorderPageState extends State<RecorderPage> {
   static String _promptLabel(VoicePrompt prompt) => switch (prompt) {
         VoicePrompt.differentWaybill => '面单不同',
         VoicePrompt.durationTimeout => '录制时间即将超时，是否需要停止录制？',
-        VoicePrompt.resourceWarning => '设备资源告警',
       };
 }

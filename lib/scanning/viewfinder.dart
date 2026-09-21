@@ -21,10 +21,6 @@ class NormalizedRect {
   /// 点是否落在矩形内（含边界）。
   bool containsPoint(double x, double y) =>
       x >= left && x <= right && y >= top && y <= bottom;
-
-  /// 与另一个矩形是否完全不相交。
-  bool isDisjointFrom(NormalizedRect other) =>
-      right <= other.left || other.right <= left || bottom <= other.top || other.bottom <= top;
 }
 
 /// 取景框预设档位。规格 §3.2.2：框的大小可由用户调整（至少提供预设档位）。
@@ -127,8 +123,4 @@ class Viewfinder {
 
   bool acceptsRect(NormalizedRect detection) =>
       rect.containsPoint(detection.centerX, detection.centerY);
-
-  /// 过滤一批识码结果，只留下框内的。
-  List<BarcodeDetection> filter(Iterable<BarcodeDetection> detections) =>
-      detections.where(accepts).toList(growable: false);
 }

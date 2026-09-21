@@ -160,16 +160,7 @@ void main() {
     });
   });
 
-  group('状态查询与重置', () {
-    test('isStillVisible 反映是否还在画面里', () {
-      final gate = makeGate();
-      gate.accept(sighting('SF1'), t0);
-
-      expect(gate.isStillVisible('SF1', t0 + 500), isTrue);
-      expect(gate.isStillVisible('SF1', t0 + 3 * second), isFalse);
-      expect(gate.isStillVisible('NEVER-SEEN', t0), isFalse);
-    });
-
+  group('重置', () {
     test('reset 之后同一个码算新的一次', () {
       final gate = makeGate();
       gate.accept(sighting('SF1'), t0);

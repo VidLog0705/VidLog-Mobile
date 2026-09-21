@@ -1,5 +1,4 @@
 import '../primitives.dart';
-import 'recorder_config.dart';
 
 /// 喂给停录状态机的事件。
 ///
@@ -56,20 +55,6 @@ final class ManualStopRequested extends RecorderEvent {
   const ManualStopRequested(super.monotonicMs);
 }
 
-/// 设备资源状况上报。
-final class ResourceReported extends RecorderEvent {
-  const ResourceReported(
-    super.monotonicMs, {
-    this.freeStorageBytes,
-    this.batteryPercent,
-    this.thermal,
-  });
-
-  final int? freeStorageBytes;
-  final int? batteryPercent;
-  final ThermalLevel? thermal;
-}
-
 /// 停录的原因。与电脑端的 `StopReason` 对应（母仓 `docs/02-数据模型.md` §3.1）。
 enum StopTrigger {
   /// 用户主动停止。
@@ -98,9 +83,6 @@ enum VoicePrompt {
 
   /// 规格 §3.3.4：「录制时间即将超时，是否需要停止录制？」
   durationTimeout,
-
-  /// 存储将满 / 低电量 / 过热（规格 §3.1.1）。
-  resourceWarning,
 }
 
 /// 状态机要宿主执行的动作。
@@ -133,9 +115,3 @@ final class HideDurationPrompt extends RecorderAction {
   const HideDurationPrompt();
 }
 
-/// 资源告警，附带给用户看的原因。
-final class WarnResource extends RecorderAction {
-  const WarnResource(this.reason);
-
-  final String reason;
-}

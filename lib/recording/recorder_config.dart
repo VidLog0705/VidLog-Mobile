@@ -105,9 +105,6 @@ class RecorderConfig {
     this.promptAfterOverride,
     this.durationPromptRepeatEvery = const Duration(minutes: 5),
     this.durationPromptGrace = const Duration(minutes: 1),
-    this.storageFreeWarningBytes = 2 * 1024 * 1024 * 1024,
-    this.batteryWarningPercent = 15,
-    this.thermalWarning = ThermalLevel.severe,
   });
 
   /// 静止停录档位（§3.3.3）。
@@ -133,49 +130,6 @@ class RecorderConfig {
   /// 问了之后多久没操作就默认继续（并随即停止）。
   final Duration durationPromptGrace;
 
-  /// 剩余存储低于此值就告警并主动收尾。
-  final int storageFreeWarningBytes;
-
-  /// 电量低于此百分比就告警并主动收尾。
-  final int batteryWarningPercent;
-
-  /// 温度达到此级别就告警并主动收尾。
-  final ThermalLevel thermalWarning;
-
   /// 全部回落到硬兜底值。
   static const hardFallback = RecorderConfig();
-}
-
-/// 设备热度等级。
-///
-/// 顺序**必须**由轻到重 —— [reaches] 靠 [index] 比较。
-/// 档位对齐 Android 的 `PowerManager.THERMAL_STATUS_*`。
-enum ThermalLevel {
-  nominal,
-  light,
-  moderate,
-  severe,
-  critical,
-  emergency;
-
-  /// 是否达到或超过 [limit]。
-  bool reaches(ThermalLevel limit) => index >= limit.index;
-
-  /// 从远端配置解析，非法输入回落到 [nominal]（即「不因此告警」）。
-  static ThermalLevel fromConfig(Object? raw) {
-    if (raw is ThermalLevel) return raw;
-
-    if (raw is int && raw >= 0 && raw < ThermalLevel.values.length) {
-      return ThermalLevel.values[raw];
-    }
-
-    if (raw is String) {
-      final name = raw.trim().toLowerCase();
-      for (final level in ThermalLevel.values) {
-        if (level.name == name) return level;
-      }
-    }
-
-    return ThermalLevel.nominal;
-  }
 }

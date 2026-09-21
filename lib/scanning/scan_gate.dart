@@ -112,11 +112,4 @@ class ScanGate {
 
   /// 清空「最后见到」记录。换会话 / 换模式时调。
   void reset() => _lastSeenAtMs.clear();
-
-  /// 某个单号当前是否还在画面上（按阈值判断）。
-  bool isStillVisible(String waybill, int monotonicMs) {
-    final lastSeen = _lastSeenAtMs[waybill];
-    if (lastSeen == null) return false;
-    return monotonicMs - lastSeen < absenceThreshold.inMilliseconds;
-  }
 }

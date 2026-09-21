@@ -153,7 +153,6 @@ class SessionFinalizer {
     try {
       await index.add(RecordingEntry(
         evidenceId: '$sessionId-${segment.sequence.toString().padLeft(3, '0')}',
-        sessionId: sessionId,
         waybill: waybill,
         startedAt: segment.startedAt,
         endedAt: segment.endedAt,

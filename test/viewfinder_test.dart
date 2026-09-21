@@ -58,21 +58,6 @@ void main() {
     });
   });
 
-  group('过滤一批结果', () {
-    test('只留下框内的', () {
-      final detections = [
-        box(0.5, 0.5, text: '中心'),
-        box(0.05, 0.5, text: '左外'),
-        box(0.95, 0.5, text: '右外'),
-        box(0.5, 0.05, text: '上外'),
-      ];
-
-      final kept = viewfinder.filter(detections);
-
-      expect(kept.map((d) => d.text), ['中心']);
-    });
-  });
-
   group('预设档位', () {
     test('三档大小依次递增', () {
       expect(ViewfinderPreset.small.span, lessThan(ViewfinderPreset.medium.span));
