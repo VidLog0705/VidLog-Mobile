@@ -112,6 +112,28 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('★ 默认单段时长的上限是 2 分钟', () async {
+      // 这个值直接决定「崩溃最多丢多少录像」—— 在写的那一段救不回来
+      // （MP4 没有 moov 就是播不了），只能靠缩短分段把损失窗口压小。
+      //
+      // 真机上踩过：默认 5 分钟时录了 1 分多钟就杀掉 App，
+      // **一段都还没封**，重启后毫不知情，那一分钟全丢。
+      // 所以这里断言的是「不许调大」，不是「正好等于某个值」。
+      expect(
+        RecordingCoordinator.defaultSegmentDuration,
+        lessThanOrEqualTo(const Duration(minutes: 2)),
+        reason: '分段太长会让一次崩溃丢掉整单的证据',
+      );
+
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+
+      expect(gateway.segmentDuration, RecordingCoordinator.defaultSegmentDuration);
+
+      await coordinator.dispose();
+    });
+
     test('把工作目录与分段时长交给原生层', () async {
       final coordinator = make();
       nowMs = 1000;

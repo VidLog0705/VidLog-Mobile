@@ -106,6 +106,18 @@ class RecordingCoordinator {
     await _pending;
   }
 
+  /// 单段默认时长。
+  ///
+  /// **这个值直接决定「崩溃时最多丢多少录像」** —— 在写的那一段是救不回来的
+  /// （MP4 没有 moov 就是播不了，这不是能靠代码补救的事），
+  /// 所以只能靠缩短分段把损失窗口压小。
+  ///
+  /// 取 1 分钟的理由：打包一件通常 1~3 分钟，1 分钟的分段让一次崩溃
+  /// **最多丢一件包裹的过程**；再长就会丢掉整单的证据。
+  /// 代价只是文件数变多（30 分钟录像 = 30 个文件），而分段本身几乎不丢帧
+  /// （iOS 那边是先开新 writer 再收旧的，Android 那边编码器全程不停）。
+  static const defaultSegmentDuration = Duration(minutes: 1);
+
   /// 开始一次录制。
   ///
   /// 顺序是刻意的：**先落 manifest 再开相机**。要是反过来，
@@ -136,7 +148,7 @@ class RecordingCoordinator {
 
     await _gateway.startSession(
       directory: _workspace.sessionDirectory(_sessionId!),
-      segmentDuration: segmentDuration ?? const Duration(minutes: 5),
+      segmentDuration: segmentDuration ?? defaultSegmentDuration,
     );
 
     await _dispatch([WaybillDetected(now, waybill)]);

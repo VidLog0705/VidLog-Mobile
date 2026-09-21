@@ -64,6 +64,14 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 当前会话已录时长。
   Duration _elapsed = Duration.zero;
 
+  /// 盘上的实况：工作区有几个会话、其中几个还没收尾、索引里几条。
+  ///
+  /// 真机验收时**失败必须是可见的** —— 上一次拿不到孤儿卡片时，
+  /// 光看界面分不清「没录成」还是「录了但没收尾」，只能靠猜。
+  int _sessionCount = 0;
+  int _pendingCount = 0;
+  int _entryCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -122,6 +130,8 @@ class _RecorderPageState extends State<RecorderPage> {
       if (recovered.isNotEmpty) {
         _log('启动时收尾了 ${recovered.length} 段孤儿');
       }
+
+      await _refreshDiagnostics();
     } catch (error) {
       if (!mounted) return;
       setState(() => _status = '初始化失败：$error');
@@ -163,7 +173,7 @@ class _RecorderPageState extends State<RecorderPage> {
           _elapsed = Duration.zero;
         });
         _log('停录 · ${_triggerLabel(trigger)}');
-        unawaited(_refreshIndex());
+        unawaited(_refreshDiagnostics());
 
       case Speak(:final prompt):
         _log('🔊 ${_promptLabel(prompt)}');
@@ -241,12 +251,25 @@ class _RecorderPageState extends State<RecorderPage> {
     await _coordinator?.onWaybillDetected(waybill);
   }
 
-  Future<void> _refreshIndex() async {
-    final entries = await _index.loadAll();
-    if (!mounted) return;
-    setState(() {
-      _status = '已收尾 · 索引里共 ${entries.length} 条';
-    });
+  /// 重新读一遍盘上的实况。
+  Future<void> _refreshDiagnostics() async {
+    try {
+      final root = Directory(_workspace.rootDirectory);
+      final sessions = root.existsSync()
+          ? root.listSync().whereType<Directory>().length
+          : 0;
+      final pending = (await _workspace.listOrphans()).length;
+      final entries = (await _index.loadAll()).length;
+
+      if (!mounted) return;
+      setState(() {
+        _sessionCount = sessions;
+        _pendingCount = pending;
+        _entryCount = entries;
+      });
+    } on Object catch (error) {
+      if (mounted) setState(() => _status = '读取工作区失败：$error');
+    }
   }
 
   void _log(String line) {
@@ -315,6 +338,14 @@ class _RecorderPageState extends State<RecorderPage> {
                 style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
               ),
             ],
+            const SizedBox(height: 8),
+            Text(
+              '工作区 ${_sessionCount} 个会话'
+              '（未收尾 $_pendingCount）· 索引 $_entryCount 条\n'
+              '单段时长 ${RecordingCoordinator.defaultSegmentDuration.inMinutes} 分钟 —— '
+              '崩溃最多丢这一段，所以每录满一段就自动封一个文件',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
           ],
         ),
       ),
