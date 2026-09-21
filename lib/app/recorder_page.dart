@@ -45,8 +45,18 @@ class _RecorderPageState extends State<RecorderPage> {
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
 
-  /// 当前在哪一页：0 = 采集，1 = 设置。
+  /// 当前在哪一栏：0 = 备份，1 = 发货，2 = 退货，3 = 设置（需求方 2026-09-21 定的四栏）。
+  ///
+  /// **发货与退货共用同一个录制页** —— 两栏只是同一套采集流程的两个入口，
+  /// 差别在于「这一件是发货还是退货」。做成两份页面会让相机开两次，
+  /// 也不符合「同一时刻只有一段录制」的前提。
   int _tab = 0;
+
+  /// 录制页属于哪一栏 —— 只影响标题与后续的上报归类，不影响采集流程本身。
+  ///
+  /// ⚠️ 「发货 / 退货」目前**只是一个标签**，还没有落到数据上
+  /// （不影响落盘、打点、清理策略）。它具体要影响什么，等需求方定。
+  bool get _isReturn => _tab == 2;
 
   WorkMode _mode = WorkMode.sameWaybillStop;
   StaticStopSetting _staticStop = StaticStopSetting.fallback;
@@ -448,21 +458,70 @@ class _RecorderPageState extends State<RecorderPage> {
     final working = _coordinator?.isWorking ?? false;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('VidLog · 采集')),
-      // 用 IndexedStack 而不是 TabBarView：切到设置页时**不销毁预览视图**，
+      appBar: AppBar(title: Text(_tabTitle)),
+      // 用 IndexedStack 而不是 TabBarView：切走时**不销毁预览视图**，
       // 切回来不会闪一下。预览层本来就有「布局时重新挂会话」的自愈逻辑，
       // 但能不重建就别重建。
+      //
+      // ⚠️ **栈里只有三个孩子，不是四个**：发货与退货指向同一个录制页实例。
+      // 放两份进去就会有两个 `UiKitView`、两次开相机 —— 而相机同时只能开一个。
       body: IndexedStack(
-        index: _tab,
-        children: [_workPage(recording, working), _settingsPage()],
+        index: switch (_tab) {
+          0 => 0, // 备份
+          3 => 1, // 设置
+          _ => 2, // 发货 / 退货 —— 同一个录制页
+        },
+        children: [_backupPage(), _settingsPage(), _workPage(recording, working)],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (index) => setState(() => _tab = index),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.videocam_outlined), label: '采集'),
-          NavigationDestination(icon: Icon(Icons.tune), label: '设置'),
+          NavigationDestination(
+            icon: Icon(Icons.cloud_upload_outlined),
+            selectedIcon: Icon(Icons.cloud_upload),
+            label: '备份',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.local_shipping_outlined),
+            selectedIcon: Icon(Icons.local_shipping),
+            label: '发货',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.assignment_return_outlined),
+            selectedIcon: Icon(Icons.assignment_return),
+            label: '退货',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.tune_outlined),
+            selectedIcon: Icon(Icons.tune),
+            label: '设置',
+          ),
         ],
+      ),
+    );
+  }
+
+  String get _tabTitle => switch (_tab) {
+        0 => '备份',
+        1 => '发货',
+        2 => '退货',
+        _ => '设置',
+      };
+
+  /// 备份页。
+  ///
+  /// ⚠️ **暂时是空的** —— 这一页要显示什么由需求方定（2026-09-21）。
+  /// 不放占位假数据：假数字在真机上会被当成真的（这个项目已经吃过一次亏）。
+  Widget _backupPage() {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32),
+        child: Text(
+          '备份\n\n这一页要做成什么，等需求方定。',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.black54),
+        ),
       ),
     );
   }
@@ -590,8 +649,16 @@ class _RecorderPageState extends State<RecorderPage> {
                     style: const TextStyle(fontSize: 16),
                   ),
                 ),
-                if (working && !recording)
+                // 这一件是发货还是退货。两栏的采集流程一模一样，
+                // 操作员得能一眼看出自己在哪一栏 —— 否则录完了才发现归类错了。
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text(_isReturn ? '退货' : '发货'),
+                ),
+                if (working && !recording) ...[
+                  const SizedBox(width: 8),
                   const Text('取景中', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
               ],
             ),
             if (recording) ...[
