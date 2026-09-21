@@ -65,6 +65,16 @@ void main() {
     );
   }
 
+  /// 开始工作 + 扫到面单开录。
+  ///
+  /// 原来是 `coordinator.start(waybill:)` 一步做完，现在拆成两步：
+  /// 规格 §3.2.2 的流程是「点开始工作 → 画面出现取景框 → 扫到面单才开录」。
+  Future<void> begin(RecordingCoordinator coordinator, {WaybillNumber? bill}) async {
+    await coordinator.startWorking(sourceDeviceId: 'device-1');
+    await coordinator.onWaybillDetected(bill ?? waybill);
+    await coordinator.waitForPendingEvents();
+  }
+
   /// 造一个分段文件并上报「已封闭」。
   Future<void> closeSegment(
     RecordingCoordinator coordinator, {
@@ -93,21 +103,26 @@ void main() {
   // ─────────────────────────────────────────────
 
   group('开始录制', () {
-    test('开录前先写 manifest', () async {
-      // 顺序是刻意的：反过来的话，相机开成功、manifest 还没写就被杀，
+    test('★ manifest 必须**先于**开录落盘', () async {
+      // 顺序是刻意的：反过来的话，录到一半被杀、manifest 还没写，
       // 那段录像是彻底找不回来的。
+      //
+      // 光看「最后 manifest 存在」验不出顺序 —— 所以这里挂在
+      // **原生层开始录的那一刻**去查文件。
       final coordinator = make();
       nowMs = 1000;
 
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      var manifestExistedWhenRecordingStarted = false;
+      gateway.onStartRecording = () async {
+        final dir = workspace.sessionDirectory(coordinator.sessionId!);
+        manifestExistedWhenRecordingStarted =
+            File('$dir/${RecordingWorkspace.manifestFileName}').existsSync();
+      };
 
-      final orphans = await workspace.listOrphans();
-      // 此刻还没有分段，所以不算「可收尾的孤儿」；但 manifest 必须已存在。
-      expect(orphans, isEmpty);
+      await begin(coordinator);
 
-      final sessionDir = Directory(workspace.sessionDirectory(coordinator.sessionId!));
-      expect(File('${sessionDir.path}/${RecordingWorkspace.manifestFileName}').existsSync(),
-          isTrue);
+      expect(manifestExistedWhenRecordingStarted, isTrue,
+          reason: '开录时 manifest 必须已经在盘上了');
 
       await coordinator.dispose();
     });
@@ -127,7 +142,7 @@ void main() {
 
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
 
       expect(gateway.segmentDuration, RecordingCoordinator.defaultSegmentDuration);
 
@@ -138,11 +153,12 @@ void main() {
       final coordinator = make();
       nowMs = 1000;
 
-      await coordinator.start(
-        waybill: waybill,
+      await coordinator.startWorking(
         sourceDeviceId: 'device-1',
         segmentDuration: const Duration(minutes: 3),
       );
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
 
       expect(gateway.started, isTrue);
       expect(gateway.directory, contains(coordinator.sessionId!));
@@ -160,7 +176,7 @@ void main() {
     test('分段事件立刻写进 manifest', () async {
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
 
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
@@ -178,7 +194,7 @@ void main() {
     test('多个分段都会累积进去', () async {
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
 
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
@@ -195,7 +211,7 @@ void main() {
     test('原生报错会被记下来并可读', () async {
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
 
       gateway.emit(const RecorderFailedEvent('相机被抢占'));
       await pumpEventQueue();
@@ -209,6 +225,116 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
+  // 开始工作 / 开录 是两件事（规格 §3.2.2）
+  // ─────────────────────────────────────────────
+
+  group('开始工作与开录分开', () {
+    test('★ 开始工作只开相机，不录', () async {
+      // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**。
+      // 那时还没扫码，所以不该录。
+      //
+      // 之前把这两件事合成一步，表现是「点了按钮屏幕上什么都没有、
+      // 但其实已经在录」—— 用户既看不到画面、也没法把面单对准。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+
+      expect(gateway.cameraOpened, isTrue, reason: '相机要开');
+      expect(gateway.started, isFalse, reason: '但还不该开始录');
+      expect(coordinator.isWorking, isTrue);
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('扫到面单才开录', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+
+      nowMs = 2000;
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.started, isTrue);
+      expect(coordinator.isRecording, isTrue);
+      expect(coordinator.sessionId, isNotNull);
+
+      await coordinator.dispose();
+    });
+
+    test('没开始工作时扫码什么都不做', () async {
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.onWaybillDetected(waybill);
+
+      expect(gateway.started, isFalse);
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 停掉一件之后相机还开着，可以接着扫下一件', () async {
+      // 打包是一连串的：扫一件、录、复扫停、再扫下一件。
+      // 每件都重开一次相机会让取景框中段、用户没法对准。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      final firstSession = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: firstSession, sequence: 0, startMs: 0, endMs: 30000);
+
+      await coordinator.onManualStop();
+
+      expect(coordinator.isRecording, isFalse);
+      expect(gateway.cameraOpened, isTrue, reason: '相机不该被关掉');
+      expect(coordinator.isWorking, isTrue, reason: '还在工作状态');
+
+      // 扫下一件
+      nowMs = 2000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isTrue);
+      expect(coordinator.sessionId, isNot(firstSession), reason: '这是新的一段录制');
+
+      await coordinator.dispose();
+    });
+
+    test('结束工作会关相机', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+
+      await coordinator.stopWorking();
+
+      expect(coordinator.isWorking, isFalse);
+      expect(gateway.cameraOpened, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('结束工作时正在录 → 先收尾再关相机', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
+
+      await coordinator.stopWorking();
+
+      expect(gateway.stopped, isTrue);
+      expect(gateway.cameraOpened, isFalse);
+      expect(await index.loadAll(), hasLength(1), reason: '那段要收尾入库');
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
   // 相机识码（原生连续识码 → 离散扫码）
   // ─────────────────────────────────────────────
 
@@ -216,7 +342,7 @@ void main() {
     Future<RecordingCoordinator> recording() async {
       final coordinator = make(mode: WorkMode.sameWaybillStop);
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
       await closeSegment(coordinator,
           sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
@@ -316,7 +442,7 @@ void main() {
     test('手动停止会收尾、写索引、打标记', () async {
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
 
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
@@ -338,7 +464,7 @@ void main() {
     test('复扫同码停止（同码停模式）', () async {
       final coordinator = make(mode: WorkMode.sameWaybillStop);
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
 
@@ -354,7 +480,7 @@ void main() {
     test('错码保护：扫到别的单号不停，会提示', () async {
       final coordinator = make(mode: WorkMode.sameWaybillStop);
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
 
@@ -376,7 +502,7 @@ void main() {
         config: const RecorderConfig(staticStop: StaticStopSetting.minutes3),
       );
       nowMs = 0;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
 
@@ -395,7 +521,7 @@ void main() {
       // 最后一段 —— 刚刚录完、最不该丢的那段 —— 会被漏掉。
       final coordinator = make();
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
 
       // 停止的**那一刻**原生层才把最后一段封完
@@ -431,7 +557,7 @@ void main() {
       actions = [];
 
       nowMs = 1000;
-      await coordinator.start(waybill: waybill, sourceDeviceId: 'device-1');
+      await begin(coordinator);
       final sessionId = coordinator.sessionId!;
       await closeSegment(coordinator, sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
 
@@ -486,10 +612,23 @@ class FakeGateway implements RecorderGateway {
   Future<bool> requestCameraPermission() async => true;
 
   @override
-  Future<void> startSession({
+  Future<void> openCamera() async => cameraOpened = true;
+
+  bool cameraOpened = false;
+
+  /// 原生层**开始录的那一刻**的回调。
+  ///
+  /// 用来验证「manifest 先于开录落盘」这个顺序 —— 那是「录到一半被杀
+  /// 也能找回那段录像」的前提，光看结果验不出来。
+  Future<void> Function()? onStartRecording;
+
+  @override
+  Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
   }) async {
+    if (onStartRecording != null) await onStartRecording!();
+
     started = true;
     this.directory = directory;
     this.segmentDuration = segmentDuration;
@@ -499,10 +638,13 @@ class FakeGateway implements RecorderGateway {
   SegmentClosedEvent? emitOnStop;
 
   @override
-  Future<void> stopSession() async {
+  Future<void> stopRecording() async {
     stopped = true;
     if (emitOnStop != null) emit(emitOnStop!);
   }
+
+  @override
+  Future<void> closeCamera() async => cameraOpened = false;
 
   @override
   Future<void> setZoom(double ratio) async {}
