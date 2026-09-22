@@ -334,6 +334,10 @@ final class CameraSegmentRecorder: NSObject {
     }
 
     /// 设置缩放倍率。规格 §3.1.2：倍率不得超过设备能力上限。
+    ///
+    /// **这里是瞬时的，不 ramp。** 表盘要跟手 —— 手指划到哪画面就得在哪，
+    /// 中间隔一段平滑动画的话手感是「拖不动」。缓进缓出只针对
+    /// **面单进框的自动放大**（见 `rampZoom`）。
     func setZoom(_ ratio: CGFloat) {
         // 操作员自己拖了表盘 —— 那是他**此刻的意图**，要撤销待回弹的自动放大。
         // 不撤销的话，两秒后画面会从他刚调好的倍率跳回去，看起来像表盘失灵。
@@ -343,10 +347,16 @@ final class CameraSegmentRecorder: NSObject {
 
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+
+            // 自动放大正在路上时，用户又拖了表盘：把那段 ramp 掐掉再赋值。
+            // 直接赋 `videoZoomFactor` 也会取消 ramp，但那靠的是文档里一句话；
+            // 明写一行不花钱，而「表盘和自己在飞的动画打架」是很难查的现象。
+            device.cancelVideoZoomRamp()
+
             let clamped = max(device.minAvailableVideoZoomFactor,
                               min(ratio, device.maxAvailableVideoZoomFactor))
             device.videoZoomFactor = clamped
-            device.unlockForConfiguration()
         } catch {
             // 变焦失败不该中断录制。
             NSLog("VidLog: 设置变焦失败 %@", error.localizedDescription)
@@ -359,7 +369,25 @@ final class CameraSegmentRecorder: NSObject {
     private static let autoZoomFactor: CGFloat = 2.0
 
     /// 放大保持多久。之后回到操作员原来的倍率。
+    ///
+    /// ⚠️ 这是**到位之后**再保持的时长，不是从触发算起 —— 见
+    /// `scheduleAutoZoomRestore(after:)`：路上走的时间要另加。
     private static let autoZoomHold: TimeInterval = 2.0
+
+    /// 平滑变焦的速率（倍/秒）。**这就是「缓进缓出」那个「缓」**。
+    ///
+    /// 规格 §3.1.2：面单进框的自动放大「**必须是缓进缓出**（推进 / 推远都有
+    /// 过程），**不得**表现为画面瞬间跳大、瞬间跳小」。
+    /// 3.0 ≈ 1×→2× 走约 0.33 秒。
+    ///
+    /// ⚠️ **这个数只能真机调。** `withRate` 在文档里是「倍/秒」，但实际手感
+    /// 是不是严格线性、慢到多少算合适，本机（Windows、没有摄像头）验不了。
+    /// 嫌快就调小、嫌慢就调大，**只改这一个数**。
+    ///
+    /// ⚠️ 诚实说明：`ramp` 是**线性**速率，不是 S 曲线。需求方要的
+    /// 「不要突然放大 / 突然缩小」它完全满足；严格意义的「缓进缓出」
+    /// （起手慢、中间快、收尾慢）它没有。真机觉得硬再改逐帧曲线。
+    private static let zoomRampRate: CGFloat = 3.0
 
     /// 自动放大前的倍率。**只在没有待回弹时才记**，见 `autoFocusAndZoom`。
     private var savedZoomFactor: CGFloat?
@@ -387,7 +415,7 @@ final class CameraSegmentRecorder: NSObject {
         let target = max(device.minAvailableVideoZoomFactor,
                          min(max(current, Self.autoZoomFactor),
                              device.maxAvailableVideoZoomFactor))
-        setZoomFactor(target, on: device)
+        rampZoom(to: target, on: device)
 
         // ⚠️ **只在「没有待回弹」时记原值。**
         // 连续扫每件都会触发一次；每次都记的话，记下的就是上一次放大后的值，
@@ -396,8 +424,54 @@ final class CameraSegmentRecorder: NSObject {
             savedZoomFactor = current
         }
 
-        scheduleAutoZoomRestore()
+        scheduleAutoZoomRestore(after: rampSeconds(from: current, to: target))
     }
+
+    /// 从 `from` 推到 `to` 要走多久（秒）。
+    ///
+    /// `withRate` 的单位是**倍/秒**，所以是距离除以速率。`rampZoom` 走不到
+    /// 的那一小段距离会被它当成 0 —— 这里也要一致，不然会白等一小会儿。
+    private func rampSeconds(from: CGFloat, to: CGFloat) -> TimeInterval {
+        let distance = abs(to - from)
+        guard distance > Self.rampMinimumDistance, Self.zoomRampRate > 0 else { return 0 }
+        return TimeInterval(distance / Self.zoomRampRate)
+    }
+
+    /// 平滑地把倍率推到 `target`。**「缓进缓出」的实现就在这一句 `ramp`。**
+    ///
+    /// 为什么不用 `videoZoomFactor = x`：那是**瞬时跳变**，需求方 2026-09-22
+    /// 明确否掉了（「不要突然放大，突然缩小」）。这一条**撤回了**
+    /// `docs/实现决策.md` §18.6 里「不用动画」的旧决策。
+    ///
+    /// 表盘**不走这里**：拖动要跟手，必须瞬时（见 `setZoom`）。
+    ///
+    /// **尽力而为，什么都不抛。**
+    private func rampZoom(to target: CGFloat, on device: AVCaptureDevice) {
+        let clamped = max(device.minAvailableVideoZoomFactor,
+                          min(target, device.maxAvailableVideoZoomFactor))
+
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+
+            // 距离太小就别起步：`ramp` 在零距离上没有意义，而且不同机型
+            // 对「速率必须为正」的挑剔程度不一样，不值得去撞。
+            if abs(clamped - device.videoZoomFactor) < Self.rampMinimumDistance {
+                device.videoZoomFactor = clamped
+                return
+            }
+
+            device.ramp(toVideoZoomFactor: clamped,
+                        withRate: Float(Self.zoomRampRate))
+        } catch {
+            NSLog("VidLog: 平滑变焦失败 %@", error.localizedDescription)
+        }
+    }
+
+    /// 认为「已经很接近目标、不必再 ramp」的距离阈值（倍）。
+    ///
+    /// 0.005 相当于屏幕上几个像素 —— 比它小就没人看得出来。
+    private static let rampMinimumDistance: CGFloat = 0.005
 
     /// 立刻对焦到画面正中，**不动倍率**。
     ///
@@ -449,7 +523,13 @@ final class CameraSegmentRecorder: NSObject {
         }
     }
 
-    private func scheduleAutoZoomRestore() {
+    /// 排下回弹。`delay` 是**推到位**要花的时间，保持时长另加。
+    ///
+    /// ⚠️ 为什么不是直接 `autoZoomHold`：那 2 秒里得有一段是在路上，
+    /// 面单拿到「清晰且在 2 倍上」的时间就缩水了（推 1×→2× 要 0.33 秒，
+    /// 就少了六分之一）。规格 §3.1.2 说「约 2 秒后推回」，
+    /// 指的是**到位之后**再保持约 2 秒。
+    private func scheduleAutoZoomRestore(after delay: TimeInterval) {
         zoomRestoreWorkItem?.cancel()
 
         let work = DispatchWorkItem { [weak self] in
@@ -459,7 +539,9 @@ final class CameraSegmentRecorder: NSObject {
 
         // 主队列：`captureDevice` 的配置与关闭都在主线程那侧，避免与
         // `closeCamera` 抢同一台设备。
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoZoomHold, execute: work)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + delay + Self.autoZoomHold,
+            execute: work)
     }
 
     private func restoreAfterAutoZoom() {
@@ -469,7 +551,7 @@ final class CameraSegmentRecorder: NSObject {
 
         guard let device = captureDevice, let saved = savedZoomFactor else { return }
 
-        setZoomFactor(saved, on: device)
+        rampZoom(to: saved, on: device)
     }
 
     /// 撤销待回弹的自动放大（操作员自己动了表盘、或相机会话要拆了）。
@@ -480,16 +562,6 @@ final class CameraSegmentRecorder: NSObject {
         zoomRestoreWorkItem?.cancel()
         zoomRestoreWorkItem = nil
         savedZoomFactor = nil
-    }
-
-    private func setZoomFactor(_ factor: CGFloat, on device: AVCaptureDevice) {
-        do {
-            try device.lockForConfiguration()
-            device.videoZoomFactor = factor
-            device.unlockForConfiguration()
-        } catch {
-            NSLog("VidLog: 设置变焦失败 %@", error.localizedDescription)
-        }
     }
 
     // MARK: - 相机配置
