@@ -225,7 +225,7 @@ class _RecorderPageState extends State<RecorderPage> {
       _staticStop = _settings!.staticStop;
       _durationFallback = _settings!.durationFallback;
 
-      _buildCoordinator();
+      await _buildCoordinator();
 
       // 规格 §3.1.1：重启后必须能自动收尾孤儿分段。
       final recovered = await OrphanRecovery(
@@ -287,7 +287,21 @@ class _RecorderPageState extends State<RecorderPage> {
     });
   }
 
-  void _buildCoordinator() {
+  /// 重建编排器（换模式、重新开始工作）。
+  ///
+  /// ⚠️ **必须先释放旧的**（2026-09-22 修）。旧的订阅着 `gateway.events`，
+  /// 只把字段覆盖掉的话那条订阅还活着 —— 从此每来一条原生事件，两个编排器
+  /// 都会各自反应一次（各写一遍 manifest、各落一条打点）。按第二次【开始】
+  /// 就会这样，而画面上看不出来。
+  ///
+  /// **相机不跟着关**（`releaseCamera: false`）：它是进程级的**同一个原生
+  /// 会话**，跟换不换编排器无关。新编排器用 `cameraAlreadyOpen` 把这个事实
+  /// 继承过去 —— 否则按下【开始】那一瞬间界面会以为相机没了、把取景画面
+  /// 换回「相机还没开」那块提示，而且原生还要白重建一次捕获会话。
+  Future<void> _buildCoordinator() async {
+    final cameraWasOpen = _coordinator?.isCameraOpen ?? false;
+    await _coordinator?.dispose(releaseCamera: false);
+
     _coordinator = RecordingCoordinator(
       gateway: _gateway,
       workspace: _workspace,
@@ -295,6 +309,7 @@ class _RecorderPageState extends State<RecorderPage> {
       punchLog: _punchLog,
       mode: _mode,
       config: _config,
+      cameraAlreadyOpen: cameraWasOpen,
       onAction: _onAction,
     )..onBarcodeAccepted = _onBarcodeAccepted;
     _coordinator!.onFinalized = _onFinalized;
@@ -434,7 +449,7 @@ class _RecorderPageState extends State<RecorderPage> {
         }
       }
 
-      _buildCoordinator(); // 换模式下重建，配置跟着走
+      await _buildCoordinator(); // 换模式下重建，配置跟着走
 
       // ⚠️ 这里传的必须是**设备标识**，不是本机名（契约 §1.1 步骤 2 把两者分开：
       // 标识用来认设备，名字用来给人看）。以前这里写死 `'this-device'` ——

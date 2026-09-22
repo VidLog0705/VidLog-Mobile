@@ -49,6 +49,7 @@ void main() {
   RecordingCoordinator make({
     WorkMode mode = WorkMode.sameWaybillStop,
     RecorderConfig config = const RecorderConfig(staticStop: StaticStopSetting.off),
+    bool cameraAlreadyOpen = false,
   }) {
     // 必须先建列表再构造 —— `actions.add` 是构造时就捕获的，
     // 之后再给 actions 赋值就捕获不到了。
@@ -69,6 +70,7 @@ void main() {
       config: config,
       clock: clock,
       packageTracker: tracker,
+      cameraAlreadyOpen: cameraAlreadyOpen,
       onAction: actions.add,
     );
   }
@@ -419,6 +421,57 @@ void main() {
       await coordinator.dispose();
 
       expect(gateway.cameraOpened, isFalse, reason: '这台相机不该被漏掉');
+    });
+
+    test('★ 换编排器时相机不跟着关，由新的接管', () async {
+      // `recorder_page._buildCoordinator` 重建编排器时传
+      // `releaseCamera: false`：相机是**进程级的同一个原生会话**，
+      // 跟不换不换编排器无关。关掉再开一次只会让取景画面闪一下、
+      // 让原生白重建一次捕获会话，没有任何好处。
+      //
+      // 变红配方：让 `dispose` 忽略 `releaseCamera`（恒关相机）→
+      // `cameraOpened` 变 false，新编排器继承到的「开着」就是谎话。
+      final first = make();
+      nowMs = 1000;
+      await first.openCamera();
+      final shared = gateway; // `make()` 会换一个新 gateway，先抓住这一个
+
+      await first.dispose(releaseCamera: false);
+
+      // 旧编排器**仍然认这台相机开着** —— 这不是漏改：相机确实还开着，
+      // 这个字段说的是原生世界的事实，不是「我还活着」。
+      expect(first.isCameraOpen, isTrue);
+      expect(shared.cameraOpened, isTrue, reason: '原生那台没被关掉');
+
+      // 新编排器继承这个事实 —— 这是按【开始】时取景画面不闪的依据。
+      final replacement = make(cameraAlreadyOpen: shared.cameraOpened);
+      expect(replacement.isCameraOpen, isTrue);
+
+      await replacement.dispose(); // 由它来收尾
+      expect(gateway.cameraOpened, isFalse);
+    });
+
+    test('★ 换编排器时旧的事件订阅必须断掉', () async {
+      // 只把字段覆盖掉的话，旧编排器还订阅着 `gateway.events` ——
+      // 从此每来一条原生事件，两个编排器都会各自反应一次：各写一遍 manifest、
+      // 各落一条打点、各收一次尾。按第二次【开始】就会这样，画面上看不出来。
+      //
+      // 变红配方：把 `dispose(releaseCamera: false)` 换成不调 dispose。
+      final old = make();
+      nowMs = 1000;
+      await begin(old);
+
+      final oldSawScene = <bool>[];
+      old.onSceneChanged = oldSawScene.add;
+
+      await old.dispose(releaseCamera: false);
+
+      // 换人之后原生照旧上报 —— 旧编排器不许再听见。
+      gateway.emit(SceneSampledEvent(isStatic: true));
+      await old.waitForPendingEvents();
+
+      expect(oldSawScene, isEmpty, reason: '旧订阅必须已经断掉');
+      expect(gateway.cameraOpened, isTrue, reason: '相机交给下一个了');
     });
   });
 

@@ -601,17 +601,26 @@ class RecordingCoordinator {
     }
   }
 
-  Future<void> dispose() async {
+  /// 释放编排器。
+  ///
+  /// [releaseCamera] 默认 `true`（页面销毁就该关相机）。**只有一种情况传
+  /// `false`**：页面要立刻建一个新的编排器接管同一个原生会话
+  /// （`recorder_page._buildCoordinator`）—— 那时关掉再开一次除了让取景画面
+  /// 闪一下、让原生白重建一次捕获会话之外没有任何好处，因为相机是
+  /// **进程级的同一个原生会话**，跟换不换编排器无关。
+  Future<void> dispose({bool releaseCamera = true}) async {
     if (_stopController.isRecording) {
       await finish(StopTrigger.manual);
     }
 
     _armed = false;
-    // ⚠️ **判的是 `_cameraOpen`，不是 `_armed`**（2026-09-22 改）。
-    // 进栏自动开相机之后，「相机开着、没在工作」是常态 ——
-    // 沿用 `if (_armed)` 的话，这台相机会被漏掉、指示灯一直亮，
-    // 而且下个页面开相机时原生可能拒绝（会话已在跑）。
-    await closeCamera();
+    if (releaseCamera) {
+      // ⚠️ **判的是 `_cameraOpen`，不是 `_armed`**（2026-09-22 改）。
+      // 进栏自动开相机之后，「相机开着、没在工作」是常态 ——
+      // 沿用 `if (_armed)` 的话，这台相机会被漏掉、指示灯一直亮，
+      // 而且下个页面开相机时原生可能拒绝（会话已在跑）。
+      await closeCamera();
+    }
 
     await _subscription?.cancel();
     _subscription = null;
