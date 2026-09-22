@@ -111,10 +111,10 @@ void main() {
   testWidgets('★ 发货与退货共用同一个录制页（不是两份）', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 
-    // 「开始工作」只该有一个。做成两份页面的话，两栏各一个 ——
+    // 【开始】只该有一个。做成两份页面的话，两栏各一个 ——
     // 而背后是**两个 `UiKitView`、两次开相机**，真机上相机同时只开得了一个。
     // 这条锁的就是「栈里只有三个孩子」那个决定。
-    Finder workButton() => find.text('开始工作');
+    Finder workButton() => find.text('开始');
 
     await tester.tap(find.byIcon(Icons.local_shipping_outlined));
     await tester.pumpAndSettle();
@@ -123,6 +123,26 @@ void main() {
     await tester.tap(find.byIcon(Icons.assignment_return_outlined));
     await tester.pumpAndSettle();
     expect(workButton(), findsOneWidget, reason: '退货这一栏不该再开一个录制页');
+  });
+
+  testWidgets('★ 采集页底部只有一个操作按钮，且没有「停止当前录制」',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    // 需求方 2026-09-22 裁决 #6：**只留开始/结束一个**。
+    expect(find.text('开始'), findsOneWidget);
+    expect(find.text('结束'), findsNothing, reason: '没在工作时不该同时出现【结束】');
+    expect(find.text('结束工作'), findsNothing);
+
+    // ⚠️ 这条锁的是一个**规格禁令**，不只是个 UI 偏好：
+    // 规格 §3.3.2:183 明文禁止为「同码停 / 扫码静止停录」提供
+    // 「手动结束当前单」按钮 —— 而它一直挂在页面上，直到 2026-09-22 才删掉。
+    // 后来人「顺手加回一个方便按钮」的话，这里会红。
+    expect(find.text('停止当前录制（相机继续开着）'), findsNothing,
+        reason: '规格 §3.3.2:183 禁止这个按钮');
   });
 
   testWidgets('★ 采集页全屏：没有 AppBar，抽屉默认收着', (WidgetTester tester) async {
@@ -184,7 +204,7 @@ void main() {
     // 这一页没有 AppBar，所以正文从 y = 0 开始，屏幕顶就是正文顶。
     final mustBeOnScreen = <String, Finder>{
       '抽屉面板': find.byType(SingleChildScrollView),
-      '开始工作': find.text('开始工作'),
+      '开始': find.text('开始'),
       '抽屉入口': find.byKey(const Key('work-sheet-events')),
     };
     for (final entry in mustBeOnScreen.entries) {

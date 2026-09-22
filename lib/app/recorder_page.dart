@@ -638,11 +638,6 @@ class _RecorderPageState extends State<RecorderPage> {
     });
   }
 
-  /// 停掉当前这一件包裹的录制（相机保持开着，接着扫下一件）。
-  Future<void> _stopCurrentRecording() async {
-    await _coordinator?.onManualStop();
-  }
-
   /// 模拟一次扫码。
   ///
   /// **摄像头识码已经接上了**（iOS 用系统自带的 Vision），但这个按钮仍然有用：
@@ -1474,34 +1469,26 @@ class _RecorderPageState extends State<RecorderPage> {
             // 任何出口了（`mainAxisSize: min` 的列溢出时是直接从底部裁掉）。
             if (_workSheet != null) Flexible(child: _sheetBody()),
 
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: working || _starting ? null : _startWorking,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('开始工作'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: working ? _stopWorking : null,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('结束工作'),
-                    style: _onScrim,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
+            // ── **底部只有一个操作按钮**（需求方 2026-09-22 裁决 #6）──
+            //
+            // 绿【开始】↔ 红【结束】，一个控件两副面孔。以前这里是两个并排的
+            // 按钮，外加一个「停止当前录制（相机继续开着）」——
+            // 那个是规格 §3.3.2:183 **明文禁止**的「手动结束当前单」按钮，
+            // 之前一直挂在页面上。连续扫改成换段式之后它更没有任何存在理由了。
+            //
+            // 时长兜底那个【停止】/【继续】问询还在（规格 §3.3.4），
+            // 但它只在问询时出现，不是常驻按钮。
             SizedBox(
               width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: recording ? _stopCurrentRecording : null,
-                icon: const Icon(Icons.crop_free),
-                label: const Text('停止当前录制（相机继续开着）'),
-                style: _onScrim,
+              child: FilledButton.icon(
+                onPressed: working ? _stopWorking : (_starting ? null : _startWorking),
+                icon: Icon(working ? Icons.stop : Icons.play_arrow),
+                label: Text(working ? '结束' : '开始'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: working ? Colors.red.shade600 : Colors.green.shade600,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
               ),
             ),
             _sheetTabs(),
@@ -1535,12 +1522,6 @@ class _RecorderPageState extends State<RecorderPage> {
       child: SafeArea(top: top, bottom: !top, child: child),
     );
   }
-
-  /// 深色底上的次要按钮：默认配色是深蓝字 + 浅灰边，压在画面上根本看不清。
-  static final _onScrim = OutlinedButton.styleFrom(
-    foregroundColor: Colors.white,
-    side: const BorderSide(color: Colors.white70),
-  );
 
   /// 时长兜底询问（规格 §3.3.4）。
   Widget _durationPrompt() {
