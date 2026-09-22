@@ -496,6 +496,34 @@ class RecordingCoordinator {
     await _dispatch([ManualStopRequested(_clock())]);
   }
 
+  /// 直接播报一句，**不经过状态机**（需求方 2026-09-22）。
+  ///
+  /// 「用户切到了发货栏」不是一个录制事件 —— 把它塞进 [StopController]
+  /// 等于给状态机喂一个不影响任何判定的输入，只会让那份判据表变脏。
+  /// 所以这里另开一个入口，但**复用唯一那道 `voiceEnabled` 闸和唯一那条
+  /// `Speak` 通路**（`_speakThroughGateway`）：闸有两道、通路有两条的话，
+  /// 「关掉播报」迟早会有一半失灵。
+  Future<void> speak(VoicePrompt prompt) async {
+    // 🔊/🔇 的日志与屏幕提示照旧走 `onAction`，和状态机产出的播报一模一样。
+    onAction?.call(Speak(prompt));
+    await _speakThroughGateway(prompt);
+  }
+
+  /// 播报的**唯一**发声出口。
+  ///
+  /// 播报是**尽力而为**的：设备可能没装中文语音包、通道可能没接上
+  /// （安卓那条通道整个还没接）。丢一句提示是小事；把它抛上去，会让
+  /// 「错码保护」这条路径整个失败 —— 而那一下本该只是提示一下、继续录。
+  /// 异常一律吞掉，界面上的日志与提示不受影响。
+  Future<void> _speakThroughGateway(VoicePrompt prompt) async {
+    if (!voiceEnabled) return; // 关播报 = 关声音，不关提示。
+    try {
+      await _gateway.speak(prompt.spokenText);
+    } on Object {
+      // 忽略。
+    }
+  }
+
   /// 时间驱动的心跳。
   ///
   /// **必须由界面层按固定间隔调用**（建议 1 秒）。没有它，画面完全不动时
@@ -632,17 +660,7 @@ class RecordingCoordinator {
 
         // 播报关掉时**只是不出声**：`onAction` 上面已经调用过了，
         // 界面上的提示与日志照旧（关播报不等于关提示）。
-        if (action is Speak && voiceEnabled) {
-          // 播报是**尽力而为**的：设备可能没装中文语音包、通道可能没接上。
-          // 提示丢一句是小事，把它抛上去会让「错码保护」这条路径整个失败 ——
-          // 而那一下本该只是提示一下、继续录。所以这里吞掉异常。
-          // 界面上的日志照旧（onAction 已经先调用过了），用户仍然看得到提示。
-          try {
-            await _gateway.speak(action.prompt.spokenText);
-          } on Object {
-            // 忽略。
-          }
-        }
+        if (action is Speak) await _speakThroughGateway(action.prompt);
 
         if (action is StopRecording) {
           await finish(action.trigger);

@@ -96,7 +96,16 @@ enum VoicePrompt {
   differentWaybill('面单不同'),
 
   /// 规格 §3.3.4：「录制时间即将超时，是否需要停止录制？」
-  durationTimeout('录制时间即将超时，是否需要停止录制？');
+  durationTimeout('录制时间即将超时，是否需要停止录制？'),
+
+  /// 进发货栏时播报（需求方 2026-09-22）。
+  ///
+  /// ⚠️ 这一条**不由状态机产出** —— 它的起因是「用户切了栏」，
+  /// 那不是一个录制事件。走 `RecordingCoordinator.speak()` 直接发。
+  shippingModeOn('发货模式开启'),
+
+  /// 进退货栏时播报（同上）。
+  returnModeOn('退货模式开启');
 
   const VoicePrompt(this.spokenText);
 

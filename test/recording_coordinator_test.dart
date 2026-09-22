@@ -998,6 +998,47 @@ void main() {
 
       await coordinator.dispose();
     });
+
+    test('★ speak() 不经状态机也能播报 —— 不必先开录', () async {
+      // 需求方 2026-09-22：进发货 / 退货栏就播报模式。那一刻**还没开始工作**，
+      // 状态机是空转的 —— 所以播报必须有一个不经状态机的入口。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.speak(VoicePrompt.shippingModeOn);
+
+      expect(gateway.spoken, ['发货模式开启']);
+      expect(coordinator.isRecording, isFalse, reason: '播报不该顺手把录制开起来');
+
+      await coordinator.dispose();
+    });
+
+    test('★ speak() 走的是同一道播报闸', () async {
+      // 闸有两道、通路有两条的话，「关掉播报」迟早会有一半失灵 ——
+      // 用户关了声音，进栏那一下还是响，会以为开关坏了。
+      final coordinator = make();
+      nowMs = 1000;
+      coordinator.voiceEnabled = false;
+
+      await coordinator.speak(VoicePrompt.returnModeOn);
+
+      expect(gateway.spoken, isEmpty, reason: '关了播报就不该出声');
+      // 关掉的只是声音：屏幕上的提示与事件日志照旧。
+      expect(actions.whereType<Speak>().map((a) => a.prompt),
+          [VoicePrompt.returnModeOn]);
+
+      await coordinator.dispose();
+    });
+
+    test('speak() 出错不会把调用方带崩', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      gateway.speakThrows = true;
+
+      await coordinator.speak(VoicePrompt.shippingModeOn); // 不抛就算过
+
+      await coordinator.dispose();
+    });
   });
 
   // ─────────────────────────────────────────────
