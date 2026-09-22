@@ -142,8 +142,11 @@ void main() {
       expect(controller.isRecording, isTrue);
     });
 
-    test('扫错多次也不会停 —— 不存在「连续扫多次视为切换」', () {
-      // 规格 §3.3.2 明确禁止这个机制，所以断言的是「扫多少次都不停」。
+    test('扫错多次也不会停 —— 同一单号扫多少次都不算切换', () {
+      // 规格 §3.3.2 禁止这个机制（同一单号扫多次只提示），所以断言的是
+      // 「扫多少次都不停」。**连续扫不受此限**，但它的判据是
+      // 「扫到**不同**的单号」，不是「扫了很多次」——
+      // 见下面「换段式连续扫（§3.3.1，2026-09-22 需求变更）」那一组。
       final controller = isolated(mode: WorkMode.sameWaybillStop);
       start(controller);
 
@@ -173,6 +176,73 @@ void main() {
 
       expect(stops(actions), isEmpty);
       expect(actions.whereType<Speak>(), isNotEmpty);
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 换段式连续扫（§3.3.1，2026-09-22 需求变更）
+  // ─────────────────────────────────────────────
+
+  group('换段式连续扫', () {
+    test('★ 扫到别的单号 = 换件：收掉本段，且不说「面单不同」', () {
+      final controller = isolated(mode: WorkMode.continuousScan);
+      start(controller);
+
+      final actions = controller.handle(WaybillDetected(t0 + minute, waybillB));
+
+      expect(stops(actions).single.trigger, StopTrigger.nextWaybill);
+      expect(controller.isRecording, isFalse);
+
+      // 换件在连续扫里是**正常路径**，不是错码。播一句「面单不同」既不对，
+      // 还会盖过下一件的开录播报。
+      expect(actions.whereType<Speak>(), isEmpty);
+    });
+
+    test('换件之后还能接着为新单号开录', () {
+      final controller = isolated(mode: WorkMode.continuousScan);
+      start(controller);
+      controller.handle(WaybillDetected(t0 + minute, waybillB));
+
+      final actions = controller.handle(WaybillDetected(t0 + 2 * minute, waybillB));
+
+      expect(actions.whereType<StartRecording>(), hasLength(1));
+      expect(controller.isRecording, isTrue);
+      expect(controller.currentWaybill, waybillB);
+    });
+
+    test('★ 错码保护没漏到另两个模式（只有连续扫换段）', () {
+      // 这是唯一挡住「换段」漏进另两个模式的闸：
+      // 变红配方 = 把 `WorkMode.rotatesOnNewWaybill` 改成恒 true。
+      for (final mode in [WorkMode.sameWaybillStop, WorkMode.scanThenStaticStop]) {
+        final controller = isolated(mode: mode);
+        start(controller);
+
+        final actions = controller.handle(WaybillDetected(t0 + minute, waybillB));
+
+        expect(stops(actions), isEmpty, reason: '$mode 不该换段');
+        expect(actions.whereType<Speak>().single.prompt, VoicePrompt.differentWaybill,
+            reason: '$mode 必须照旧提示「面单不同」');
+        expect(controller.isRecording, isTrue, reason: '$mode 必须继续录');
+      }
+    });
+
+    test('rotatesOn 是纯查询：问它不改变任何状态', () {
+      // 编排器要在派发事件**之前**问它（决定这一下算不算本段的复扫打点），
+      // 所以它绝不能有副作用 —— 问两次的答案必须一样，且状态机没动。
+      final controller = isolated(mode: WorkMode.continuousScan);
+      start(controller);
+
+      expect(controller.rotatesOn(waybillB), isTrue);
+      expect(controller.rotatesOn(waybillB), isTrue);
+      expect(controller.rotatesOn(waybillA), isFalse);
+      expect(controller.isRecording, isTrue);
+      expect(controller.currentWaybill, waybillA);
+    });
+
+    test('没在录的时候问 rotatesOn 一律 false', () {
+      final controller = isolated(mode: WorkMode.continuousScan);
+
+      expect(controller.rotatesOn(waybillB), isFalse);
     });
   });
 

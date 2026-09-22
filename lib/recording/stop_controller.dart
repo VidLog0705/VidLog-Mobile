@@ -151,9 +151,26 @@ class StopController {
     _lastMotionAtMs = nowMs;
   }
 
+  /// 这一下识码会不会触发「换件」。**纯查询，不改任何状态。**
+  ///
+  /// 编排器必须在把事件派发给状态机**之前**问它 —— 那一下识码算不算本段的
+  /// 复扫打点，取决于它会不会把本段收掉。与 [_onRescan] 共用同一个判据，
+  /// 两处不会各自漂移。
+  bool rotatesOn(WaybillNumber scanned) =>
+      _recording && mode.rotatesOnNewWaybill && scanned != _waybill;
+
   List<RecorderAction> _onRescan(int nowMs, WaybillNumber scanned) {
+    // 连续扫：扫到**别的**单号 = 换件（规格 §3.3.1 的 2026-09-22 需求变更）。
+    // 收掉这一段，编排器接到 `StopRecording(nextWaybill)` 之后**紧接着**
+    // 为新单号开下一段。
+    //
+    // ⚠️ 这里**刻意不播**「面单不同」：换件在连续扫里是正常路径，每件都报
+    // 一句是错的，而且会盖过下一件的开录播报。
+    if (rotatesOn(scanned)) return _stop(StopTrigger.nextWaybill);
+
     if (scanned != _waybill) {
-      // 规格 §3.3.2 错码保护：**不停录**，只语音提示，直到扫到正确面单才停。
+      // 规格 §3.3.2 错码保护（**只有**同码停 / 扫码静止停录两个模式还启用）：
+      // **不停录**，只语音提示，直到扫到正确面单才停。
       return const [Speak(VoicePrompt.differentWaybill)];
     }
 

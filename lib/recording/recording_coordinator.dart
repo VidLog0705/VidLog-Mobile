@@ -428,14 +428,33 @@ class RecordingCoordinator {
       return;
     }
 
-    // 已经在录 → 走复扫路径（同码停 / 错码保护都在状态机里判）。
+    // 已经在录 → 走复扫路径（同码停 / 换件 / 错码保护都在状态机里判）。
     //
+    // 换件（连续扫扫到**别的**单号）要在派发**之前**问出来：这一下算不算
+    // 本段的复扫打点，取决于它会不会把本段收掉。
+    final rotates = _stopController.rotatesOn(waybill);
+
     // **扫错码也要打点**：规格 §3.2.4 说的是「识别到单号 → 记录该时刻与该单号的
     // 关联」，没把「认出来的正好是本件」当条件。而且扫错的那一下恰恰是
     // 最需要留痕的 —— 事后看不出操作员那一刻扫到了什么，就没法解释录像里的动作。
-    await _recordPunch(waybill, source);
+    //
+    // 但**换件那一下不打在本段上**：它属于下一段，由下面那次 [_beginRecording]
+    // 以偏移 0 落在**新会话**上。打在本段上会把「下一件的号」记进上一段的打点里
+    // （打点按会话归属，事后看就是脏数据）；两条都打又会把操作员的一次动作
+    // 算成两次打点。
+    if (!rotates) await _recordPunch(waybill, source);
 
     await _dispatch([WaybillDetected(_clock(), waybill)]);
+
+    // 上一条事件把本段收掉了（换件 / 同码 / 静止…）。
+    //
+    // 换件要**紧接着**起下一段，而且必须等收尾真的结束才开：会话号、分段列表、
+    // 包裹跟踪器都是 `finish` 里重置的，抢在它前面开新段会让新段继承上一段的账；
+    // `_packageTracker.reset()` 更是会把刚扫的这件直接抹掉，随后立刻被判成
+    // 「包裹离场」。
+    if (rotates && _armed && !_stopController.isRecording) {
+      await _beginRecording(waybill, source);
+    }
   }
 
   /// 落一条打点（规格 §3.2.4：**产生即持久化**，不能等会话结束批量写）。

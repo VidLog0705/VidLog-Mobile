@@ -30,6 +30,12 @@ enum WorkMode {
     WorkMode.scanThenStaticStop => false,
   };
 
+  /// 扫到一个**不同**的单号时，是否收掉当前这一段、为新单号另起一段。
+  ///
+  /// 只有连续扫是**换段式**（规格 §3.3.1 的 2026-09-22 需求变更）。
+  /// 另外两个模式的错码保护**一个字都没变**：扫到别的单号只提示、不停录。
+  bool get rotatesOnNewWaybill => this == WorkMode.continuousScan;
+
   /// 静止判定是否需要「同码包裹先离场、再入场」这个前置门槛。
   ///
   /// 规格 §3.3.1：只有扫码静止停录要求这个顺序。

@@ -1112,6 +1112,168 @@ void main() {
       await coordinator.dispose();
     });
   });
+
+  // ─────────────────────────────────────────────
+  // 换段式连续扫（§3.3.1，2026-09-22 需求变更）
+  // ─────────────────────────────────────────────
+
+  group('换段式连续扫', () {
+    RecordingCoordinator makeScan() => make(mode: WorkMode.continuousScan);
+
+    test('★ 扫到新面单：上一段立刻入库，下一段紧接着开录', () async {
+      final coordinator = makeScan();
+      nowMs = 1000;
+      await begin(coordinator);
+      final firstSession = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: firstSession, sequence: 0, startMs: 0, endMs: 30000);
+
+      nowMs = 1000 + 90 * 1000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      // 上一段：收尾了、入库了、不再是当前会话。
+      final entries = await index.loadAll();
+      expect(entries, hasLength(1), reason: '上一段要入库，**一条**，不能多');
+      expect(entries.single.sessionId, firstSession);
+
+      // 下一段：立刻在录，而且是新的会话、新的单号。
+      expect(coordinator.isRecording, isTrue, reason: '换段要无缝接上，不能停下来等人');
+      expect(coordinator.currentWaybill, otherWaybill);
+      expect(coordinator.sessionId, isNotNull);
+      expect(coordinator.sessionId, isNot(firstSession));
+
+      // 盘上两个会话目录 —— 一件包裹一段录像，不是一个会话装两件。
+      final dirs = Directory('$root/work')
+          .listSync()
+          .whereType<Directory>()
+          .map((d) => d.path.split(RegExp(r'[\\/]')).last)
+          .toSet();
+      expect(dirs, containsAll([firstSession, coordinator.sessionId!]));
+
+      await coordinator.dispose();
+    });
+
+    test('★ 换件那一下不打在本段上，而是落在新段的第一条', () async {
+      // 打点按会话归属。把「下一件的号」记进上一段的打点里，回放时
+      // 那件录像上会多出一个不属于它的跳转点（§3.2.4 的脏数据）。
+      // 两条都打又会把操作员的一次动作算成两次打点。
+      final coordinator = makeScan();
+      nowMs = 1000;
+      await begin(coordinator);
+      final firstSession = coordinator.sessionId!;
+
+      nowMs = 1000 + 90 * 1000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      final first = await punchLog.forSession(firstSession);
+      expect(first.map((p) => p.waybill.value), [waybill.value],
+          reason: '上一段只该有它自己的号，不该有下一件的');
+
+      final second = await punchLog.forSession(coordinator.sessionId!);
+      expect(second, hasLength(1));
+      expect(second.single.waybill, otherWaybill);
+      expect(second.single.monotonicOffsetMilliseconds, 0,
+          reason: '换件那一下就是新段的起点，偏移必须是 0');
+
+      await coordinator.dispose();
+    });
+
+    test('换件之后静止停录与时长兜底照样生效', () async {
+      // 换段让「停录」从一次/班变成一次/件。心跳要是没跟着重起
+      // （recorder_page 的 `StartRecording` 那一臂），换完第一件之后
+      // 这两个兜底就**再也不会触发**，而画面上一切正常。
+      // 这里验的是编排层：新段的心跳确实被处理。
+      final coordinator = makeScan();
+      nowMs = 1000;
+      await begin(coordinator);
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      final secondSession = coordinator.sessionId!;
+
+      nowMs += 60 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.elapsed, const Duration(minutes: 1),
+          reason: '新段的已录时长要从新段起点算，不能继承上一段');
+      expect(coordinator.sessionId, secondSession, reason: '心跳不该把新段弄没了');
+
+      await coordinator.dispose();
+    });
+
+    test('★ 换段的空档里手输兜底不许插队', () async {
+      // 这是 [`onWaybillDetected`] 必须排进 `_enqueue` 的理由。
+      //
+      // 收尾是异步的，中间有一段「状态机已不在录、`_sessionId` 却还在」
+      // 的空档 —— 而这段空档**只有换段式才会出现**。手输兜底是从界面按钮
+      // 直接进来的，正好落在里面的话：它会当「首次识别」另开一段，
+      // `_beginRecording` 把 `_segments` 清空，等收尾回来按**已清空的**分段列表
+      // 去入库 —— 于是上一段被判成「会话没有任何分段可收尾」，
+      // 索引里**一条都不写**（收尾器见 `session_finalizer.dart:93`）。
+      //
+      // 变红配方：把 `onWaybillDetected` 的 `_enqueue(...)` 换回直接调
+      // `_handleWaybill(...)` —— 下面的 `index.loadAll()` 会变成空。
+      final coordinator = makeScan();
+      nowMs = 1000;
+      await begin(coordinator);
+      final firstSession = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: firstSession, sequence: 0, startMs: 0, endMs: 30000);
+
+      // 把收尾卡在「原生停录」这一步，制造出那个空档。
+      final gate = Completer<void>();
+      gateway.onStopRecording = () => gate.future;
+
+      nowMs += 90 * 1000;
+      // ⚠️ **不 await** —— 就是要让它停在收尾中间。
+      final rotating = coordinator.onWaybillDetected(otherWaybill);
+
+      // 就在这个空档里手输第三张面单。
+      final third = WaybillNumber.parse('JD8888888888');
+      final manual =
+          coordinator.onWaybillDetected(third, source: PunchSource.manualEntry);
+
+      gate.complete();
+      await rotating;
+      await manual;
+      await coordinator.waitForPendingEvents();
+
+      final entries = await index.loadAll();
+      expect(entries, hasLength(1), reason: '上一段必须照常入库（一条）');
+      expect(entries.single.sessionId, firstSession);
+      expect(entries.single.duration, const Duration(seconds: 30),
+          reason: '入库的必须是**它自己的**那一段，不是被清空后的空列表');
+
+      // 手输那张照旧按换件处理：收掉 otherWaybill 那段，为 third 开新段。
+      expect(coordinator.currentWaybill, third);
+      expect(coordinator.isRecording, isTrue);
+      expect(coordinator.sessionId, isNot(firstSession));
+
+      await coordinator.dispose();
+    });
+
+    test('另两个模式扫到别的单号照旧只提示、不换段', () async {
+      for (final mode in [WorkMode.sameWaybillStop, WorkMode.scanThenStaticStop]) {
+        final coordinator = make(mode: mode);
+        nowMs = 1000;
+        await begin(coordinator);
+        final session = coordinator.sessionId!;
+
+        nowMs += 30 * 1000;
+        await coordinator.onWaybillDetected(otherWaybill);
+        await coordinator.waitForPendingEvents();
+
+        expect(coordinator.isRecording, isTrue, reason: '$mode 必须继续录');
+        expect(coordinator.sessionId, session, reason: '$mode 不该换会话');
+        expect(gateway.spoken, contains(VoicePrompt.differentWaybill.spokenText),
+            reason: '$mode 必须照旧提示「面单不同」');
+
+        await coordinator.dispose();
+      }
+    });
+  });
 }
 
 class _ThrowingIndex implements RecordingIndex {
@@ -1168,9 +1330,13 @@ class FakeGateway implements RecorderGateway {
   /// 停止时补投一个分段事件 —— 模拟原生层「停止时才封完最后一段」的行为。
   SegmentClosedEvent? emitOnStop;
 
+  /// 卡住 `stopRecording`，用来把收尾停在中间 —— 换段那个空档只有这么造得出来。
+  Future<void> Function()? onStopRecording;
+
   @override
   Future<void> stopRecording() async {
     stopped = true;
+    if (onStopRecording != null) await onStopRecording!();
     if (emitOnStop != null) emit(emitOnStop!);
   }
 

@@ -335,6 +335,11 @@ class _RecorderPageState extends State<RecorderPage> {
   Future<void> _onFinalized(FinalizeOutcome outcome) async {
     if (!mounted) return;
 
+    // 换段式连续扫（2026-09-22）：上一段收尾回来时，下一段**可能已经在录了**。
+    // 这里要是照旧把状态刷成「已收尾」，画面上会显示「已收尾 · 索引里共 N 条」
+    // —— 而相机正录着，用户看到的是假的。收尾那条日志照记，状态不动。
+    if (_coordinator?.isRecording == true) return;
+
     _log(outcome.succeeded ? '✓ 已收尾入库' : '✗ 收尾失败：${outcome.failureReason}');
 
     await _refreshDiagnostics();
@@ -356,6 +361,12 @@ class _RecorderPageState extends State<RecorderPage> {
 
     switch (action) {
       case StartRecording():
+        // ⚠️ **必须在这里重新起心跳**（2026-09-22 加）。下面是停录那一臂取消
+        // 心跳的地方，而换段式连续扫让「停录」从一次/班变成了**一次/件** ——
+        // 只在 `_startWorking` 里起一次的话，换完第一件之后
+        // `handleHeartbeat` 再也不会被调用：【画面静止停录】与【时长兜底】
+        // 双双失效、已录计时也不走了，而画面上一切正常。
+        _startHeartbeat();
         setState(() {
           _status = '录制中';
           _askingToContinue = false;
@@ -371,7 +382,9 @@ class _RecorderPageState extends State<RecorderPage> {
           _elapsed = Duration.zero;
         });
         _log('停录 · ${_triggerLabel(trigger)}');
-        unawaited(_refreshDiagnostics());
+        // 不在这里刷盘：收尾是异步的，这一刻盘上还没有这次会话 ——
+        // 刷出来的是收尾前的旧数字，随后 `_onFinalized` 还会再刷一次
+        // （那次才是对的）。留着只会让人误读。
 
       case Speak(:final prompt):
         // 播报本身在编排层里发给原生（`VoicePrompt.spokenText` 是唯一措辞来源），
@@ -1758,14 +1771,18 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
   static String _modeTitle(WorkMode mode) => switch (mode) {
-        WorkMode.continuousScan => '连续扫 —— 手动停',
+        WorkMode.continuousScan => '连续扫 —— 换件换段',
         WorkMode.sameWaybillStop => '同码停 —— 复扫同码就停',
         WorkMode.scanThenStaticStop => '扫码静止 —— 静止够时长才停',
       };
 
   static String _modeBlurb(WorkMode mode) => switch (mode) {
         WorkMode.continuousScan =>
-          '识别到单号就开录。停只能靠手动按「停止当前录制」，或者下面两个兜底机制。',
+          '扫一张面单就开录；扫到「另一张」面单时，上一段立刻入库、'
+              '紧接着为新面单开下一段，如此往复。\n'
+              '停只能靠手动按【结束】，或者下面两个兜底机制。\n'
+              '注意：这个模式没有错码保护 —— 画面里扫到别的条码会当场换段，'
+              '一件包裹可能被切成两段。',
         WorkMode.sameWaybillStop =>
           '识别到单号就开录，复扫到同一个单号就停。'
               '三个模式里只有它不用人额外做什么就能自己停。',
@@ -1979,6 +1996,7 @@ class _RecorderPageState extends State<RecorderPage> {
         StopTrigger.durationFallback => '时长兜底',
         StopTrigger.resourceCritical => '资源告警',
         StopTrigger.processKilled => '进程被杀',
+        StopTrigger.nextWaybill => '换件',
       };
 }
 
