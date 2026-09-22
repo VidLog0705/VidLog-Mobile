@@ -5,12 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../primitives.dart';
+import '../recording/device_identity.dart';
+import '../recording/lan_probe.dart';
 import '../recording/punch_log.dart';
 import '../recording/recorder_config.dart';
 import '../recording/recorder_events.dart';
 import '../recording/recorder_gateway.dart';
 import '../recording/recording_coordinator.dart';
 import '../recording/recording_index.dart';
+import '../recording/recording_totals.dart';
 import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
@@ -115,18 +118,31 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 还原成能 stat 的绝对路径（收尾端算这个相对路径时用的就是这个根）。
   late String _rootPath;
 
-  /// 本机已收尾的录像，索引里读出来的原样。
-  ///
-  /// ⚠️ 这**不是**「待上传队列」—— 那个队列还不存在（手机端没有任何上传代码，
-  /// 见 `_backupPage` 的说明）。这里列的是盘上真有的东西。
-  List<RecordingEntry> _entries = const [];
+  /// 本机身份与本地配置（设备标识 / 本机名 / 电脑端地址）。
+  DeviceIdentity? _identity;
 
-  /// 每条录像在盘上的字节数，按 `evidenceId` 索引。
+  /// 本机的局域网 IPv4；null = 没连上局域网。
   ///
-  /// 量不出来（文件不在了、读不动）的**不放进来**，列表里那一条就写「大小未知」。
-  /// 宁可少一个数字，也不要显示一个算不出来、但看起来很像真的的值 ——
-  /// 这个项目已经因为「界面上的假数字被当成真的」吃过一次亏。
-  final Map<String, int> _entryBytes = {};
+  /// **null 与「0.0.0.0」是两回事**：后者看起来像个正经地址却连不上任何东西。
+  String? _lanIp;
+
+  /// 电脑端探测结果（探的是电脑端那台机器，不是本机）。
+  bool _hostOnline = false;
+  bool _probingHost = false;
+
+  /// 索引归并出来的「一次录制」——需求方口径的「一条」。
+  List<RecordingSession> _sessions = const [];
+
+  /// 起录时间落在今天的条数。
+  int _todayCount = 0;
+
+  /// 盘上视频的实际占用（含未收尾的片段）。
+  int _videoBytes = 0;
+
+  /// 录像记录列表：筛选 / 每页条数 / 当前页（0 起）。
+  bool _recordsTodayOnly = false;
+  int _recordsPageSize = 5;
+  int _recordsPage = 0;
 
   @override
   void initState() {
@@ -171,6 +187,10 @@ class _RecorderPageState extends State<RecorderPage> {
       // 两端的打点日志是同一份形态。
       _punchLog = PunchLog('${root.path}/punches.jsonl');
 
+      // 本机身份要在 `_buildCoordinator` **之前**读出来 ——
+      // 编排器建的时候就要把设备标识接进去（它写进每条录像索引的 sourceDeviceId）。
+      _identity = await DeviceIdentity.load('${root.path}/device.json');
+
       _buildCoordinator();
 
       // 规格 §3.1.1：重启后必须能自动收尾孤儿分段。
@@ -191,11 +211,46 @@ class _RecorderPageState extends State<RecorderPage> {
         _log('启动时收尾了 ${recovered.length} 段孤儿');
       }
 
-      await _refreshDiagnostics();
+      await _refreshBackup();
     } catch (error) {
       if (!mounted) return;
       setState(() => _status = '初始化失败：$error');
     }
+  }
+
+  /// 刷新备份页要的东西：本机 IP、索引汇总、电脑端探测。
+  ///
+  /// 三件事一起做，是因为它们在界面上是**同一屏**：分开刷新会出现
+  /// 「IP 已经变了、统计还是旧的」这种半新半旧的画面。
+  Future<void> _refreshBackup() async {
+    final ip = await lanAddress();
+    if (mounted) setState(() => _lanIp = ip);
+
+    await _refreshDiagnostics();
+    if (!mounted) return;
+
+    await _probeHost();
+  }
+
+  /// 探一次电脑端在不在线上。
+  ///
+  /// **没配对就不探** —— 没有地址可探，也不该显示一个探测出来的状态。
+  Future<void> _probeHost() async {
+    final address = _identity?.hostAddress ?? '';
+    if (address.isEmpty) {
+      if (mounted) setState(() => _hostOnline = false);
+      return;
+    }
+
+    if (mounted) setState(() => _probingHost = true);
+
+    final online = await isHostReachable(address);
+    if (!mounted) return;
+
+    setState(() {
+      _hostOnline = online;
+      _probingHost = false;
+    });
   }
 
   void _buildCoordinator() {
@@ -320,7 +375,12 @@ class _RecorderPageState extends State<RecorderPage> {
       }
 
       _buildCoordinator(); // 换模式下重建，配置跟着走
-      await _coordinator!.startWorking(sourceDeviceId: 'this-device');
+
+      // ⚠️ 这里传的必须是**设备标识**，不是本机名（契约 §1.1 步骤 2 把两者分开：
+      // 标识用来认设备，名字用来给人看）。以前这里写死 `'this-device'` ——
+      // 结果**所有手机在电脑端都叫同一个名字**，根本分不开是哪台录的。
+      // 标识是不变的，所以改名不会篡改历史录像的来源。
+      await _coordinator!.startWorking(sourceDeviceId: _identity!.deviceId);
 
       _log('开始工作 · 模式 ${_modeLabel(_mode)}');
       _startHeartbeat();
@@ -440,28 +500,38 @@ class _RecorderPageState extends State<RecorderPage> {
       final entries = await _index.loadAll();
       final punches = (await _punchLog.loadAll()).length;
 
-      // 备份页要显示「这些片子占了多少盘」。逐条 stat —— 条数以十计，
+      // 每条录像在盘上的字节数，按 evidenceId 索引。逐条 stat —— 条数以十计，
       // 而且本来就要读一遍索引，不值得为它加缓存或后台扫描。
+      //
+      // 量不出来（文件不在了、读不动）的**不放进来**，那一条就写「大小未知」。
+      // 宁可少一个数字，也不要显示一个算不出来、但看起来很像真的的值 ——
+      // 这个项目已经因为「界面上的假数字被当成真的」吃过一次亏。
       final bytes = <String, int>{};
       for (final entry in entries) {
         final file = File('$_rootPath/${entry.location.value}');
         try {
           if (await file.exists()) bytes[entry.evidenceId] = await file.length();
         } on Object {
-          // 量不出来就不量。见 `_entryBytes` 的说明。
+          continue;
         }
       }
+
+      // 归并成「一次录制」（需求方 2026-09-22 的口径：一个单号从开始到结束为一条）。
+      final merged = toSessions(entries, bytes);
+
+      // 总占用走盘，不走索引 —— 需求方要的是「实际存储到手机的视频大小总量，
+      // 上传后删掉就按删除后的算」。索引只增不减，拿它求和永远降不下来。
+      final videoBytes = await videoBytesOnDisk(_rootPath);
 
       if (!mounted) return;
       setState(() {
         _sessionCount = sessions;
         _pendingCount = pending;
-        _entries = entries;
         _entryCount = entries.length;
         _punchCount = punches;
-        _entryBytes
-          ..clear()
-          ..addAll(bytes);
+        _sessions = merged;
+        _todayCount = countToday(merged, DateTime.now());
+        _videoBytes = videoBytes;
       });
     } on Object catch (error) {
       if (mounted) setState(() => _status = '读取工作区失败：$error');
@@ -509,7 +579,16 @@ class _RecorderPageState extends State<RecorderPage> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (index) => setState(() => _tab = index),
+        onDestinationSelected: (index) {
+          setState(() => _tab = index);
+
+          // 切回备份页就重读一遍：用户多半是刚录完回来看的，
+          // 摆着切走之前的旧数字等于白看。
+          //
+          // `_identity != null` 兼作「启动已完成」的判据 —— 它是在 `_workspace`
+          // 之后设的，早于启动完成就切过来会踩到未初始化的 `late` 字段。
+          if (index == 0 && _identity != null) unawaited(_refreshBackup());
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.cloud_upload_outlined),
@@ -543,7 +622,7 @@ class _RecorderPageState extends State<RecorderPage> {
         _ => '设置',
       };
 
-  /// 备份页：把「哪些东西还没备份」摆在明面上。
+  /// 备份页：本机身份 → 三个统计 → 电脑备份 → 录像记录。
   ///
   /// ## 为什么这一页先做，而且今天只能做成这样
   ///
@@ -555,136 +634,462 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 所以「东西没备份，而且用户不知道」是眼下唯一确定会发生的事。
   /// 这一页先把它变成看得见的。
   ///
-  /// ⚠️ **只显示盘上真有的东西**：本机已收尾的录像，以及它们都还没备份。
-  /// 不放进度条、不放「主机已连接」、不放剩余空间 —— 那些今天一个都测不出来，
+  /// ⚠️ **只显示盘上真有的东西**：已收尾的录像、盘上的实际占用、探测得到的
+  /// 连通性。不放剩余空间、不放上传进度条 —— 那些今天一个都测不出来，
   /// 而假数字在真机上会被当成真的（这个项目吃过一次亏）。
   Widget _backupPage() {
-    final newestFirst = _entries.reversed.toList();
-    final totalBytes = _entryBytes.values.fold<int>(0, (sum, b) => sum + b);
-
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _backupStatusCard(
-          count: _entries.length,
-          totalBytes: totalBytes,
-          missingSizes: _entries.length - _entryBytes.length,
-        ),
+        _identityCard(),
         const SizedBox(height: 12),
-        if (newestFirst.isEmpty)
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('本机还没有收尾入库的录像。'),
-            ),
-          )
-        else
-          _backupListCard(newestFirst),
+        _totalsCard(),
+        const SizedBox(height: 12),
+        _hostCard(),
+        const SizedBox(height: 12),
+        _recordsCard(),
       ],
     );
   }
 
-  Widget _backupStatusCard({
-    required int count,
-    required int totalBytes,
-    required int missingSizes,
-  }) {
+  // ── ① 本机身份 ───────────────────────────────
+
+  /// 本机名 + 局域网 IP。
+  ///
+  /// 本机名是给**电脑端**区分机位用的（需求方 2026-09-22），所以它得可改，
+  /// 而且改完必须落盘 —— 只在内存里留着的名字，断联重连一次就没了，
+  /// 电脑端那台机位就变成一个没人认得的新设备。
+  Widget _identityCard() {
+    final identity = _identity;
+
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.smartphone),
+        title: Text(identity?.deviceName ?? defaultDeviceName),
+        subtitle: Text(
+          _lanIp == null ? '未连局域网' : '局域网 $_lanIp',
+          style: const TextStyle(fontSize: 12),
+        ),
+        trailing: IconButton(
+          tooltip: '改本机名',
+          icon: const Icon(Icons.edit_outlined),
+          onPressed: identity == null ? null : _editDeviceName,
+        ),
+      ),
+    );
+  }
+
+  // ── ② 今日 / 全部 / 总占用 ─────────────────────
+
+  /// 三个数字并排。
+  ///
+  /// 三个口径都是**需求方 2026-09-22 定的**，不是这里随手挑的：
+  /// - **今日** = 起录时间落在今天 0:00~23:59 的条数
+  /// - **全部** = 录到的总条数，**一个单号从开始到结束算一条**（不是索引行数）
+  /// - **总占用** = 盘上视频的**实际**大小；传到电脑后删掉手机上的，就按删后的算
+  ///
+  /// ⚠️ 总占用可能**大于**上面那些条的大小之和 —— 它含还没走完收尾的孤儿片段。
+  /// 它答的是「这些视频在手机上占了多少地方」，不是「已入库的占了多少」。
+  /// 所以那块底下写着「手机上现存」。
+  Widget _totalsCard() {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Row(
           children: [
-            Row(
-              children: [
-                const Icon(Icons.cloud_off_outlined, color: Colors.orange),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '还没接入备份主机',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '手机端还没有上传功能 —— 下面这些录像**现在只在这台手机上**，'
-              '手机丢了就没了。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const Divider(height: 24),
-            _kv('本机录像', '$count 条'),
-            _kv(
-              '占用',
-              missingSizes > 0
-                  ? '${_sizeLabel(totalBytes)} · 另有 $missingSizes 条量不到大小'
-                  : _sizeLabel(totalBytes),
-            ),
-            _kv('归档主机', '未接入'),
+            _statCell('今日', '$_todayCount 条'),
+            _thinDivider(),
+            _statCell('全部', '${_sessions.length} 条'),
+            _thinDivider(),
+            _statCell('总占用', _sizeLabel(_videoBytes), note: '手机上现存'),
           ],
         ),
       ),
     );
   }
 
-  Widget _backupListCard(List<RecordingEntry> entries) {
+  Widget _statCell(String label, String value, {String? note}) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(fontSize: 12)),
+          if (note != null) ...[
+            const SizedBox(height: 2),
+            Text(note, style: const TextStyle(fontSize: 11, color: Colors.black45)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 三块之间的细分隔线。
+  ///
+  /// **不用 `VerticalDivider`** —— 它要父级有确定高度（得再套一层
+  /// `IntrinsicHeight`），为一个 1 像素的线多一层布局不划算。
+  Widget _thinDivider() => Container(
+        width: 1,
+        height: 40,
+        color: Theme.of(context).dividerColor,
+      );
+
+  // ── ③ 电脑备份 ───────────────────────────────
+
+  /// 配对电脑 + 连通性。
+  ///
+  /// ⚠️ 「连接 / 离线」探的是**电脑端那台机器**（M3 已经在 8720 端口上开着的
+  /// HTTP 服务），既不代表本机有网，也不代表「备份通道建好了」——
+  /// 手机端还没有一行上传代码。所以卡里同时留着一句实话（见下方
+  /// 「手机端还没有上传功能」），免得那个绿色小字被读成「我的数据已经在电脑上了」。
+  Widget _hostCard() {
+    final identity = _identity;
+    final name = identity?.hostName ?? '';
+    final address = identity?.hostAddress ?? '';
+    final hasHost = address.isNotEmpty;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '电脑备份',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                TextButton(
+                  onPressed: identity == null ? null : _editHost,
+                  child: Text(hasHost ? '重新配对' : '配对电脑'),
+                ),
+              ],
+            ),
+            _kv('电脑端名字', name.isEmpty ? '未填' : name),
+            _kv(
+              '局域网 IP',
+              hasHost ? address : '未填',
+              trailing: _hostBadge(hasHost),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '手机端还没有上传功能 —— 下面这些录像现在只在这台手机上，'
+              '手机丢了就没了。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 「连接 / 离线」小标，贴在 IP 那一行的右端。
+  ///
+  /// **没配对就什么也不显示。** 显示「离线」会让人以为「配对过、只是没连上」，
+  /// 而真实情况是**根本没配过对** —— 这两件事要修的东西不一样。
+  Widget _hostBadge(bool hasHost) {
+    if (!hasHost) return const SizedBox.shrink();
+
+    if (_probingHost) {
+      return const Text('探测中…', style: TextStyle(fontSize: 12, color: Colors.black45));
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          _hostOnline ? Icons.link : Icons.link_off,
+          size: 14,
+          color: _hostOnline ? Colors.green : Colors.grey,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          _hostOnline ? '连接' : '离线',
+          style: TextStyle(
+            fontSize: 12,
+            color: _hostOnline ? Colors.green : Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── ④ 录像记录 ───────────────────────────────
+
+  /// 录像记录列表：筛选 + 分页。
+  ///
+  /// 分页是需求方 2026-09-22 定的（每页 5/10/15，左右箭头换页）——
+  /// 不是为了性能，是因为手机一屏放不下，而**总页数得看得见**。
+  ///
+  /// 列的是 `_sessions`（一次录制一条），**不是索引行** —— 索引是按分段记的，
+  /// 一段 30 分钟的录制会列出 6 行来，用户数不出那个数字是哪来的。
+  Widget _recordsCard() {
+    // 「今日」的判据与上面那个统计**共用 `isSameDay`** —— 两处各写一套，
+    // 迟早会出现「上面写 3 条、下面列 2 条」而用户无从判断谁对。
+    final filtered = _recordsTodayOnly
+        ? _sessions.where((s) => isSameDay(s.startedAt, DateTime.now())).toList()
+        : _sessions;
+
+    final pageCount = filtered.isEmpty
+        ? 1
+        : (filtered.length + _recordsPageSize - 1) ~/ _recordsPageSize;
+
+    // 夹在**本地变量**里、不改状态：条数变少（换了筛选、删了录像）时
+    // `_recordsPage` 可能越界，而在 build 里改状态 Flutter 会直接报错。
+    final page = _recordsPage.clamp(0, pageCount - 1);
+    final rows = filtered
+        .skip(page * _recordsPageSize)
+        .take(_recordsPageSize)
+        .toList();
+
     return Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              '本机录像（${entries.length} 条，新的在前）',
-              style: Theme.of(context).textTheme.titleMedium,
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '录像记录（共 ${filtered.length} 条）',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                SegmentedButton<bool>(
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('全部')),
+                    ButtonSegment(value: true, label: Text('今日')),
+                  ],
+                  selected: {_recordsTodayOnly},
+                  onSelectionChanged: (selection) => setState(() {
+                    _recordsTodayOnly = selection.first;
+                    // 换了筛选就必须回第一页 —— 停在第 7 页上多半是空的，
+                    // 看起来像「今天什么都没录」。
+                    _recordsPage = 0;
+                  }),
+                ),
+              ],
             ),
           ),
-          for (final entry in entries) ...[
-            const Divider(height: 1),
-            ListTile(
-              dense: true,
-              title: Text(
-                entry.waybill.value.isEmpty
-                    ? entry.evidenceId
-                    : entry.waybill.value,
+          if (rows.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(
+                _recordsTodayOnly ? '今天还没有录完的录像。' : '本机还没有收尾入库的录像。',
+                style: const TextStyle(fontSize: 13, color: Colors.black54),
               ),
-              subtitle: Text(
-                '${_stamp(entry.startedAt)} · ${_durationLabel(entry.duration)} · '
-                '${switch (_entryBytes[entry.evidenceId]) {
-                  final int bytes => _sizeLabel(bytes),
-                  _ => '大小未知',
-                }}',
+            )
+          else
+            for (final session in rows) ...[
+              const Divider(height: 1),
+              ListTile(
+                dense: true,
+                title: Text(
+                  session.waybill.value.isEmpty
+                      ? session.sessionId
+                      : session.waybill.value,
+                ),
+                subtitle: Text(
+                  '${_stamp(session.startedAt)} · '
+                  '${_durationLabel(session.duration)} · '
+                  '${session.bytes > 0 ? _sizeLabel(session.bytes) : '大小未知'}',
+                ),
+                trailing: const Chip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text('未备份'),
+                ),
               ),
-              trailing: const Chip(
-                visualDensity: VisualDensity.compact,
-                label: Text('未备份'),
-              ),
+            ],
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              children: [
+                const Text('每页', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(width: 8),
+                DropdownButton<int>(
+                  value: _recordsPageSize,
+                  isDense: true,
+                  underline: const SizedBox.shrink(),
+                  items: const [
+                    DropdownMenuItem(value: 5, child: Text('5')),
+                    DropdownMenuItem(value: 10, child: Text('10')),
+                    DropdownMenuItem(value: 15, child: Text('15')),
+                  ],
+                  onChanged: (value) {
+                    if (value == null) return;
+                    setState(() {
+                      _recordsPageSize = value;
+                      // 每页条数变了，原来的页码对应的内容已经不是同一批了。
+                      _recordsPage = 0;
+                    });
+                  },
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: '上一页',
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed:
+                      page > 0 ? () => setState(() => _recordsPage = page - 1) : null,
+                ),
+                Text('${page + 1}/$pageCount', style: const TextStyle(fontSize: 13)),
+                IconButton(
+                  tooltip: '下一页',
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: page < pageCount - 1
+                      ? () => setState(() => _recordsPage = page + 1)
+                      : null,
+                ),
+              ],
             ),
-          ],
+          ),
         ],
       ),
     );
   }
 
   /// 标签 + 值的一行。用固定宽度的标签列，几行数字才对得齐。
-  Widget _kv(String label, String value) {
+  ///
+  /// [trailing] 贴右端（「连接 / 离线」那个小标在 IP 那一行）。
+  Widget _kv(String label, String value, {Widget? trailing}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 72,
+            // 84 而不是 72：「局域网 IP」「电脑端名字」在 72 里会折行。
+            width: 84,
             child: Text(
               label,
               style: const TextStyle(fontSize: 12, color: Colors.black54),
             ),
           ),
           Expanded(child: Text(value)),
+          ?trailing,
         ],
       ),
     );
+  }
+
+  // ── 两处编辑弹窗 ──────────────────────────────
+
+  /// 改本机名。**落盘** —— 只在内存里留着的名字，重连一次就没了。
+  Future<void> _editDeviceName() async {
+    final identity = _identity;
+    if (identity == null) return;
+
+    final controller = TextEditingController(text: identity.deviceName);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('本机名'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '电脑端用这个名字区分机位',
+            hintText: defaultDeviceName,
+          ),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (name == null) return;
+
+    // 空名会退回默认名（见 `DeviceIdentity.rename`）—— 允许名字变空
+    // 等于允许这台手机在电脑端消失。
+    await identity.rename(name);
+    if (mounted) setState(() {});
+  }
+
+  /// 填 / 改电脑端的地址与名字。
+  ///
+  /// 地址眼下**只用于探测**（M5 做真正的配网时才会拿它去入网）；
+  /// 名字只用于显示 —— 真连没连上由探测决定，不由名字决定。
+  Future<void> _editHost() async {
+    final identity = _identity;
+    if (identity == null) return;
+
+    final nameController = TextEditingController(text: identity.hostName);
+    final addressController = TextEditingController(text: identity.hostAddress);
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('电脑端'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '电脑端名字',
+                hintText: '打包间电脑',
+              ),
+            ),
+            TextField(
+              controller: addressController,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '局域网 IP',
+                hintText: '192.168.1.10',
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '填电脑端那台机器的局域网 IP。手机端还没有上传功能，'
+              '这里只用来试它在不在线上。',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+
+    final address = addressController.text;
+    final hostName = nameController.text;
+    nameController.dispose();
+    addressController.dispose();
+
+    if (saved != true) return;
+
+    await identity.setHost(address: address, name: hostName);
+    if (!mounted) return;
+
+    setState(() {});
+    await _probeHost(); // 存完立刻探一次：改了地址却还显示旧状态最误导人
   }
 
   /// 采集页：取景、状态、操作、事件。

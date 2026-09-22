@@ -10,6 +10,7 @@ import '../primitives.dart';
 class RecordingEntry {
   const RecordingEntry({
     required this.evidenceId,
+    required this.sessionId,
     required this.waybill,
     required this.startedAt,
     required this.endedAt,
@@ -20,6 +21,16 @@ class RecordingEntry {
   });
 
   final String evidenceId;
+
+  /// 这个分段属于哪一次录制。
+  ///
+  /// **「一条录像」的口径就是这个** —— 索引是按分段记的，一次录制会有多条，
+  /// 靠它归并（见 `recording_totals.dart`）。2026-09-22 加：在这之前只有
+  /// `evidenceId`，会话 id 只能靠切字符串猜。
+  ///
+  /// 与电脑端 `RecordingEntry.cs` 的对应字段同名；这是**追加**字段，
+  /// 老条目没有它会走 [sessionIdFromEvidenceId] 回退。
+  final String sessionId;
   final WaybillNumber waybill;
   final DateTime startedAt;
   final DateTime endedAt;
@@ -33,6 +44,7 @@ class RecordingEntry {
 
   Map<String, Object?> toJson() => {
         'evidenceId': evidenceId,
+        'sessionId': sessionId,
         'waybill': waybill.value,
         'startedAt': startedAt.toUtc().toIso8601String(),
         'endedAt': endedAt.toUtc().toIso8601String(),
@@ -47,6 +59,9 @@ class RecordingEntry {
 
     return RecordingEntry(
       evidenceId: evidenceId,
+      sessionId: (json['sessionId'] as String?)?.trim().isNotEmpty == true
+          ? (json['sessionId']! as String).trim()
+          : sessionIdFromEvidenceId(evidenceId),
       waybill: WaybillNumber.parse(json['waybill'] as String?),
       startedAt: DateTime.parse(json['startedAt']! as String).toLocal(),
       endedAt: DateTime.parse(json['endedAt']! as String).toLocal(),
@@ -58,6 +73,24 @@ class RecordingEntry {
       sourceDeviceId: (json['sourceDeviceId'] as String?) ?? '',
     );
   }
+}
+
+/// 从 `evidenceId` 里切回会话 id —— 给**没有 `sessionId` 字段的老索引行**兜底。
+///
+/// `evidenceId` 的形态是 `<sessionId>-<三位序号>`（见 `SessionFinalizer`），
+/// 而 `sessionId` 自己形如 `sess-<毫秒>-<随机>`，**本来就有横线** ——
+/// 所以从**最后**一个横线切，并且要求尾段正好是三位数字。
+///
+/// 对不上就返回空串：**宁可这条归不进组（各自算一条），也不要把两条不相干的
+/// 录像并成一条。** 计数少一条是小事，把证据合并不是。
+String sessionIdFromEvidenceId(String evidenceId) {
+  final dash = evidenceId.lastIndexOf('-');
+  if (dash <= 0) return '';
+
+  final tail = evidenceId.substring(dash + 1);
+  if (tail.length != 3 || int.tryParse(tail) == null) return '';
+
+  return evidenceId.substring(0, dash);
 }
 
 /// 录像索引。

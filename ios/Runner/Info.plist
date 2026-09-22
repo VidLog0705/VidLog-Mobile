@@ -39,6 +39,12 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<!-- 备份页要探电脑端在不在线上（往它的局域网 IP 发一个 HTTP GET）。
+	     **iOS 14 起这条不能少**：没声明就访问局域网，系统不会报错，
+	     连接就是静静地失败 —— 表现成「电脑端明明开着，手机端一直显示离线」，
+	     而这条线索在界面上完全看不出来。 -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>VidLog 需要在局域网内连接打包间的电脑，把录像备份过去。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
