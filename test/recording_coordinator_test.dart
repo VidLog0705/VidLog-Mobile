@@ -423,6 +423,43 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
+  // 事件链的健壮性
+  // ─────────────────────────────────────────────
+
+  group('事件链', () {
+    test('★ 一条事件出错不能毒死整条事件链', () async {
+      // 回归测试：`_pending` 是用 `.then` 串起来的，一个未捕获的异常会让它
+      // 变成 rejected，**后面所有事件的处理回调被整段跳过、永不恢复**。
+      // 真机表现是「出一次错之后相机再也扫不动了」，日志里只有一条报错。
+      // 换段式连续扫把停录从一次/班变成一次/件，这条护栏是必须的。
+      //
+      // 变红配方：去掉 `_enqueue` 里的 `on Object catch`。
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+
+      // 第一条事件：开录时原生报错（相机 / 编码器起不来是真实会发生的）。
+      gateway.onStartRecording = () async => throw StateError('开录失败（测试故意）');
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.lastError, isNotNull, reason: '失败必须被记下来，不能静默');
+      expect(coordinator.isRecording, isFalse);
+
+      // 关键：链还活着 —— 后面的事件照旧被处理。
+      gateway.onStartRecording = null;
+      nowMs = 2000;
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.started, isTrue, reason: '后续事件必须还能被处理');
+      expect(coordinator.isRecording, isTrue);
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
   // 相机识码（原生连续识码 → 离散扫码）
   // ─────────────────────────────────────────────
 

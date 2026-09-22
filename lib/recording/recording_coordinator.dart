@@ -70,19 +70,23 @@ class RecordingCoordinator {
       // 分段落盘只需要在**自己的**几条之间保序（别让两个写 manifest 撞车），
       // 不需要跟开录 / 复扫 / 画面事件串行。
       if (event is SegmentClosedEvent) {
-        _segmentWrites = _segmentWrites.then((_) => _onSegmentClosed(event));
+        // ⚠️ **单条失败不能毒死整条链**（2026-09-22 加）。`_segmentWrites` 是用
+        // `.then` 串起来的：一个未捕获的异常会把它变成 rejected，而 `finish()`
+        // **每一次收尾都 `await` 它** —— 于是从坏掉那一条起，
+        // 后面每一条会话都收不了尾（`await` 一个 rejected future 每次都抛）。
+        _segmentWrites = _segmentWrites.then((_) async {
+          try {
+            await _onSegmentClosed(event);
+          } on Object catch (error) {
+            _lastError = '$error';
+            onNativeFailure?.call('分段落盘失败：$error');
+          }
+        });
         return;
       }
 
       // 其余事件串行处理：并发会让它们同时改 manifest，后写的覆盖先写的。
-      _queuedEvents++;
-      _pending = _pending.then((_) async {
-        try {
-          await _onNativeEvent(event);
-        } finally {
-          _completedEvents++;
-        }
-      });
+      unawaited(_enqueue(() => _onNativeEvent(event)));
     });
   }
 
@@ -201,6 +205,13 @@ class RecordingCoordinator {
   final List<SegmentProduct> _segments = [];
 
   String? _lastError;
+
+  /// 收尾是否在飞。**防同一条会话被收尾两次**（2026-09-22 加）。
+  ///
+  /// 换段式连续扫下「收尾」与「开下一段」几乎同时，收尾还在飞的时候
+  /// 用户按【结束】就会把**同一个会话收尾两遍** ——
+  /// 用户看到的是「索引里多出一条」，而且多出来那条哈希一样。
+  bool _finalizing = false;
 
   StopController get stopController => _stopController;
   bool get isRecording => _stopController.isRecording;
@@ -395,11 +406,17 @@ class RecordingCoordinator {
   /// 识别到一个单号（复扫）。
   ///
   /// 错码保护（规格 §3.3.2）就发生在状态机里：不同单号只提示、不停止。
+  ///
+  /// ⚠️ **必须排进事件链**，不能直接调 [_handleWaybill]（2026-09-22 改）：
+  /// 手输兜底是从界面按钮直接进来的，它可能落在某次收尾的**中间** ——
+  /// 那一刻 `_sessionId` 还在、状态机却已经不在录了，直接进去会当
+  /// 「首次识别」开一段新的，等收尾回来再把新段的会话号抹掉，
+  /// 那段正在录的视频就永久成了孤儿。
   Future<void> onWaybillDetected(
     WaybillNumber waybill, {
     PunchSource source = PunchSource.cameraDecoder,
   }) =>
-      _handleWaybill(waybill, source);
+      _enqueue(() => _handleWaybill(waybill, source));
 
   Future<void> _handleWaybill(WaybillNumber waybill, PunchSource source) async {
     if (!_armed) return;
@@ -482,44 +499,59 @@ class RecordingCoordinator {
 
   /// 收尾并返回结果；没在录时返回 null。
   Future<FinalizeOutcome?> finish(StopTrigger trigger) async {
+    // 收尾互斥：同一会话不许收两遍（见 [_finalizing]）。
+    if (_finalizing) return null;
     if (_sessionId == null) return null;
 
-    // 只停这一段录制 —— **相机保持开着**，取景框还在，下件包裹接着扫。
-    await _gateway.stopRecording();
+    _finalizing = true;
+    try {
+      // 先把会话号**抓在手里**：下面全程用它，结尾也只在它还没被换掉时才清空。
+      final sessionId = _sessionId!;
 
-    // 等**分段落盘那条链**（不是事件链）。
-    //
-    // 原生层的契约是「停止返回时最后一段已经封完并投递」，
-    // 所以此刻最后一段的 segmentClosed 已经排在 `_segmentWrites` 上了。
-    // 少了这一步，最后一段会被漏掉 —— 而它是刚录完的那段，最不该丢。
-    //
-    // **不能等事件链**：停录可能是从事件处理器里触发的（画面静止、扫码复扫），
-    // 而那个处理器本身就排在事件链上、正在等这里 —— 等事件链就是等自己。
-    await _segmentWrites;
+      // 只停这一段录制 —— **相机保持开着**，取景框还在，下件包裹接着扫。
+      await _gateway.stopRecording();
 
-    final outcome = await _finalizer.finalize(
-      sessionId: _sessionId!,
-      waybill: _waybill!,
-      sourceDeviceId: _sourceDeviceId,
-      segments: List.of(_segments),
-      reason: trigger,
-    );
+      // 等**分段落盘那条链**（不是事件链）。
+      //
+      // 原生层的契约是「停止返回时最后一段已经封完并投递」，
+      // 所以此刻最后一段的 segmentClosed 已经排在 `_segmentWrites` 上了。
+      // 少了这一步，最后一段会被漏掉 —— 而它是刚录完的那段，最不该丢。
+      //
+      // **不能等事件链**：停录可能是从事件处理器里触发的（画面静止、扫码复扫），
+      // 而那个处理器本身就排在事件链上、正在等这里 —— 等事件链就是等自己。
+      await _segmentWrites;
 
-    if (outcome.succeeded) {
-      // 只有成功的才打标记；失败的保持孤儿身份，下次启动重试。
-      await _workspace.markFinalized(_sessionId!);
+      final outcome = await _finalizer.finalize(
+        sessionId: sessionId,
+        waybill: _waybill!,
+        sourceDeviceId: _sourceDeviceId,
+        segments: List.of(_segments),
+        reason: trigger,
+      );
+
+      if (outcome.succeeded) {
+        // 只有成功的才打标记；失败的保持孤儿身份，下次启动重试。
+        await _workspace.markFinalized(sessionId);
+      }
+
+      // ⚠️ **只在会话号还是我们收的那一个时才清**（2026-09-22 加）。
+      // 换段式连续扫下，收尾期间下一位的会话可能已经开起来了 ——
+      // 无条件 `_sessionId = null` 会抹掉**新开的那一段**的号，
+      // 那段正在录的视频就永久成了孤儿。跟踪器同理：
+      // 新段的 `track()` 已经跑过，这时 `reset()` 会把新件抹掉。
+      if (_sessionId == sessionId) {
+        _sessionId = null;
+        _sessionStartedMs = null;
+        _packageTracker.reset();
+      }
+
+      // 通知界面 —— 停录时界面只显示了「正在收尾」，到这里才算真的完了。
+      onFinalized?.call(outcome);
+
+      return outcome;
+    } finally {
+      _finalizing = false;
     }
-
-    _sessionId = null;
-    _sessionStartedMs = null;
-    // 这一段录完了，别再跟踪它 —— 否则下件包裹还没扫到时，
-    // 上一件的离场会算到下一段头上。
-    _packageTracker.reset();
-
-    // 通知界面 —— 停录时界面只显示了「正在收尾」，到这里才算真的完了。
-    onFinalized?.call(outcome);
-
-    return outcome;
   }
 
   Future<void> dispose() async {
@@ -541,6 +573,34 @@ class RecordingCoordinator {
   // ─────────────────────────────────────────────
   // 内部
   // ─────────────────────────────────────────────
+
+  /// 把一件事排进事件链，串行处理。
+  ///
+  /// **两条链都靠它，是因为「一条失败毒死整条链」这件事**：
+  /// `_pending` 是用 `.then` 串起来的，一个未捕获的异常会让它变成 rejected，
+  /// **后面所有事件的回调被整段跳过、永不恢复**。真机表现是
+  /// 「换一次件之后相机再也扫不动了」，而日志里只有一条报错。
+  /// 换段式连续扫把「一次停录」从一次/班变成一次/件，
+  /// 一次抖动的代价就从可以忽略变成当班报废 —— 所以这条护栏是必须的。
+  ///
+  /// 计数器**同步自增**（不是等 body 跑起来才加），
+  /// 否则 [waitForPendingEvents] 会数不到刚排进来的这一条。
+  Future<void> _enqueue(Future<void> Function() body) {
+    _queuedEvents++;
+
+    _pending = _pending.then((_) async {
+      try {
+        await body();
+      } on Object catch (error) {
+        _lastError = '$error';
+        onNativeFailure?.call('事件处理失败：$error');
+      } finally {
+        _completedEvents++;
+      }
+    });
+
+    return _pending;
+  }
 
   /// 把事件喂给状态机，并把它的动作落到界面与原生层。
   ///
