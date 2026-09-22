@@ -111,6 +111,23 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 打点是「产生即持久化」的，这一条就等于盘上真有的条数。
   int _punchCount = 0;
 
+  /// 本机数据根目录。索引里的 `location` 相对它 —— 备份页靠它把相对路径
+  /// 还原成能 stat 的绝对路径（收尾端算这个相对路径时用的就是这个根）。
+  late String _rootPath;
+
+  /// 本机已收尾的录像，索引里读出来的原样。
+  ///
+  /// ⚠️ 这**不是**「待上传队列」—— 那个队列还不存在（手机端没有任何上传代码，
+  /// 见 `_backupPage` 的说明）。这里列的是盘上真有的东西。
+  List<RecordingEntry> _entries = const [];
+
+  /// 每条录像在盘上的字节数，按 `evidenceId` 索引。
+  ///
+  /// 量不出来（文件不在了、读不动）的**不放进来**，列表里那一条就写「大小未知」。
+  /// 宁可少一个数字，也不要显示一个算不出来、但看起来很像真的的值 ——
+  /// 这个项目已经因为「界面上的假数字被当成真的」吃过一次亏。
+  final Map<String, int> _entryBytes = {};
+
   @override
   void initState() {
     super.initState();
@@ -145,6 +162,7 @@ class _RecorderPageState extends State<RecorderPage> {
       // 用**持久**目录，不用临时目录 ——「重启后收尾孤儿」靠的就是文件还在原处。
       final documents = await getApplicationDocumentsDirectory();
       final root = Directory('${documents.path}/vidlog')..createSync(recursive: true);
+      _rootPath = root.path;
 
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
@@ -419,15 +437,31 @@ class _RecorderPageState extends State<RecorderPage> {
           ? root.listSync().whereType<Directory>().length
           : 0;
       final pending = (await _workspace.listOrphans()).length;
-      final entries = (await _index.loadAll()).length;
+      final entries = await _index.loadAll();
       final punches = (await _punchLog.loadAll()).length;
+
+      // 备份页要显示「这些片子占了多少盘」。逐条 stat —— 条数以十计，
+      // 而且本来就要读一遍索引，不值得为它加缓存或后台扫描。
+      final bytes = <String, int>{};
+      for (final entry in entries) {
+        final file = File('$_rootPath/${entry.location.value}');
+        try {
+          if (await file.exists()) bytes[entry.evidenceId] = await file.length();
+        } on Object {
+          // 量不出来就不量。见 `_entryBytes` 的说明。
+        }
+      }
 
       if (!mounted) return;
       setState(() {
         _sessionCount = sessions;
         _pendingCount = pending;
-        _entryCount = entries;
+        _entries = entries;
+        _entryCount = entries.length;
         _punchCount = punches;
+        _entryBytes
+          ..clear()
+          ..addAll(bytes);
       });
     } on Object catch (error) {
       if (mounted) setState(() => _status = '读取工作区失败：$error');
@@ -509,19 +543,146 @@ class _RecorderPageState extends State<RecorderPage> {
         _ => '设置',
       };
 
-  /// 备份页。
+  /// 备份页：把「哪些东西还没备份」摆在明面上。
   ///
-  /// ⚠️ **暂时是空的** —— 这一页要显示什么由需求方定（2026-09-21）。
-  /// 不放占位假数据：假数字在真机上会被当成真的（这个项目已经吃过一次亏）。
+  /// ## 为什么这一页先做，而且今天只能做成这样
+  ///
+  /// 规格 §3.4.3 标着 ★，原文写明它来自一次**真实故障**：原系统上传失败后
+  /// 进入终态、永不重试，用户完全不知道数据没传上去。那类故障的第一道防线
+  /// 不是重试次数，是**看得见**。
+  ///
+  /// 而手机端今天**一行上传代码都没有** —— 没有队列、没有网络层、没有配网。
+  /// 所以「东西没备份，而且用户不知道」是眼下唯一确定会发生的事。
+  /// 这一页先把它变成看得见的。
+  ///
+  /// ⚠️ **只显示盘上真有的东西**：本机已收尾的录像，以及它们都还没备份。
+  /// 不放进度条、不放「主机已连接」、不放剩余空间 —— 那些今天一个都测不出来，
+  /// 而假数字在真机上会被当成真的（这个项目吃过一次亏）。
   Widget _backupPage() {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(32),
-        child: Text(
-          '备份\n\n这一页要做成什么，等需求方定。',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.black54),
+    final newestFirst = _entries.reversed.toList();
+    final totalBytes = _entryBytes.values.fold<int>(0, (sum, b) => sum + b);
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        _backupStatusCard(
+          count: _entries.length,
+          totalBytes: totalBytes,
+          missingSizes: _entries.length - _entryBytes.length,
         ),
+        const SizedBox(height: 12),
+        if (newestFirst.isEmpty)
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('本机还没有收尾入库的录像。'),
+            ),
+          )
+        else
+          _backupListCard(newestFirst),
+      ],
+    );
+  }
+
+  Widget _backupStatusCard({
+    required int count,
+    required int totalBytes,
+    required int missingSizes,
+  }) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.cloud_off_outlined, color: Colors.orange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '还没接入备份主机',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '手机端还没有上传功能 —— 下面这些录像**现在只在这台手机上**，'
+              '手机丢了就没了。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const Divider(height: 24),
+            _kv('本机录像', '$count 条'),
+            _kv(
+              '占用',
+              missingSizes > 0
+                  ? '${_sizeLabel(totalBytes)} · 另有 $missingSizes 条量不到大小'
+                  : _sizeLabel(totalBytes),
+            ),
+            _kv('归档主机', '未接入'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _backupListCard(List<RecordingEntry> entries) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              '本机录像（${entries.length} 条，新的在前）',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          for (final entry in entries) ...[
+            const Divider(height: 1),
+            ListTile(
+              dense: true,
+              title: Text(
+                entry.waybill.value.isEmpty
+                    ? entry.evidenceId
+                    : entry.waybill.value,
+              ),
+              subtitle: Text(
+                '${_stamp(entry.startedAt)} · ${_durationLabel(entry.duration)} · '
+                '${switch (_entryBytes[entry.evidenceId]) {
+                  final int bytes => _sizeLabel(bytes),
+                  _ => '大小未知',
+                }}',
+              ),
+              trailing: const Chip(
+                visualDensity: VisualDensity.compact,
+                label: Text('未备份'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 标签 + 值的一行。用固定宽度的标签列，几行数字才对得齐。
+  Widget _kv(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 72,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ),
+          Expanded(child: Text(value)),
+        ],
       ),
     );
   }
@@ -909,6 +1070,25 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
   static String _two(int value) => value.toString().padLeft(2, '0');
+
+  /// `MM-DD HH:mm`。备份页一行里塞得下，且不需要年份 —— 手机上的东西都是最近的。
+  static String _stamp(DateTime at) =>
+      '${_two(at.month)}-${_two(at.day)} ${_two(at.hour)}:${_two(at.minute)}';
+
+  /// `mm:ss`（超过一小时就是三位数的分钟，不折成小时 —— 一段录像不会是几小时）。
+  static String _durationLabel(Duration d) =>
+      '${_two(d.inMinutes)}:${_two(d.inSeconds % 60)}';
+
+  static String _sizeLabel(int bytes) {
+    const kb = 1024;
+    const mb = kb * 1024;
+    const gb = mb * 1024;
+
+    if (bytes < kb) return '$bytes B';
+    if (bytes < mb) return '${(bytes / kb).toStringAsFixed(1)} KB';
+    if (bytes < gb) return '${(bytes / mb).toStringAsFixed(1)} MB';
+    return '${(bytes / gb).toStringAsFixed(2)} GB';
+  }
 
   static String _modeLabel(WorkMode mode) => switch (mode) {
         WorkMode.continuousScan => '连续扫',

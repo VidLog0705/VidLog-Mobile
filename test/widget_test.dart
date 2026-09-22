@@ -22,6 +22,19 @@ void main() {
     }
   });
 
+  testWidgets('★ 备份页只显示盘上真有的东西，不编数字', (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    // 默认就落在备份栏。上传功能还不存在，这一页必须**明说**，
+    // 而不是显示一个看起来正常的「主机已连接 / 0 条待上传」。
+    expect(find.text('还没接入备份主机'), findsOneWidget);
+    expect(find.text('未接入'), findsOneWidget);
+
+    // 真正的回归守卫是这条：以后谁往这一页塞一个假装连上了的状态，这里会红。
+    // 假数字在真机上会被当成真的 —— 这个项目已经吃过一次亏。
+    expect(find.textContaining('已连接'), findsNothing);
+  });
+
   testWidgets('★ 发货与退货共用同一个录制页（不是两份）', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 
