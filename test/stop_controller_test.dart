@@ -433,6 +433,81 @@ void main() {
       expect(stops(actions).single.trigger, StopTrigger.sceneStatic);
     });
 
+    group('★ `isStaticTimingActive`：界面那条「静止计时起算」日志的闸', () {
+      // 这条闸踩过两次坑，所以单独锁：
+      // 先是「档位关掉时还打这条日志」（真机上被误会成静止在计时）→ 加了档位闸；
+      // 后来扫码静止停录有了**自己的 2 秒**，那个档位闸的前提就**反过来了**
+      // —— 档位关着，计时照样在跑。
+      //
+      // 判据与真正决定停不停的那份**共用同一个 getter**（`_staticStopDelay`），
+      // 所以这里顺带锁住了「两处不会走岔」。
+
+      test('同码停 · 档位关闭 → 没在计（日志不该出现）', () {
+        final controller = isolated(
+            mode: WorkMode.sameWaybillStop, staticStop: StaticStopSetting.off);
+
+        expect(controller.isStaticTimingActive, isFalse);
+      });
+
+      test('同码停 · 档位 2 分钟 → 在计', () {
+        final controller = isolated(
+            mode: WorkMode.sameWaybillStop,
+            staticStop: StaticStopSetting.minutes2);
+
+        expect(controller.isStaticTimingActive, isTrue);
+      });
+
+      test('连续扫 · 档位 5 分钟 → 在计', () {
+        final controller =
+            isolated(staticStop: StaticStopSetting.minutes5);
+
+        expect(controller.isStaticTimingActive, isTrue);
+      });
+
+      test('★ 扫码静止停录 · 档位关闭 → **照样在计**（那条闸不能按档位判）', () {
+        // 这就是回归配方：把闸改回 `config.staticStop.isEnabled` 时，
+        // **只有这一条**会红。而验收 §1.16 ②‑B 的前置正是「档位设成关闭」。
+        final controller = isolated(
+            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
+
+        expect(controller.isStaticTimingActive, isTrue);
+      });
+
+      test('扫码静止停录 · 档位 3 分钟 → 也在计', () {
+        final controller = isolated(
+            mode: WorkMode.scanThenStaticStop,
+            staticStop: StaticStopSetting.minutes3);
+
+        expect(controller.isStaticTimingActive, isTrue);
+      });
+
+      test('★ 它与「真的会不会停」是同一份判据 —— 说在计，就真的会停', () {
+        // 防「两处各自写一遍、慢慢走岔」：这里不查 getter，直接跑行为。
+        final controller = isolated(
+            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
+
+        expect(controller.isStaticTimingActive, isTrue);
+
+        start(controller);
+        controller.handle(TrackedPackageLeft(t0 + minute));
+        controller.handle(TrackedPackageEntered(t0 + minute + second));
+
+        expect(stops(controller.handle(Heartbeat(t0 + minute + 3 * second))),
+            hasLength(1));
+      });
+
+      test('★ 反过来：说没在计，就真的不会停', () {
+        final controller = isolated(
+            mode: WorkMode.sameWaybillStop, staticStop: StaticStopSetting.off);
+
+        expect(controller.isStaticTimingActive, isFalse);
+
+        start(controller);
+
+        expect(controller.handle(Heartbeat(t0 + 60 * minute)), isEmpty);
+      });
+    });
+
     test('默认档位是 3 分钟', () {
       expect(StaticStopSetting.fallback, StaticStopSetting.minutes3);
     });

@@ -447,9 +447,17 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 完全可能是正确的（扫码 2 分钟 + 静止 2 分钟）。没有这条日志就分不清
   /// 它和「封顶失效」。
   void _onSceneChanged(bool isStatic) {
-    // ⚠️ **静止档位关掉时不要记这条。** 那时静止计时根本没在计，
-    // 打一行「静止计时从现在起算」是误导 —— 真机上就是这么被误会的。
-    if (!_staticStop.isEnabled) return;
+    // ⚠️ **问编排器「现在有没有在计静止」，别看静止档位开关。**
+    //
+    // 档位关掉时打这条是误导（真机上就是这么被误会的），所以这里要有一道闸 ——
+    // 但闸的判据**不是**「档位开没开」：扫码静止停录有**它自己的 2 秒**，
+    // 档位设成「关闭」时它的静止计时照样在跑。按档位判，这条日志会恰好在
+    // 那个模式下被整个吃掉，而那正是最需要它的场合。
+    //
+    // 判据放在状态机那边（`StopController.isStaticTimingActive`），与真正
+    // 决定停不停的那一份**共用同一个 getter** —— 两处各自写一遍的话，
+    // 它们会从这里开始慢慢走岔。
+    if (_coordinator?.stopController.isStaticTimingActive != true) return;
 
     _log(isStatic ? '👁 画面静止 —— 静止计时从现在起算' : '👁 画面恢复活动 —— 静止计时重置');
   }

@@ -245,6 +245,19 @@ class StopController {
       mode.ownStaticStopDuration ??
       (config.staticStop.isEnabled ? config.staticStop.duration : null);
 
+  /// 现在**有没有在计静止** —— 界面那条「👁 静止计时从现在起算」的日志靠它。
+  ///
+  /// 就是 [_staticStopDelay] 那一份判据，**不另立一个**。
+  ///
+  /// ⚠️ **界面不要用「静止档位开没开」代替它。** 扫码静止停录有自己的 2 秒，
+  /// 档位设成「关闭」时它的静止计时**照样在跑** —— 按档位判会把这条日志
+  /// 恰恰在这个模式下整个吃掉，而那正是最需要它的场合（验收 §1.16 ②‑B
+  /// 的前置就是「档位设成关闭」）。
+  ///
+  /// 这条坑踩过两次：先是「档位关掉时还打这条日志」（真机上被误会成静止在计时），
+  /// 于是加了档位闸；后来这个模式有了自己的 2 秒，那个闸的前提就**反过来了**。
+  bool get isStaticTimingActive => _staticStopDelay != null;
+
   List<RecorderAction> _stop(StopTrigger trigger) {
     final actions = <RecorderAction>[];
 
