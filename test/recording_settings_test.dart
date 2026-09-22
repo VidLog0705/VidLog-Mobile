@@ -27,12 +27,13 @@ void main() {
 
   String path() => '${temp.path}/settings.json';
 
-  test('没有文件 → 三项都是硬兜底值，而且**不建文件**', () async {
+  test('没有文件 → 四项都是硬兜底值，而且**不建文件**', () async {
     final settings = await RecordingSettings.load(path());
 
     expect(settings.mode, WorkMode.fallback);
     expect(settings.staticStop, StaticStopSetting.fallback);
     expect(settings.durationFallback, DurationFallbackSetting.fallback);
+    expect(settings.voiceEnabled, isTrue, reason: '读不出来时播报按**开**算');
 
     // 没改过就不写盘：默认值本来就是对的，没必要替一件没发生的事写一次。
     expect(File(path()).existsSync(), isFalse);
@@ -43,6 +44,7 @@ void main() {
     settings.mode = WorkMode.scanThenStaticStop;
     settings.staticStop = StaticStopSetting.minutes5;
     settings.durationFallback = DurationFallbackSetting.off;
+    settings.voiceEnabled = false;
     await settings.save();
 
     final reloaded = await RecordingSettings.load(path());
@@ -52,6 +54,24 @@ void main() {
     // off 的分钟数是 0 —— 它必须和「没配过」区分得开，所以这里单独钉一条：
     // 真要写成「缺字段」的话，读回来会是默认的 4 分钟而不是关。
     expect(reloaded.durationFallback, DurationFallbackSetting.off);
+    // 同理：false 也必须和「没配过」区分得开。若哪天把「默认 true」实现成
+    // 「缺省就当 true」，这一条会红 —— 而那个 bug 在真机上表现为
+    // 「关了播报，重开 App 又自己响了」。
+    expect(reloaded.voiceEnabled, isFalse);
+  });
+
+  test('⚠️ 播报开关：垃圾值一律当**开**，不是当关', () async {
+    // 这一项的兜底方向与别项相反，值得钉住：规格 §3.3.2 的错码保护就靠播报，
+    // **静默关掉一个提示功能，比静默开着吵一点严重得多**。
+    for (final garbage in <Object?>['false', 0, '', <int>[], null]) {
+      File(path()).writeAsStringSync(
+        jsonEncode({'voiceEnabled': garbage}),
+      );
+
+      final settings = await RecordingSettings.load(path());
+
+      expect(settings.voiceEnabled, isTrue, reason: '「$garbage」不该被当成「关」');
+    }
   });
 
   test('静置档位与时长兜底**互不影响**：关一个，另一个照旧', () async {

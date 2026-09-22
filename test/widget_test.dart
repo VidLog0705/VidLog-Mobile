@@ -180,10 +180,12 @@ void main() {
     await tester.tap(find.byIcon(Icons.tune_outlined));
     await tester.pumpAndSettle();
 
-    // 四块都在。第三块是验收工具，缺了它 M4 的「时长兜底」那条验收没法跑；
-    // 第四块明说「改完什么时候生效」，缺了它用户改完没反应只会以为开关坏了。
+    // 五块都在。验收工具那块缺了 M4 的「时长兜底」验收没法跑；
+    // 生效时机那块缺了，用户改完没反应只会以为开关坏了。
+    // 语音播报是需求方 2026-09-22 点名要的。
     expect(find.text('工作模式'), findsOneWidget);
     expect(find.text('防忘停录'), findsOneWidget);
+    expect(find.text('语音播报'), findsOneWidget);
     expect(find.textContaining('时长兜底加速'), findsOneWidget);
     expect(find.textContaining('不用退出去重进'), findsOneWidget);
 
@@ -216,11 +218,19 @@ void main() {
       isNull,
     );
 
-    // 验收开关**不落盘**，所以它不依赖读没读出来，一直是可用的。
-    expect(
-      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).onChanged,
-      isNotNull,
-    );
+    // 页上有两个开关，靠 key 取 —— 这也顺带把「哪个开关是哪个」钉住了。
+    SwitchListTile switchAt(String key) =>
+        tester.widget<SwitchListTile>(find.byKey(Key(key)));
+
+    // 验收开关**不落盘**，所以它不依赖盘上的设置读没读出来 —— 一直是可用的。
+    expect(switchAt('settings-accelerated-switch').onChanged, isNotNull);
+
+    // ⚠️ 播报开关是**落盘**的，所以它跟着一起禁用。
+    // 它同时是唯一「立刻生效」的一项设置：关它的人是因为现在就吵，
+    // 让他「先结束工作再开始」是不合理的（`实现决策.md` §17.3）。
+    expect(switchAt('settings-voice-switch').onChanged, isNull);
+    expect(switchAt('settings-voice-switch').value, isTrue,
+        reason: '设置没读出来时按开算 —— 不该静默把提示功能关掉');
 
     // 最小的真机宽度下，五档的静止档位选择器不能横着溢出。
     // 溢出的子树照样在 widget 树里、`find` 找得到、`takeException` 也是 null

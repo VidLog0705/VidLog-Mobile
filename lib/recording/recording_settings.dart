@@ -7,7 +7,7 @@ import 'work_mode.dart';
 
 /// 用户选的录制设置（`<root>/settings.json`）。
 ///
-/// 落盘的三项：工作模式、静止停录档位、时长兜底档位。
+/// 落盘的四项：工作模式、静止停录档位、时长兜底档位、语音播报开关。
 ///
 /// ## 为什么单独一个文件，不并进 `device.json`
 ///
@@ -38,6 +38,7 @@ class RecordingSettings {
     required this.mode,
     required this.staticStop,
     required this.durationFallback,
+    required this.voiceEnabled,
   });
 
   final String path;
@@ -50,6 +51,15 @@ class RecordingSettings {
 
   /// 时长兜底档位（规格 §3.3.4）。
   DurationFallbackSetting durationFallback;
+
+  /// 语音播报开关。
+  ///
+  /// ⚠️ **默认开，而且读不出来也回落到开。** 理由与别的项相反，值得写下来：
+  /// 规格 §3.3.2 的错码保护**就是靠播报**告诉用户「扫的不是同一件」。
+  /// 这一项静默变成「关」（比如字段丢了、被人手改成字符串），用户不会发现 ——
+  /// 他只会以为「这个功能没做」，然后把错的包裹录进去。
+  /// **静默关掉一个提示功能，比静默开着吵一点严重得多。**
+  bool voiceEnabled;
 
   /// 读设置。**任何读取失败都回落到硬兜底值，绝不抛。**
   static Future<RecordingSettings> load(String path) async {
@@ -70,6 +80,13 @@ class RecordingSettings {
       mode: WorkMode.fromConfig(json['mode']),
       staticStop: StaticStopSetting.fromConfig(json['staticStop']),
       durationFallback: DurationFallbackSetting.fromConfig(json['durationFallback']),
+      // 只认真正的 bool。**不认字符串 'false'** —— 认它就得在这里开始猜
+      // 各种写法（'0' / 'no' / '' 算不算），而每多认一种就多一种把
+      // 「本来是关」读成「开」或反之的机会。这个文件是我们自己写的。
+      voiceEnabled: switch (json['voiceEnabled']) {
+        final bool value => value,
+        _ => true,
+      },
     );
   }
 
@@ -90,6 +107,8 @@ class RecordingSettings {
         // 存名字的话 `int.tryParse('minutes3')` 会失败，然后**静默回落成默认档位**。
         'staticStop': staticStop.minutes,
         'durationFallback': durationFallback.minutes,
+
+        'voiceEnabled': voiceEnabled,
       }),
     );
   }

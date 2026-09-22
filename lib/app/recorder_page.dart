@@ -302,6 +302,15 @@ class _RecorderPageState extends State<RecorderPage> {
     _coordinator!.onPackageTrackingChanged = (left) =>
         _log(left ? '📦 包裹离开取景框' : '📦 包裹回到取景框');
     _coordinator!.onNativeFailure = (message) => _log('⚠️ $message');
+
+    // 播音开关是**可变字段**，新建出来的编排器默认是「开」，
+    // 所以要在这里补一次 —— 不然「开始工作」重建之后它会自己打开。
+    _applyVoice();
+  }
+
+  /// 把当前的播报开关推给编排器（它自己不会去读设置）。
+  void _applyVoice() {
+    _coordinator?.voiceEnabled = _voiceOn;
   }
 
   /// 画面静下来 / 又动起来。
@@ -367,7 +376,11 @@ class _RecorderPageState extends State<RecorderPage> {
       case Speak(:final prompt):
         // 播报本身在编排层里发给原生（`VoicePrompt.spokenText` 是唯一措辞来源），
         // 这里只留一条可见的日志。
-        _log('🔊 ${prompt.spokenText}');
+        //
+        // ⚠️ 播报关掉时日志**照记**，只是图标换成 🔇 —— 关掉的只是声音。
+        // 那个图标也是真机验收时唯一能分辨「播报被关了」和「TTS 坏了」的线索：
+        // 前者显示 🔇 而屏幕上有提示，后者显示 🔊 而一点声音都没有。
+        _log('${_voiceOn ? "🔊" : "🔇"} ${prompt.spokenText}');
 
       case ShowDurationPrompt():
         setState(() => _askingToContinue = true);
@@ -1583,6 +1596,7 @@ class _RecorderPageState extends State<RecorderPage> {
     WorkMode? mode,
     StaticStopSetting? staticStop,
     DurationFallbackSetting? durationFallback,
+    bool? voiceEnabled,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -1591,11 +1605,17 @@ class _RecorderPageState extends State<RecorderPage> {
       if (mode != null) _mode = mode;
       if (staticStop != null) _staticStop = staticStop;
       if (durationFallback != null) _durationFallback = durationFallback;
+      if (voiceEnabled != null) settings.voiceEnabled = voiceEnabled;
 
       settings.mode = _mode;
       settings.staticStop = _staticStop;
       settings.durationFallback = _durationFallback;
     });
+
+    // ⚠️ **播报是唯一立刻生效的一项。** 它不参与任何判定（只出声），
+    // 而人是嫌吵才关的 —— 让他「先结束工作再开始」是不合理的。
+    // 其余三项等下次「开始工作」，理由见设置页底部那块提示与 `实现决策.md` §17.3。
+    if (voiceEnabled != null) _applyVoice();
 
     // **不等它写完。** 写盘是几十毫秒的 I/O，而这是点一下开关就要走的路；
     // 失败了也不该拦住任何事 —— 设置读不出来/写不进去都不影响录制（I4）。
@@ -1604,6 +1624,10 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 盘上的设置读出来了没有。没读出来时设置页的控件全部禁用。
   bool get _settingsReady => _settings != null;
+
+  /// 播报开没开。设置没读出来时按**开**算 —— 读不出来不该静默把提示功能关掉，
+  /// 理由见 `RecordingSettings.voiceEnabled` 的注释。
+  bool get _voiceOn => _settings?.voiceEnabled ?? true;
 
   /// 设置页：工作模式 → 两个兜底档位 → 验收工具。
   ///
@@ -1624,10 +1648,50 @@ class _RecorderPageState extends State<RecorderPage> {
         const SizedBox(height: 12),
         _fallbackCard(),
         const SizedBox(height: 12),
+        _voiceCard(),
+        const SizedBox(height: 12),
         _acceptanceCard(),
         const SizedBox(height: 12),
         _whenCard(),
       ],
+    );
+  }
+
+  // ── ②b 语音播报 ──────────────────────────────
+
+  /// 语音播报开关（需求方 2026-09-22 点名的）。
+  ///
+  /// ⚠️ **关掉的只是声音，不是提示。** 「单号不同，请核对」那类提示在屏幕上
+  /// 照旧出现、事件日志照旧记（日志图标从 🔊 变 🔇）。关播报不等于关提示 ——
+  /// 否则用户关掉声音的同时也把错码保护的唯一线索关掉了。
+  Widget _voiceCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              key: const Key('settings-voice-switch'),
+              contentPadding: EdgeInsets.zero,
+              value: _voiceOn,
+              onChanged: _settingsReady
+                  ? (value) => _updateSettings(voiceEnabled: value)
+                  : null,
+              title: const Text('语音播报'),
+              subtitle: const Text(
+                '扫到不是同一件的包裹时出声提醒（规格 §3.3.2 错码保护）。'
+                '旁边有人、或者嫌吵时关掉。',
+              ),
+            ),
+            const Text(
+              '关掉只是不出声：屏幕上的提示和事件日志照旧，'
+              '日志前面的图标会从 🔊 变成 🔇。立刻生效，不用重新开始工作。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1798,6 +1862,7 @@ class _RecorderPageState extends State<RecorderPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SwitchListTile(
+              key: const Key('settings-accelerated-switch'),
               contentPadding: EdgeInsets.zero,
               value: _accelerated,
               onChanged: (value) => setState(() => _accelerated = value),
@@ -1831,6 +1896,9 @@ class _RecorderPageState extends State<RecorderPage> {
   /// **不改成「立刻生效」是有意的**：工作途中换编排器会把相机会话和界面状态
   /// 拆开（新编排器的 `isWorking` 是 false，而相机是真开着的），
   /// 那个态下「结束工作」也关不掉相机 —— 用一次模式切换换一个相机泄漏不值。
+  ///
+  /// ⚠️ 语音播报是**例外**，而且必须在这里写明 —— 否则这块提示本身就成了假话。
+  /// 它不参与判定（只出声），关它是「现在太吵」而不是「下一段想这样录」。
   Widget _whenCard() {
     final working = _coordinator?.isWorking ?? false;
 
@@ -1840,10 +1908,12 @@ class _RecorderPageState extends State<RecorderPage> {
         padding: const EdgeInsets.all(16),
         child: Text(
           working
-              ? '⚠️ 正在工作中。现在改的设置这一段不生效 —— '
+              ? '⚠️ 正在工作中。上面【工作模式】与【防忘停录】改了这一段不生效 —— '
                   '等下次「开始工作」重建编排器时才按新设置走。'
-              : '这些设置在点「开始工作」时生效。改完直接去发货栏开始工作就行，'
-                  '不用退出去重进。',
+                  '【语音播报】不受这条限制，它立刻生效。'
+              : '【工作模式】与【防忘停录】在点「开始工作」时生效。'
+                  '改完直接去发货栏开始工作就行，不用退出去重进。\n'
+                  '【语音播报】是立刻生效的。',
           style: const TextStyle(fontSize: 12),
         ),
       ),

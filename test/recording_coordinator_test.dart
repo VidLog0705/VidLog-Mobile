@@ -855,6 +855,51 @@ void main() {
       expect(gateway.spoken, isEmpty);
       await coordinator.dispose();
     });
+
+    test('★ 关掉播报：不出声，但提示照旧发出来', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      coordinator.voiceEnabled = false;
+
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.spoken, isEmpty, reason: '关了播报就不该再调原生 speak');
+
+      // ⚠️ **这一条才是重点**：`onAction` 必须照旧发 Speak。
+      // 关掉的只是声音 —— 屏幕上的提示与事件日志一条都不能少。
+      // 若哪天有人图省事把这段改成「voiceEnabled 为 false 就 return」，
+      // 错码保护的提示会连同声音一起消失，而界面上看不出少了什么。
+      expect(
+        actions.whereType<Speak>().map((a) => a.prompt),
+        [VoicePrompt.differentWaybill],
+      );
+      expect(coordinator.isRecording, isTrue, reason: '扫错码只提示不停');
+
+      await coordinator.dispose();
+    });
+
+    test('⚠️ 播报开关能中途改 —— 不必等下次「开始工作」', () async {
+      // 这个可变字段是编排器里**唯一**一个能中途改的配置。
+      // 关它的场景是「现在太吵」，让用户先结束工作再开始是荒谬的。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      coordinator.voiceEnabled = false;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      expect(gateway.spoken, isEmpty);
+
+      // 再打开 —— 下一次就该出声了（不用重建编排器）。
+      coordinator.voiceEnabled = true;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      expect(gateway.spoken, ['面单不同']);
+
+      await coordinator.dispose();
+    });
   });
 
   // ─────────────────────────────────────────────
