@@ -1614,6 +1614,29 @@ class FakeGateway implements RecorderGateway {
   @override
   Future<double?> maxZoom() async => 4.0;
 
+  /// 表盘左端。**默认给 0.5**（带超广角的双镜头设备）——
+  /// 给 1.0 的话「左半圈不存在」那条分支永远走不到。
+  double? minZoomValue = 0.5;
+
+  @override
+  Future<double?> minZoom() async => minZoomValue;
+
+  @override
+  Future<void> focusNow() async {
+    focusCalls++;
+  }
+
+  /// 表盘滑动时的重新对焦被调了几次。
+  int focusCalls = 0;
+
+  @override
+  Future<void> playDetentSound() async {
+    detentSounds++;
+  }
+
+  /// 拨轮声响了几次。
+  int detentSounds = 0;
+
   @override
   Future<void> autoFocusAndZoom() async {
     autoFocusCalls++;

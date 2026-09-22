@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import UIKit  // UIDevice.playInputClick()（表盘拨轮声）；AVFoundation 不保证带出来
 import Vision
 
 /// 一个已经封闭的分段。
@@ -323,6 +324,15 @@ final class CameraSegmentRecorder: NSObject {
         captureDevice?.maxAvailableVideoZoomFactor
     }
 
+    /// 设备支持的**最小**变焦下限。相机没开时为 nil。
+    ///
+    /// 2026-09-22 起表盘左端不再是个常数：`pickBackCamera` 会优先挑带超广角的
+    /// 虚拟设备，那时这里给 **0.5**；只有广角镜头的设备仍是 1.0。
+    /// 表盘的左半圈（比初始画面更广的那一半）只有它小于 1 时才存在。
+    var minZoomRatio: CGFloat? {
+        captureDevice?.minAvailableVideoZoomFactor
+    }
+
     /// 设置缩放倍率。规格 §3.1.2：倍率不得超过设备能力上限。
     func setZoom(_ ratio: CGFloat) {
         // 操作员自己拖了表盘 —— 那是他**此刻的意图**，要撤销待回弹的自动放大。
@@ -367,27 +377,7 @@ final class CameraSegmentRecorder: NSObject {
     func autoFocusAndZoom() {
         guard let device = captureDevice else { return }
 
-        // ── 对焦 ──
-        //
-        // 对焦点取 `(0.5, 0.5)`（画面正中），**不是算出来的**。
-        // 取景框永远是屏幕居中的（`Viewfinder.rectOn` 只居中不偏移），
-        // 而正中在任何屏幕方向下都是正中 —— 绕开了 `focusPointOfInterest`
-        // 那一圈方向换算。那一圈是经典 bug 源，且**在这台机器上定不了**：
-        // 本文件里就有一处自相矛盾（分析缓冲按 1280×720 说，另一处按竖屏算）。
-        //
-        // 任何时候要把对焦点挪到非中心，先在真机上把那圈方向问题解决掉，
-        // **不要猜**。
-        if device.isFocusPointOfInterestSupported,
-           device.isFocusModeSupported(.autoFocus) {
-            do {
-                try device.lockForConfiguration()
-                device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
-                device.focusMode = .autoFocus
-                device.unlockForConfiguration()
-            } catch {
-                NSLog("VidLog: 自动对焦失败 %@", error.localizedDescription)
-            }
-        }
+        applyAutoFocus(on: device)
 
         // ── 放大 ──
         //
@@ -407,6 +397,56 @@ final class CameraSegmentRecorder: NSObject {
         }
 
         scheduleAutoZoomRestore()
+    }
+
+    /// 立刻对焦到画面正中，**不动倍率**。
+    ///
+    /// 规格 §3.1.2：表盘滑动时「无论怎么滑都自动对焦」。倍率一变，原来对好的
+    /// 那点就不实了 —— 所以每滑一段都要重新对一次。与 `autoFocusAndZoom`
+    /// 共用 `applyAutoFocus`，区别只是不放大、不计时回弹。
+    ///
+    /// **尽力而为，什么都不抛**：与 `setZoom` 一样，失败就当作没发生。
+    func focusNow() {
+        guard let device = captureDevice else { return }
+        applyAutoFocus(on: device)
+    }
+
+    /// 拨一下齿轮的模拟声（表盘滑过一个刻度）。规格 §3.1.2。
+    ///
+    /// 用系统的**输入点击音**（`UIDevice.playInputClick()`）：文档化 API、
+    /// **不带任何音频资源** —— 洁净室与许可证（规格 §10）的账上就少一笔，
+    /// 与 TTS 走系统是同一个理由。
+    ///
+    /// 音量与开关**跟随系统**的「键盘反馈」：用户把它关掉时不响是**正常的**，
+    /// 不是 bug。真机上要按这条验。
+    ///
+    /// **尽力而为，什么都不抛。**
+    func playDetentSound() {
+        UIDevice.current.playInputClick()
+    }
+
+    /// 把对焦点设到画面正中并触发一次自动对焦。
+    ///
+    /// 对焦点取 `(0.5, 0.5)`（画面正中），**不是算出来的**。
+    /// 取景框永远是屏幕居中的（`Viewfinder.rectOn` 只居中不偏移），
+    /// 而正中在任何屏幕方向下都是正中 —— 绕开了 `focusPointOfInterest`
+    /// 那一圈方向换算。那一圈是经典 bug 源，且**在这台机器上定不了**：
+    /// 本文件里就有一处自相矛盾（分析缓冲按 1280×720 说，另一处按竖屏算）。
+    ///
+    /// 任何时候要把对焦点挪到非中心，先在真机上把那圈方向问题解决掉，
+    /// **不要猜**。
+    private func applyAutoFocus(on device: AVCaptureDevice) {
+        guard device.isFocusPointOfInterestSupported,
+              device.isFocusModeSupported(.autoFocus) else { return }
+
+        do {
+            try device.lockForConfiguration()
+            device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+            device.focusMode = .autoFocus
+            device.unlockForConfiguration()
+        } catch {
+            NSLog("VidLog: 自动对焦失败 %@", error.localizedDescription)
+        }
     }
 
     private func scheduleAutoZoomRestore() {
@@ -454,13 +494,34 @@ final class CameraSegmentRecorder: NSObject {
 
     // MARK: - 相机配置
 
+    /// 挑后置摄像头。**顺序是有讲究的**（需求方 2026-09-22 裁决：要真做到 0.5×）。
+    ///
+    /// 逐个按**显式优先序**问 `AVCaptureDevice.default(_:for:position:)`，
+    /// **不用 `DiscoverySession.devices.first`** —— 它的顺序没有保证，
+    /// 拿到广角镜头就再也划不到 0.5×（表盘左半圈整段是死的，用户会以为坏了）。
+    ///
+    /// `.builtInTripleCamera` / `.builtInDualWideCamera` 是**虚拟设备**：
+    /// 它们自带超广角，`minAvailableVideoZoomFactor` 会给到 0.5，
+    /// 跨过 1.0 时由 iOS 自动在组成镜头之间切换。
+    ///
+    /// 为什么不把 `.builtInDualCamera`（广角 + 长焦）也排进来：它的下限同样是
+    /// 1.0，给不了 0.5×，而它的上限并不比广角高 —— 加了只会多一个分支，
+    /// 不改变任何行为。
     private static func pickBackCamera() -> AVCaptureDevice? {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .builtInDualCamera],
-            mediaType: .video,
-            position: .back)
+        let preferred: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera,
+            .builtInDualWideCamera,
+            .builtInWideAngleCamera,
+        ]
 
-        return discovery.devices.first ?? AVCaptureDevice.default(for: .video)
+        for type in preferred {
+            if let device = AVCaptureDevice.default(type, for: .video, position: .back) {
+                return device
+            }
+        }
+
+        // 一个都没匹配上：按「随便给个后置」兜底，总比没有画面强。
+        return AVCaptureDevice.default(for: .video)
     }
 
     private func addVideoOutput() -> Bool {

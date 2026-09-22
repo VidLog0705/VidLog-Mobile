@@ -132,6 +132,25 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             // 相机没开时给 nil —— Dart 侧用保守的默认值，不去猜设备。
             result(recorder?.maxZoomRatio.map { Double($0) })
 
+        case "minZoom":
+            // 同上，相机没开时给 nil —— Dart 侧按 1.0 处理
+            // （也就是「这台设备没有超广角」，表盘左半圈是平的）。
+            result(recorder?.minZoomRatio.map { Double($0) })
+
+        case "focusNow":
+            // 表盘滑动时重新对焦（规格 §3.1.2）。
+            //
+            // 与 `autoFocusAndZoom` 一样刻意**不给 FlutterError 分支**：
+            // 相机没开、设备不支持对焦都不是错误，是尽力而为。
+            recorder?.focusNow()
+            result(nil)
+
+        case "playDetentSound":
+            // 拨轮声。同样尽力而为 —— 用户关掉系统「键盘反馈」时就该没声，
+            // 那不是失败，是用户自己的选择。
+            recorder?.playDetentSound()
+            result(nil)
+
         case "autoFocusAndZoom":
             // 面单进框：对焦 + 临时放大两秒（需求方 2026-09-22）。
             //

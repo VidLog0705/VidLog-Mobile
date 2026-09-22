@@ -38,9 +38,17 @@ import java.util.Locale
  * ## ⚠️ 与 Dart 侧的方法名对不上（已知缺口，未修）
  *
  * Dart 的 `ChannelRecorderGateway` 调的是 `openCamera` / `startRecording` /
- * `stopRecording` / `closeCamera` / `autoFocusAndZoom`，而本类实现的是
+ * `stopRecording` / `closeCamera` / `autoFocusAndZoom` / `minZoom` /
+ * `focusNow` / `playDetentSound`，而本类实现的是
  * `startSession` / `stopSession` —— 每次调用都会落到 `notImplemented`，
  * **Android 端目前整条链路是通的不了**。iOS 侧（`RecorderPlugin.swift`）是对的。
+ *
+ * `minZoom` / `focusNow` / `playDetentSound`（表盘改造，2026-09-22）同样
+ * **不在这里补空壳**，理由与下一条相同。其中 `minZoom` 需要说明一句：
+ * Android 那侧的变焦模型**下限本来就恒为 1.0**（`setZoom` 里是
+ * `coerceIn(1.0f, maxZoomRatio)`，`applyZoom` 同）—— 也就是 Android 根本没有
+ * 超广角这条路。所以补一个 `minZoom -> 1.0` 不算撒谎，但也没必要：
+ * Dart 侧拿不到就按 1.0 处理，表盘左半圈自然是平的（规格 §3.1.2 的异常条款）。
  *
  * `autoFocusAndZoom`（面单进框对焦 + 临时放大两秒，2026-09-22）**故意不在这里
  * 补一个空壳**：补了会让人以为两端都做了。接上 Android 相机链路时，

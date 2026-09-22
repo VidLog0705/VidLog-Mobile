@@ -125,6 +125,37 @@ abstract interface class RecorderGateway {
   /// 调用方拿不到时用一个保守的默认值即可。
   Future<double?> maxZoom();
 
+  /// 设备支持的**最小**变焦倍率。
+  ///
+  /// 2026-09-22 起表盘的左端不再是个常数：原生层改成优先挑带**超广角**的
+  /// 双/三镜头虚拟设备，那时 iPhone 的下限是 **0.5**；只有广角镜头的设备
+  /// 仍是 1.0。表盘左端画到哪取决于它（规格 §3.1.2）。
+  ///
+  /// **相机没开时拿不到**（返回 null）—— 与 [maxZoom] 同一个道理，
+  /// 下限也是相机设备本身的属性。拿不到时按 1.0 处理（当作没有超广角）。
+  Future<double?> minZoom();
+
+  /// 立刻对焦到画面正中，**不动倍率**。
+  ///
+  /// 规格 §3.1.2：表盘滑动时「无论怎么滑都自动对焦」。倍率一变，原来
+  /// 对好的那点就不实了 —— 所以每滑一段都要重新对一次。
+  ///
+  /// 与 [autoFocusAndZoom] 共用原生那段对焦逻辑，区别只是不放大、不计时回弹。
+  ///
+  /// **尽力而为**：与 [setZoom] 一样，失败不抛（安卓那条通道整个没接）。
+  Future<void> focusNow();
+
+  /// 拨一下齿轮的模拟声（表盘滑过一个刻度）。规格 §3.1.2。
+  ///
+  /// 用系统的**输入点击音**，**不带任何音频资源** —— 洁净室与许可证
+  /// （规格 §10）的账上就少一笔，与 [speak] 走系统 TTS 是同一条理由。
+  ///
+  /// 音量与开关**跟随系统**的「键盘反馈」：用户把它关掉时不响是**正常的**，
+  /// 不是 bug。
+  ///
+  /// **尽力而为**：安卓没接，调用方吞掉即可。
+  Future<void> playDetentSound();
+
   /// 读出一句提示（规格 §3.3.2 的「面单不同」、§3.3.4 的时长询问）。
   ///
   /// 为什么交给原生而不是放音频文件：措辞是中文、要能改，
@@ -183,6 +214,16 @@ class ChannelRecorderGateway implements RecorderGateway {
 
   @override
   Future<double?> maxZoom() => _methods.invokeMethod<double>('maxZoom');
+
+  @override
+  Future<double?> minZoom() => _methods.invokeMethod<double>('minZoom');
+
+  @override
+  Future<void> focusNow() => _methods.invokeMethod<void>('focusNow');
+
+  @override
+  Future<void> playDetentSound() =>
+      _methods.invokeMethod<void>('playDetentSound');
 
   @override
   Future<void> autoFocusAndZoom() =>
