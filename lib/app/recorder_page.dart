@@ -14,6 +14,7 @@ import '../recording/recorder_events.dart';
 import '../recording/recorder_gateway.dart';
 import '../recording/recording_coordinator.dart';
 import '../recording/recording_index.dart';
+import '../recording/recording_settings.dart';
 import '../recording/recording_totals.dart';
 import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
@@ -71,7 +72,14 @@ class _RecorderPageState extends State<RecorderPage> {
   /// （不影响落盘、打点、清理策略）。它具体要影响什么，等需求方定。
   bool get _isReturn => _tab == 2;
 
-  WorkMode _mode = WorkMode.sameWaybillStop;
+  /// 用户选的设置（工作模式 + 两个档位）。落盘在 `<root>/settings.json`。
+  ///
+  /// **`null` = 还没读出来**（`_bootstrap` 是异步的，文件没读完之前改设置
+  /// 会被随后读出来的盘上值覆盖掉，等于改了没反应）。所以设置页的控件
+  /// 在它为 `null` 时是禁用的 —— 见 `_updateSettings`。
+  RecordingSettings? _settings;
+
+  WorkMode _mode = WorkMode.fallback;
   StaticStopSetting _staticStop = StaticStopSetting.fallback;
 
   /// 时长兜底档位。**与静止档位互相独立** —— 关一个不影响另一个。
@@ -79,6 +87,9 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 把时长兜底的首次询问时机缩短，好让验收不必真的等 4 分钟。
   /// **只压首次询问时机**，不动档位本身，也不碰静止档位。
+  ///
+  /// ⚠️ **故意不落盘。** 它是验收工具，不是产品设置：一旦存下来，验收完
+  /// 忘了关，真实录制就会在开录 20 秒后被问「是否停止」，而用户看着它像正常功能。
   bool _accelerated = false;
 
   final _waybillController = TextEditingController();
@@ -205,6 +216,14 @@ class _RecorderPageState extends State<RecorderPage> {
       // 本机身份要在 `_buildCoordinator` **之前**读出来 ——
       // 编排器建的时候就要把设备标识接进去（它写进每条录像索引的 sourceDeviceId）。
       _identity = await DeviceIdentity.load('${root.path}/device.json');
+
+      // 用户设置也要在 `_buildCoordinator` **之前**读出来 —— 编排器建的时候
+      // 就把模式和两个档位接进去了（`RecordingCoordinator` 只认构造参数，
+      // 没有 setter，建完再改是改不动的）。
+      _settings = await RecordingSettings.load('${root.path}/settings.json');
+      _mode = _settings!.mode;
+      _staticStop = _settings!.staticStop;
+      _durationFallback = _settings!.durationFallback;
 
       _buildCoordinator();
 
@@ -1552,27 +1571,282 @@ class _RecorderPageState extends State<RecorderPage> {
   }
 
 
-  /// 设置页：工作模式与两个档位。
+  /// 改设置：**先落盘，再刷界面**。
   ///
-  /// 都是**开始工作之前**要定的东西，操作中途不会去动它们，
-  /// 所以单独一页，不占采集页的地方。
+  /// [RecordingSettings] 只在 `_bootstrap` 里读过一次，之后每次改动都由这里
+  /// 同步进去并写回盘。
+  ///
+  /// `_settings == null` 表示盘上的设置还没读出来。这时**直接不动** ——
+  /// 改了也会被随后读出来的盘上值覆盖，等于改了没反应还看不出来。
+  /// 设置页的控件在这一小段时间里是禁用的，见 [_settingsReady]。
+  void _updateSettings({
+    WorkMode? mode,
+    StaticStopSetting? staticStop,
+    DurationFallbackSetting? durationFallback,
+  }) {
+    final settings = _settings;
+    if (settings == null) return;
+
+    setState(() {
+      if (mode != null) _mode = mode;
+      if (staticStop != null) _staticStop = staticStop;
+      if (durationFallback != null) _durationFallback = durationFallback;
+
+      settings.mode = _mode;
+      settings.staticStop = _staticStop;
+      settings.durationFallback = _durationFallback;
+    });
+
+    // **不等它写完。** 写盘是几十毫秒的 I/O，而这是点一下开关就要走的路；
+    // 失败了也不该拦住任何事 —— 设置读不出来/写不进去都不影响录制（I4）。
+    unawaited(settings.save());
+  }
+
+  /// 盘上的设置读出来了没有。没读出来时设置页的控件全部禁用。
+  bool get _settingsReady => _settings != null;
+
+  /// 设置页：工作模式 → 两个兜底档位 → 验收工具。
+  ///
+  /// ## 这一页的两条规矩
+  ///
+  /// ① **改了立刻落盘。** 落盘之前这些值只活在内存里，重启就回默认档位 ——
+  ///    而「时长兜底档位交给用户自己选」是需求方 2026-09-21 特意要的，
+  ///    每次开 App 都抹掉等于没做。
+  ///
+  /// ② **验收工具必须长得不像产品设置。** 「时长兜底加速」会把**真实录制**的
+  ///    首次询问压到 20 秒。它要是和别的开关长一样，验收完忘了关，
+  ///    正常录 4 分钟的活 20 秒就被问一次「是否停止」。
   Widget _settingsPage() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _settingsCard(),
+        _modeCard(),
         const SizedBox(height: 12),
-        const Card(
-          child: Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              '这些设置**开始工作之前**改好。中途改了要重新开始工作才会生效 —— '
-              '模式与档位是在开录时定下来的。',
+        _fallbackCard(),
+        const SizedBox(height: 12),
+        _acceptanceCard(),
+        const SizedBox(height: 12),
+        _whenCard(),
+      ],
+    );
+  }
+
+  // ── ① 工作模式 ───────────────────────────────
+
+  Widget _modeCard() {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('工作模式', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text('决定这一件什么时候算录完（规格 §3.3.1）。',
+                style: TextStyle(fontSize: 12)),
+            const SizedBox(height: 12),
+            SegmentedButton<WorkMode>(
+              segments: const [
+                ButtonSegment(value: WorkMode.continuousScan, label: Text('连续扫')),
+                ButtonSegment(value: WorkMode.sameWaybillStop, label: Text('同码停')),
+                ButtonSegment(
+                    value: WorkMode.scanThenStaticStop, label: Text('扫码静止')),
+              ],
+              selected: {_mode},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(mode: value.first)
+                  : null,
+            ),
+            const SizedBox(height: 12),
+
+            // 只讲**选中的那一个**。三个模式的说明同时铺出来，用户得先自己
+            // 对号入座；而人真正要回答的问题是「我现在这个会怎么停」。
+            Container(
+              key: const Key('settings-mode-blurb'),
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_modeTitle(_mode),
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  Text(_modeBlurb(_mode), style: const TextStyle(fontSize: 12)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '三个模式都一样：扫到别的单号不会停 —— 二次扫描只有单号相同才停'
+              '（§3.3.2 错码保护）。',
               style: TextStyle(fontSize: 12),
             ),
-          ),
+          ],
         ),
+      ),
+    );
+  }
+
+  static String _modeTitle(WorkMode mode) => switch (mode) {
+        WorkMode.continuousScan => '连续扫 —— 手动停',
+        WorkMode.sameWaybillStop => '同码停 —— 复扫同码就停',
+        WorkMode.scanThenStaticStop => '扫码静止 —— 静止够时长才停',
+      };
+
+  static String _modeBlurb(WorkMode mode) => switch (mode) {
+        WorkMode.continuousScan =>
+          '识别到单号就开录。停只能靠手动按「停止当前录制」，或者下面两个兜底机制。',
+        WorkMode.sameWaybillStop =>
+          '识别到单号就开录，复扫到同一个单号就停。'
+              '三个模式里只有它不用人额外做什么就能自己停。',
+        WorkMode.scanThenStaticStop =>
+          '识别到单号就开录。包裹要先离开画面、再回到画面，'
+              '并且静止够下面设的时长才停。\n'
+              '注意：这个模式下复扫同码不停，只认静止 —— '
+              '这就是它和「同码停」的区别。',
+      };
+
+  // ── ② 两个兜底档位 ───────────────────────────
+
+  Widget _fallbackCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('防忘停录', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              '两个兜底互相独立：关掉一个不影响另一个。任何一个到点，录制就停。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+
+            _settingTitle('静止停录', '画面一直不动、够这个时长就停（§3.3.3）。'),
+            const SizedBox(height: 8),
+            SegmentedButton<StaticStopSetting>(
+              segments: const [
+                ButtonSegment(value: StaticStopSetting.off, label: Text('关闭')),
+                ButtonSegment(value: StaticStopSetting.minutes2, label: Text('2 分')),
+                ButtonSegment(value: StaticStopSetting.minutes3, label: Text('3 分')),
+                ButtonSegment(value: StaticStopSetting.minutes4, label: Text('4 分')),
+                ButtonSegment(value: StaticStopSetting.minutes5, label: Text('5 分')),
+              ],
+              selected: {_staticStop},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(staticStop: value.first)
+                  : null,
+            ),
+
+            const Divider(height: 28),
+
+            _settingTitle(
+              '时长兜底',
+              '不管画面动不动，录满这个分钟数就弹一次「是否停止」；'
+                  '不操作 1 分钟后自动停（§3.3.4）。',
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<DurationFallbackSetting>(
+              segments: const [
+                ButtonSegment(value: DurationFallbackSetting.off, label: Text('关闭')),
+                ButtonSegment(value: DurationFallbackSetting.minutes4, label: Text('4 分')),
+                ButtonSegment(value: DurationFallbackSetting.minutes5, label: Text('5 分')),
+                ButtonSegment(value: DurationFallbackSetting.minutes6, label: Text('6 分')),
+              ],
+              selected: {_durationFallback},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(durationFallback: value.first)
+                  : null,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _settingTitle(String title, String blurb) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 2),
+        Text(blurb, style: const TextStyle(fontSize: 12)),
       ],
+    );
+  }
+
+  // ── ③ 验收工具 ───────────────────────────────
+
+  /// 真机验收用的开关。**故意做成一眼能看出不是产品设置的样子**：
+  /// 琥珀底 + ⚠️ 标题 + 明说「不落盘」。
+  ///
+  /// 它不落盘这件事要在界面上说出来 —— 否则验收的人会以为「我上次开了」
+  /// 而这次没开，或者反过来以为「我关了它就永久关了」。
+  Widget _acceptanceCard() {
+    return Card(
+      color: Colors.amber.withValues(alpha: 0.18),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _accelerated,
+              onChanged: (value) => setState(() => _accelerated = value),
+              title: const Text('⚠️ 时长兜底加速（验收用，不是产品设置）'),
+              subtitle: const Text(
+                '把时长兜底的首次询问压到 20 秒、宽限 10 秒，免得验收真的等 4 分钟。'
+                '只压询问时机，不动档位本身，也不碰静止停录。',
+              ),
+            ),
+            const Text(
+              '重启 App 自动归位（关）—— 它不写进配置。'
+              '所以做完验收记得自己也关掉：开着它，真实录制会在开录 20 秒后就被问一次。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── ④ 什么时候生效 ───────────────────────────
+
+  /// 说清「现在改的东西什么时候起作用」。
+  ///
+  /// ⚠️ **这不是一句客套提示，是在补一个真实的静默。** 模式与档位是
+  /// [RecordingCoordinator] 的**构造参数**（没有 setter），编排器只在
+  /// 「开始工作」时重建（`_startWorking` 里的 `_buildCoordinator`）。
+  /// 所以在工作中改设置，当前这一段仍然按旧设置走 —— 界面不说明的话，
+  /// 用户改完看到没反应，只会以为开关坏了。
+  ///
+  /// **不改成「立刻生效」是有意的**：工作途中换编排器会把相机会话和界面状态
+  /// 拆开（新编排器的 `isWorking` 是 false，而相机是真开着的），
+  /// 那个态下「结束工作」也关不掉相机 —— 用一次模式切换换一个相机泄漏不值。
+  Widget _whenCard() {
+    final working = _coordinator?.isWorking ?? false;
+
+    return Card(
+      color: working ? Colors.amber.withValues(alpha: 0.18) : null,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          working
+              ? '⚠️ 正在工作中。现在改的设置这一段不生效 —— '
+                  '等下次「开始工作」重建编排器时才按新设置走。'
+              : '这些设置在点「开始工作」时生效。改完直接去发货栏开始工作就行，'
+                  '不用退出去重进。',
+          style: const TextStyle(fontSize: 12),
+        ),
+      ),
     );
   }
 
@@ -1598,72 +1872,6 @@ class _RecorderPageState extends State<RecorderPage> {
             '${outcome.segments.length} 段 · ${_triggerLabel(outcome.reason)}',
           ),
       ],
-    );
-  }
-
-  Widget _settingsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('工作模式', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SegmentedButton<WorkMode>(
-              segments: const [
-                ButtonSegment(value: WorkMode.continuousScan, label: Text('连续扫')),
-                ButtonSegment(value: WorkMode.sameWaybillStop, label: Text('同码停')),
-                ButtonSegment(value: WorkMode.scanThenStaticStop, label: Text('扫码静止')),
-              ],
-              selected: {_mode},
-              onSelectionChanged: (value) => setState(() => _mode = value.first),
-            ),
-            const SizedBox(height: 16),
-            const Text('静止停录档位（§3.3.3）', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SegmentedButton<StaticStopSetting>(
-              segments: const [
-                ButtonSegment(value: StaticStopSetting.off, label: Text('关闭')),
-                ButtonSegment(value: StaticStopSetting.minutes2, label: Text('2')),
-                ButtonSegment(value: StaticStopSetting.minutes3, label: Text('3')),
-                ButtonSegment(value: StaticStopSetting.minutes4, label: Text('4')),
-                ButtonSegment(value: StaticStopSetting.minutes5, label: Text('5')),
-              ],
-              selected: {_staticStop},
-              onSelectionChanged: (value) => setState(() => _staticStop = value.first),
-            ),
-            const SizedBox(height: 16),
-            const Text('时长兜底档位（§3.3.4）', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              '与上面的静止档位**互相独立**：关一个不影响另一个。'
-              '录制满设定分钟数会问一次「是否停止」，不操作 1 分钟后自动停。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<DurationFallbackSetting>(
-              segments: const [
-                ButtonSegment(value: DurationFallbackSetting.off, label: Text('关闭')),
-                ButtonSegment(value: DurationFallbackSetting.minutes4, label: Text('4')),
-                ButtonSegment(value: DurationFallbackSetting.minutes5, label: Text('5')),
-                ButtonSegment(value: DurationFallbackSetting.minutes6, label: Text('6')),
-              ],
-              selected: {_durationFallback},
-              onSelectionChanged: (value) =>
-                  setState(() => _durationFallback = value.first),
-            ),
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _accelerated,
-              onChanged: (value) => setState(() => _accelerated = value),
-              title: const Text('时长兜底加速（验收用）'),
-              subtitle: const Text('首次询问压到 20 秒、宽限 10 秒。只压时长兜底，不动档位。'),
-            ),
-          ],
-        ),
-      ),
     );
   }
 

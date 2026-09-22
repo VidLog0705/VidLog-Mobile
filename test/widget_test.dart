@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/main.dart';
+import 'package:vidlog_mobile/recording/recorder_config.dart';
+import 'package:vidlog_mobile/recording/work_mode.dart';
 
 void main() {
   testWidgets('外壳能启动', (WidgetTester tester) async {
@@ -163,5 +165,76 @@ void main() {
         reason: '键盘弹起时「${entry.key}」被顶出了屏幕顶，用户够不着',
       );
     }
+  });
+
+  testWidgets('★ 设置页：盘上的设置没读出来之前，档位控件必须是禁用的',
+      (WidgetTester tester) async {
+    // ⚠️ 先把视口拉高。设置页是 `ListView`，**屏幕外的卡片根本没建** ——
+    // 默认的 800×600 下第三、四块不在树里，`find` 会找不到它们。
+    tester.view.physicalSize = const Size(400, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.tune_outlined));
+    await tester.pumpAndSettle();
+
+    // 四块都在。第三块是验收工具，缺了它 M4 的「时长兜底」那条验收没法跑；
+    // 第四块明说「改完什么时候生效」，缺了它用户改完没反应只会以为开关坏了。
+    expect(find.text('工作模式'), findsOneWidget);
+    expect(find.text('防忘停录'), findsOneWidget);
+    expect(find.textContaining('时长兜底加速'), findsOneWidget);
+    expect(find.textContaining('不用退出去重进'), findsOneWidget);
+
+    // ⚠️ 这条是实质的。`_settings` 是 `_bootstrap` 里异步读出来的，
+    // 读出来之前改设置会被随后读到盘上值直接覆盖 —— 用户看到的是
+    // 「开关点了没反应」，而且下一次打开发现改的没了。
+    // 所以控件在这段时间里必须是禁用的（`onSelectionChanged: null`）。
+    //
+    // widget 测试里没有平台通道，`_bootstrap` 必然失败 → `_settings` 恒为 null，
+    // 正好就是这个状态。把 `_settingsReady` 那道守卫去掉，这条会红。
+    expect(
+      tester
+          .widget<SegmentedButton<WorkMode>>(find.byType(SegmentedButton<WorkMode>))
+          .onSelectionChanged,
+      isNull,
+      reason: '设置还没读出来就允许改 → 改完被盘上值覆盖，用户以为开关坏了',
+    );
+    expect(
+      tester
+          .widget<SegmentedButton<StaticStopSetting>>(
+              find.byType(SegmentedButton<StaticStopSetting>))
+          .onSelectionChanged,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<SegmentedButton<DurationFallbackSetting>>(
+              find.byType(SegmentedButton<DurationFallbackSetting>))
+          .onSelectionChanged,
+      isNull,
+    );
+
+    // 验收开关**不落盘**，所以它不依赖读没读出来，一直是可用的。
+    expect(
+      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).onChanged,
+      isNotNull,
+    );
+
+    // 最小的真机宽度下，五档的静止档位选择器不能横着溢出。
+    // 溢出的子树照样在 widget 树里、`find` 找得到、`takeException` 也是 null
+    // （溢出是 paint 阶段报的）—— 所以这里只认矩形。
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpAndSettle();
+
+    final staticStop = find.byType(SegmentedButton<StaticStopSetting>);
+    expect(
+      tester.getRect(staticStop).right,
+      lessThanOrEqualTo(360.0),
+      reason: '360dp 的屏上静止档位选择器超出了右边缘，最后两档点不到',
+    );
   });
 }
