@@ -31,6 +31,24 @@ import 'zoom_dial.dart';
 /// 也不落盘。切栏、停录都不需要动它。
 enum _WorkSheet { manual, events, diagnostics }
 
+/// 切到 [tab] 时要播报哪一句；不该播报就返回 null。
+///
+/// **纯函数**：没有平台通道的 widget 测试里也能验。放成员方法里就只能
+/// 靠起真相机来测，等于测不了。
+///
+/// 发货与退货**共用同一个录制页**，所以「进哪一栏」这件事只有播报要区分。
+VoicePrompt? modeAnnouncementFor(int tab, int previousTab) {
+  // 重复点当前那一栏：相机不用重开，话也不用再说一遍。
+  // 没有这道闸的话，手抖连点两下发货就会连播两遍。
+  if (tab == previousTab) return null;
+
+  return switch (tab) {
+    1 => VoicePrompt.shippingModeOn,
+    2 => VoicePrompt.returnModeOn,
+    _ => null,
+  };
+}
+
 /// 采集页。
 ///
 /// ## 它为什么长这样
@@ -431,6 +449,84 @@ class _RecorderPageState extends State<RecorderPage> {
   // 操作
   // ─────────────────────────────────────────────
 
+  /// 切栏了（需求方 2026-09-22 定的四条边界）。
+  ///
+  /// 发货 / 退货是**采集栏**：进栏自动开相机、播报模式；离开就关；
+  /// 两栏互切**不关相机**（那是同一个预览会话），但**要重播** ——
+  /// 「这一件是发货还是退货」正是靠那句播报确认的。
+  ///
+  /// ⚠️ **触发点只有 `onDestinationSelected` 一处**，绝不能放进 `build()`：
+  /// 那样每次重绘都会重开一次相机、重播一遍。
+  Future<void> _onTabChanged(int previous, int index) async {
+    // 播报放在最前面：**相机没起来不该把这句吞掉**。
+    // 「模式切过来了」和「相机开起来了」是两件事，权限弹窗被拒、
+    // 通道没接上，都不改变「用户现在在退货栏」这个事实。
+    final announcement = modeAnnouncementFor(index, previous);
+    if (announcement != null) {
+      _log('🔊 ${announcement.spokenText}');
+      // 编排器还没建起来（启动没走完）时这句发不出去 —— 但上面那行日志
+      // 照记，它是「模式切没切过来」唯一的当场凭据。
+      await _coordinator?.speak(announcement);
+    }
+
+    const workTabs = {1, 2};
+    if (!workTabs.contains(index)) {
+      // 离开采集栏。**工作中 / 正在录时不关相机** —— 手指误滑到设置就掐掉
+      // 一段正在录的像，比多开一会儿糟糕得多。
+      if (_coordinator?.isWorking != true) {
+        await _coordinator?.closeCamera();
+        if (mounted) setState(() {});
+      }
+      return;
+    }
+
+    // 从一个采集栏切到另一个：相机是同一个预览会话，只播报，不重开。
+    if (workTabs.contains(previous)) return;
+
+    await _openCameraForPreview();
+  }
+
+  /// 进采集栏时把相机打开（**不开始工作**）。
+  ///
+  /// 与 [_startWorking] 分开：进栏只给一个取景画面让人对准面单，
+  /// 真的开始录还是要点【开始】。合在一起的话，进栏那一下就自己录起来了。
+  Future<void> _openCameraForPreview() async {
+    final coordinator = _coordinator;
+
+    // 启动还没走完（`_bootstrap` 是异步的）。这里**不能硬开**：
+    // `_workspace` 那些 `late` 字段还没赋值，开出来的编排器写不了盘。
+    if (coordinator == null || _identity == null) {
+      if (mounted) setState(() => _status = '还在读设备信息，稍等一下再进这一栏');
+      return;
+    }
+
+    try {
+      if (!await _gateway.hasCameraPermission()) {
+        final granted = await _gateway.requestCameraPermission();
+        if (!granted) {
+          // 不崩、不装作开好了。**【开始】是重试路径** ——
+          // 用户去设置里给了权限回来按下它就重来一遍。
+          if (mounted) setState(() => _status = '没有相机权限');
+          return;
+        }
+      }
+
+      await coordinator.openCamera();
+
+      // 相机开起来之后才问得到设备上限（规格 §3.1.2）。
+      await _readDeviceMaxZoom();
+
+      if (!mounted) return;
+      setState(() {
+        _zoom = 1; // 每次进栏回到 1 倍 —— 上一趟拖到 4 倍不该留给下一件
+        _status = '把面单放进取景框';
+      });
+    } on Object catch (error) {
+      // 安卓那条通道整个还没接，这里必定失败。**如实显示**，不假装。
+      if (mounted) setState(() => _status = '开相机失败：$error');
+    }
+  }
+
   /// 开始工作：**开相机、送预览、显示取景框。不录。**
   ///
   /// 规格 §3.2.2 的流程是「点开始工作 → 出现取景框 → 扫到面单才开录」。
@@ -660,6 +756,12 @@ class _RecorderPageState extends State<RecorderPage> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (index) {
+          // 重复点当前那一栏：什么都不做。`onDestinationSelected` 点了当前
+          // 那一栏也会回调，不挡的话「手抖点两下发货」会重开一次相机、
+          // 重播一遍模式。
+          if (index == _tab) return;
+
+          final previous = _tab;
           setState(() => _tab = index);
 
           // 切回备份页就重读一遍：用户多半是刚录完回来看的，
@@ -668,6 +770,8 @@ class _RecorderPageState extends State<RecorderPage> {
           // `_identity != null` 兼作「启动已完成」的判据 —— 它是在 `_workspace`
           // 之后设的，早于启动完成就切过来会踩到未初始化的 `late` 字段。
           if (index == 0 && _identity != null) unawaited(_refreshBackup());
+
+          unawaited(_onTabChanged(previous, index));
         },
         destinations: const [
           NavigationDestination(
@@ -1201,7 +1305,12 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 长屏（20:9）上下各约 75px 黑边；黑边本来就是黑的，远看就是满屏。
   Widget _workPage(bool recording, bool working) {
     final gate = _coordinator?.scanGate;
-    final showPreview = working && gate != null;
+
+    // ⚠️ **判的是相机开没开，不是工作没工作**（2026-09-22 改）。
+    // 「进栏就自动开相机、但还没开始工作」是现在的常态 —— 沿用
+    // `working` 的话，用户进栏只会看到「相机还没开」那块提示，
+    // 而相机其实开着、表盘也划不动。画的与判的仍是**同一份** `gate`。
+    final showPreview = _coordinator?.isCameraOpen == true && gate != null;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       // 全屏取景是黑底，状态栏默认的深色字压在上面看不见。
@@ -1256,7 +1365,7 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Padding(
           padding: EdgeInsets.all(32),
           child: Text(
-            '相机还没开。\n点下面的「开始工作」开相机。',
+            '相机还没开。\n点下面的【开始】重试。',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white54, fontSize: 14, height: 1.6),
           ),

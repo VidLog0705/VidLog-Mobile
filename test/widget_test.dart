@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/app/recorder_page.dart';
 import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
+import 'package:vidlog_mobile/recording/recorder_events.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
 void main() {
@@ -77,6 +79,33 @@ void main() {
     // ⚠️ 「换了筛选/每页条数要把页码打回第一页」这条在 widget 测试里验不了 ——
     // 没有真文件就造不出多条会话，页码永远是 1/1。真机上补：
     // `docs/真机验收清单.md` §1.12。
+  });
+
+  // ─────────────────────────────────────────────
+  // 进栏播报（需求方 2026-09-22）
+  // ─────────────────────────────────────────────
+
+  group('modeAnnouncementFor', () {
+    test('进发货 / 退货各播各的', () {
+      expect(modeAnnouncementFor(1, 0), VoicePrompt.shippingModeOn);
+      expect(modeAnnouncementFor(2, 1), VoicePrompt.returnModeOn,
+          reason: '发货↔退货互切要重播 —— 靠它确认这一件是发还是退');
+      expect(modeAnnouncementFor(2, 0), VoicePrompt.returnModeOn);
+    });
+
+    test('★ 重复点当前那一栏不重播', () {
+      // ⚠️ `onDestinationSelected` 点了当前那一栏**也会回调**：
+      // 没有这道闸，手抖连点两下发货就连播两遍。
+      // 变红配方：去掉 `if (tab == previousTab) return null;`。
+      expect(modeAnnouncementFor(1, 1), isNull);
+      expect(modeAnnouncementFor(2, 2), isNull);
+    });
+
+    test('备份 / 设置两栏不播报', () {
+      expect(modeAnnouncementFor(0, 1), isNull);
+      expect(modeAnnouncementFor(3, 1), isNull);
+      expect(modeAnnouncementFor(0, 0), isNull);
+    });
   });
 
   testWidgets('★ 发货与退货共用同一个录制页（不是两份）', (WidgetTester tester) async {
