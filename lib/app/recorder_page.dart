@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../primitives.dart';
@@ -19,6 +20,15 @@ import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
 import 'camera_preview.dart';
 import 'zoom_dial.dart';
+
+/// 采集页底部抽屉里正在展开哪一块。`null` = 三块都收着。
+///
+/// 需求方 2026-09-22 定的布局：**取景铺满整页**，控件是压在上面的浮层；
+/// 「手动输入」与「事件」收进抽屉，点开才占屏。
+///
+/// ⚠️ 这是**页面本地的界面状态**，不是业务状态 —— 它不参与任何判定，
+/// 也不落盘。切栏、停录都不需要动它。
+enum _WorkSheet { manual, events, diagnostics }
 
 /// 采集页。
 ///
@@ -143,6 +153,11 @@ class _RecorderPageState extends State<RecorderPage> {
   bool _recordsTodayOnly = false;
   int _recordsPageSize = 5;
   int _recordsPage = 0;
+
+  /// 采集页底部抽屉展开的是哪一块；null = 都收着。
+  ///
+  /// **默认收着**：取景画面必须尽量完整，而这两块都不是每时每刻要看的东西。
+  _WorkSheet? _workSheet;
 
   @override
   void initState() {
@@ -562,7 +577,12 @@ class _RecorderPageState extends State<RecorderPage> {
     final working = _coordinator?.isWorking ?? false;
 
     return Scaffold(
-      appBar: AppBar(title: Text(_tabTitle)),
+      // 发货 / 退货两栏**没有 AppBar** —— 取景要一直铺到状态栏底下（需求方
+      // 2026-09-22：页面全屏显示摄像头画面）。标题与状态改由画面上的浮层承担。
+      //
+      // 备份 / 设置两栏照旧留着 AppBar：那两页是**读**的页面，不是瞄面单用的，
+      // 没有理由让内容顶到状态栏上。
+      appBar: _tab == 1 || _tab == 2 ? null : AppBar(title: Text(_tabTitle)),
       // 用 IndexedStack 而不是 TabBarView：切走时**不销毁预览视图**，
       // 切回来不会闪一下。预览层本来就有「布局时重新挂会话」的自愈逻辑，
       // 但能不重建就别重建。
@@ -1092,76 +1112,445 @@ class _RecorderPageState extends State<RecorderPage> {
     await _probeHost(); // 存完立刻探一次：改了地址却还显示旧状态最误导人
   }
 
-  /// 采集页：取景、状态、操作、事件。
+  /// 采集页：**取景铺满整页**，状态与操作是压在上面的浮层。
   ///
-  /// ## 为什么是「取景钉住 + 其余滚动」
+  /// ## 为什么从「取景钉住 + 其余滚动」改成全屏
   ///
-  /// 这三件事互相顶着，只能这样解：
+  /// 需求方 2026-09-22：**页面全屏显示手机摄像头画面**。
   ///
-  /// 1. **取景画面必须一直看得见** —— 那是这个页面存在的意义（要对着面单瞄）
-  /// 2. **其余内容必须能滚** —— 不滚的话小屏直接溢出（真被测试抓到过：
-  ///    800×600 的视口里溢出 237 像素），键盘一弹出来更是必然溢出
-  /// 3. **原生预览视图（`UiKitView`）不能跟着滚** —— iOS 上平台视图在滚动容器里
-  ///    会逐帧重组，真机上的表现就是上下滑动发卡
+  /// 改完全屏，原来那套 `CustomScrollView` + pinned 头**反而可以扔掉了** ——
+  /// 它是为了绕开一个坑才存在的：「原生预览视图（`UiKitView`）不能放进滚动容器，
+  /// iOS 上平台视图会逐帧重组，真机上的表现就是上下滑发卡」。
+  /// 全屏之后取景是**底层铺满**、控件叠在上面（`Stack`），
+  /// 滚动容器里压根没有平台视图了，那个坑自动消失。
   ///
-  /// `CustomScrollView` + **pinned 的 `SliverPersistentHeader`** 同时满足三条：
-  /// 取景钉在顶部不参与滚动，下面的内容正常滚。
+  /// ## 三层，从下往上
+  ///
+  /// 1. **画面** —— 黑底 + 居中按 9:16 摆的预览
+  /// 2. **顶部浮层** —— 状态、单号、已录时长、发货/退货标签、诊断计数
+  /// 3. **底部浮层** —— 刻度盘、时长兜底询问、抽屉面板、操作按钮、抽屉入口
+  ///
+  /// ## ⚠️ 黑边是**故意留的**，不是没铺满
+  ///
+  /// 录像是 720×1280（9:16）。`CameraPreview` 按这个比例摆，用的是
+  /// `Center` + `AspectRatio`，**不是 `BoxFit.cover`** ——
+  /// 因为框的判定范围与画出来的框**共用同一份归一化坐标**（见 `camera_preview.dart`）。
+  /// 裁掉两边会让「框内 / 框外」的口径跟着变，而用户看到的框会**骗人**。
+  /// 需求方 2026-09-22 选了「保留黑边，不动判定」。
+  ///
+  /// 长屏（20:9）上下各约 75px 黑边；黑边本来就是黑的，远看就是满屏。
   Widget _workPage(bool recording, bool working) {
     final gate = _coordinator?.scanGate;
     final showPreview = working && gate != null;
 
-    return CustomScrollView(
-      slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-          sliver: SliverList(
-            delegate: SliverChildListDelegate([
-              _statusCard(recording, working),
-              if (_recovered.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                _recoveredCard(),
-              ],
-            ]),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      // 全屏取景是黑底，状态栏默认的深色字压在上面看不见。
+      value: SystemUiOverlayStyle.light,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          // ── ① 画面：铺满整页 ──
+          ColoredBox(
+            color: Colors.black,
+            child: showPreview
+                ? CameraPreview(viewfinder: gate.viewfinder)
+                : _idleScreen(),
+          ),
+
+          // ── ② 顶部浮层：状态与诊断计数 ──
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _statusOverlay(recording, working),
+          ),
+
+          // ── ③ 底部浮层：刻度盘 + 询问 + 抽屉 + 操作 ──
+          //
+          // ⚠️ **不能写成 `Positioned(bottom: 0)`**，虽然只差这一层 `Align`。
+          //
+          // 只给 `bottom` 的 `Positioned` 传下来的是**无界高度**
+          // （`RenderStack` 只在 top/bottom 都给、或给了 height 时才约束高度）。
+          // 无界高度下 `RenderFlex` 走不到弹性分支 —— 于是列里的 `Flexible`
+          // **完全不生效**，`_sheetBody()` 那个 `Flexible` 就是个摆设，
+          // 键盘弹起来时面板顶部依旧从屏幕顶上冒出去（实测 y = -38）。
+          //
+          // `Positioned.fill` + `Align(bottomCenter)` 先把高度**框死在正文高度**内，
+          // 再由 `Align` 松约束给孩子，`Flexible` 才真的能把面板压扁。
+          Positioned.fill(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: _actionOverlay(recording, working, showPreview),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 相机还没开时铺在底层的提示。
+  ///
+  /// **不画一块假的取景框**：没开相机就没有画面，画个框在那儿等于告诉用户
+  /// 「把面单放进去」，而他放进去什么都不会发生。
+  Widget _idleScreen() => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            '相机还没开。\n点下面的「开始工作」开相机。',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white54, fontSize: 14, height: 1.6),
           ),
         ),
-        if (showPreview)
-          SliverPersistentHeader(
-            pinned: true,
-            delegate: _PreviewHeader(
-              height: MediaQuery.sizeOf(context).height * 0.36,
-              child: Stack(
-                children: [
-                  CameraPreview(viewfinder: gate.viewfinder),
+      );
 
-                  // 半圆刻度盘（规格 §3.1.2「屏幕边缘的半圆刻度盘」）。
-                  // 贴右边缘、靠下放 —— 手指从边缘划过来顺手，也不挡住取景框中心，
-                  // 而面单必须放进中心框才认（§3.2.2）。
-                  Positioned(
-                    right: 8,
-                    bottom: 8,
-                    child: ZoomDial(
-                      ratio: _zoom,
-                      maxZoom: _maxZoom,
-                      onChanged: _onZoomChanged,
+  /// 顶部浮层：谁在这儿、在录什么、录了多久、盘上什么情况。
+  ///
+  /// 前三项给操作员看，最后那行**诊断计数给真机验收看** ——
+  /// 「打点 N 条」是打点那条验收唯一的当场凭据（打点与收尾是两条独立的链，
+  /// 各要各的数字），所以它必须**不用点开任何东西**就能看见。
+  Widget _statusOverlay(bool recording, bool working) {
+    return _scrim(
+      top: true,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  recording
+                      ? Icons.fiber_manual_record
+                      : (working ? Icons.photo_camera : Icons.stop_circle_outlined),
+                  color: recording ? Colors.redAccent : Colors.white70,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    // 「在工作（相机开着）」和「在录」是两回事，界面上要分得清。
+                    recording
+                        ? '录制中 · ${_coordinator?.currentWaybill ?? ""}'
+                        : _status,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (recording) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w300,
                     ),
                   ),
                 ],
+                const SizedBox(width: 8),
+                // 这一件是发货还是退货。两栏的采集流程一模一样，
+                // 操作员得能一眼看出自己在哪一栏 —— 否则录完了才发现归类错了。
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text(_isReturn ? '退货' : '发货'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '工作区 $_sessionCount（未收尾 $_pendingCount）'
+              ' · 索引 $_entryCount · 打点 $_punchCount',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 底部浮层：刻度盘 → 时长兜底询问 → 抽屉面板 → 操作按钮 → 抽屉入口。
+  ///
+  /// ## 为什么刻度盘在**这一列里**、而不是 `Positioned` 贴边
+  ///
+  /// 这一列的高度是变的（抽屉开合、询问弹不弹）。刻度盘如果按固定 `bottom`
+  /// 贴边，迟早会被某个高度的抽屉盖住 —— 而「盖住」在真机上表现为
+  /// **表盘突然消失**，看起来像坏了。
+  /// 放进这一列就永远不会重叠，它自己会被推上去。
+  ///
+  /// 位置仍然在**右下、贴右缘**，与规格 §3.1.2 的「屏幕边缘的半圆刻度盘」一致：
+  /// 右手拇指从边缘划过来顺手，也不挡取景框中心（面单必须放进中心框才认）。
+  Widget _actionOverlay(bool recording, bool working, bool showPreview) {
+    return _scrim(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 16, 12, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (showPreview)
+              Align(
+                alignment: Alignment.centerRight,
+                child: ZoomDial(
+                  ratio: _zoom,
+                  maxZoom: _maxZoom,
+                  onChanged: _onZoomChanged,
+                ),
+              ),
+
+            // 时长兜底询问。**放在抽屉面板上面**，这样抽屉开着它也看得见 ——
+            // 一个会被抽屉挡住的「是否停止」问询，用户会当它不存在。
+            if (_askingToContinue) _durationPrompt(),
+
+            // `Flexible` 是为了小屏 / 键盘弹起来时**面板先让位**，而不是整列溢出。
+            // 下面那排按钮和抽屉入口必须一直够得着 —— 它们一没，页面上就没有
+            // 任何出口了（`mainAxisSize: min` 的列溢出时是直接从底部裁掉）。
+            if (_workSheet != null) Flexible(child: _sheetBody()),
+
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: working || _starting ? null : _startWorking,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('开始工作'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: working ? _stopWorking : null,
+                    icon: const Icon(Icons.stop),
+                    label: const Text('结束工作'),
+                    style: _onScrim,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: recording ? _stopCurrentRecording : null,
+                icon: const Icon(Icons.crop_free),
+                label: const Text('停止当前录制（相机继续开着）'),
+                style: _onScrim,
               ),
             ),
-          ),
-        SliverPadding(
-          padding: const EdgeInsets.all(16),
-          sliver: SliverList(
-            delegate: SliverChildListDelegate([
-              _controlsCard(recording, working),
-              const SizedBox(height: 12),
-              _eventsCard(),
-            ]),
-          ),
+            _sheetTabs(),
+          ],
         ),
+      ),
+    );
+  }
+
+  /// 压在画面上的一层：上/下两端深、中间透明。
+  ///
+  /// 用渐变而不是整块纯色，是为了**中间那段取景尽可能干净** ——
+  /// 操作员是透过这块屏看面单的。
+  ///
+  /// [top] 为真时方向反过来（顶部浮层用）。
+  Widget _scrim({required Widget child, bool top = false}) {
+    const solid = 0.72;
+    const clear = 0.0;
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: top ? Alignment.bottomCenter : Alignment.topCenter,
+          end: top ? Alignment.topCenter : Alignment.bottomCenter,
+          colors: [
+            Colors.black.withValues(alpha: clear),
+            Colors.black.withValues(alpha: solid),
+          ],
+        ),
+      ),
+      child: SafeArea(top: top, bottom: !top, child: child),
+    );
+  }
+
+  /// 深色底上的次要按钮：默认配色是深蓝字 + 浅灰边，压在画面上根本看不清。
+  static final _onScrim = OutlinedButton.styleFrom(
+    foregroundColor: Colors.white,
+    side: const BorderSide(color: Colors.white70),
+  );
+
+  /// 时长兜底询问（规格 §3.3.4）。
+  Widget _durationPrompt() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade100,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            '录制时间即将超时，是否需要停止录制？',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              FilledButton(
+                onPressed: () =>
+                    _coordinator?.onDurationPromptAnswered(continueRecording: false),
+                child: const Text('停止'),
+              ),
+              OutlinedButton(
+                onPressed: () =>
+                    _coordinator?.onDurationPromptAnswered(continueRecording: true),
+                child: const Text('继续'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 抽屉入口。展开的那一块显示 `▾`，其余显示 `▸`。
+  ///
+  /// 每个入口带 `Key`：面板标题里也含「手动输入」这四个字，按下之后
+  /// `find.textContaining` 会同时命中入口和面板，测试没法点。
+  Widget _sheetTabs() {
+    Widget tab(_WorkSheet sheet, String label) => Expanded(
+          child: TextButton(
+            key: Key('work-sheet-${sheet.name}'),
+            onPressed: () => setState(
+              () => _workSheet = _workSheet == sheet ? null : sheet,
+            ),
+            child: Text(
+              '$label ${_workSheet == sheet ? '▾' : '▸'}',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+          ),
+        );
+
+    return Row(
+      children: [
+        tab(_WorkSheet.manual, '手动输入'),
+        tab(_WorkSheet.events, '事件 ${_events.length}'),
+        tab(_WorkSheet.diagnostics, '诊断'),
       ],
     );
   }
+
+  Widget _sheetBody() {
+    return _panel(
+      switch (_workSheet!) {
+        _WorkSheet.manual => _manualEntrySheet(),
+        // 固定高度 + 内部自滚：这块**不能**用 `SingleChildScrollView` 包，
+        // 里面是 `ListView`，两个都可滚会直接报「高度无界」。
+        _WorkSheet.events => SizedBox(height: 140, child: _eventsList()),
+        _WorkSheet.diagnostics => ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 200),
+            child: SingleChildScrollView(child: _diagnosticsBody()),
+          ),
+      },
+    );
+  }
+
+  /// 抽屉面板：**不透明**的浅色卡片。
+  ///
+  /// 操作条可以半透明（那是按钮，认得形状就行），**正文不行** ——
+  /// 12 号字压在一幅画面很乱的取景上根本读不出来。
+  Widget _panel(Widget child) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: child,
+    );
+  }
+
+  /// 「手动输入单号」—— 规格 §3.2.2 要求的兜底。
+  ///
+  /// > 框内始终识别不到时，用户必须能手动输入单号兜底，**且不打断当前录制**。
+  ///
+  /// 「不打断」指的是**不经过停录**：这个面板是叠在画面上的，录制一直在跑。
+  Widget _manualEntrySheet() {
+    // 自己可滚：外面那层 `Flexible` 会给它一个上界，内容超过就内部滚，
+    // 而不是把下面那排按钮顶出屏幕。
+    return SingleChildScrollView(
+      child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('手动输入（扫码失灵时的兜底）',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        const Text(
+          '规格 §3.2.2：框内始终识别不到时，用户必须能手动输入单号兜底，'
+          '且不打断当前录制。',
+          style: TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _waybillController,
+          decoration: const InputDecoration(
+            labelText: '单号',
+            helperText: '在录时输入并点下面按钮 = 复扫；未录时 = 开一段新的。',
+            border: OutlineInputBorder(),
+          ),
+          textInputAction: TextInputAction.done,
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _coordinator?.isWorking == true ? _simulateScan : null,
+          icon: const Icon(Icons.keyboard),
+          label: const Text('当作扫到了这个单号'),
+        ),
+      ],
+      ),
+    );
+  }
+
+  /// 事件列表。
+  ///
+  /// **它内部没有平台视图，滚起来是顺的** —— 这也是它敢放在取景画面上的原因。
+  Widget _eventsList() {
+    if (_events.isEmpty) {
+      return const Center(child: Text('（还没有事件）', style: TextStyle(fontSize: 12)));
+    }
+
+    return ListView.builder(
+      itemCount: _events.length,
+      itemBuilder: (context, index) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(_events[index], style: const TextStyle(fontSize: 12)),
+      ),
+    );
+  }
+
+  /// 诊断：盘上的实况与收尾结果。
+  ///
+  /// 这些数字真机验收时**要盯着看**，所以给它们一个固定的去处，
+  /// 而不是散在各处等人找。
+  Widget _diagnosticsBody() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('工作区 $_sessionCount 个会话（未收尾 $_pendingCount）'),
+        Text('索引 $_entryCount 条 · 打点 $_punchCount 条'),
+        const SizedBox(height: 8),
+        Text(
+          '单段时长 ${RecordingCoordinator.defaultSegmentDuration.inMinutes} 分钟 —— '
+          '崩溃最多丢这一段，所以每录满一段就自动封一个文件',
+          style: const TextStyle(fontSize: 12),
+        ),
+        if (_recovered.isNotEmpty) ...[
+          const Divider(height: 20),
+          _recoveredBody(),
+        ],
+      ],
+    );
+  }
+
 
   /// 设置页：工作模式与两个档位。
   ///
@@ -1187,91 +1576,28 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  Widget _statusCard(bool recording, bool working) {
-    return Card(
-      color: recording ? Colors.red.shade50 : null,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  recording
-                      ? Icons.fiber_manual_record
-                      : (working ? Icons.photo_camera : Icons.stop_circle_outlined),
-                  color: recording
-                      ? Colors.red
-                      : (working ? Colors.blueGrey : Colors.grey),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    // 「在工作（相机开着）」和「在录」是两回事，界面上要分得清。
-                    recording
-                        ? '录制中 · ${_coordinator?.currentWaybill ?? ""}'
-                        : _status,
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                ),
-                // 这一件是发货还是退货。两栏的采集流程一模一样，
-                // 操作员得能一眼看出自己在哪一栏 —— 否则录完了才发现归类错了。
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(_isReturn ? '退货' : '发货'),
-                ),
-                if (working && !recording) ...[
-                  const SizedBox(width: 8),
-                  const Text('取景中', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                ],
-              ],
-            ),
-            if (recording) ...[
-              const SizedBox(height: 8),
-              Text(
-                '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
-                style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w300),
-              ),
-            ],
-            const SizedBox(height: 8),
-            Text(
-              '工作区 ${_sessionCount} 个会话'
-              '（未收尾 $_pendingCount）· 索引 $_entryCount 条'
-              ' · 打点 $_punchCount 条\n'
-              '单段时长 ${RecordingCoordinator.defaultSegmentDuration.inMinutes} 分钟 —— '
-              '崩溃最多丢这一段，所以每录满一段就自动封一个文件',
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-          ],
+  /// 孤儿收尾结果的正文，收进「诊断」抽屉里。
+  ///
+  /// 原来它是一张常驻的琥珀色卡片。改成抽屉之后**没有降级**：
+  /// 抽屉入口上的「诊断」两个字是常驻的，展开就在；而这张卡片的出现是
+  /// 小概率事件（只有上次被杀过才有），常驻占着取景画面不值得。
+  Widget _recoveredBody() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('启动时收尾的孤儿分段', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        const Text(
+          '这些是上次没录完就被中断的会话。它们已经封文件、算哈希、写进索引。',
+          style: TextStyle(fontSize: 12),
         ),
-      ),
-    );
-  }
-
-  Widget _recoveredCard() {
-    return Card(
-      color: Colors.amber.shade50,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('启动时收尾的孤儿分段', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              '这些是上次没录完就被中断的会话。它们已经封文件、算哈希、写进索引。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            for (final outcome in _recovered)
-              Text(
-                '· ${outcome.succeeded ? "已收尾" : "失败"} · '
-                '${outcome.segments.length} 段 · ${_triggerLabel(outcome.reason)}',
-              ),
-          ],
-        ),
-      ),
+        const SizedBox(height: 8),
+        for (final outcome in _recovered)
+          Text(
+            '· ${outcome.succeeded ? "已收尾" : "失败"} · '
+            '${outcome.segments.length} 段 · ${_triggerLabel(outcome.reason)}',
+          ),
+      ],
     );
   }
 
@@ -1341,139 +1667,6 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  Widget _controlsCard(bool recording, bool working) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: working || _starting ? null : _startWorking,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('开始工作'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: working ? _stopWorking : null,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('结束工作'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: recording ? _stopCurrentRecording : null,
-              icon: const Icon(Icons.crop_free),
-              label: const Text('停止当前录制（相机继续开着）'),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              '手动输入（扫码失灵时的兜底）',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              '规格 §3.2.2：框内始终识别不到时，用户必须能手动输入单号兜底，'
-              '且不打断当前录制。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _waybillController,
-              decoration: const InputDecoration(
-                labelText: '单号',
-                helperText: '在录时输入并点下面按钮 = 复扫；未录时 = 开一段新的。',
-                border: OutlineInputBorder(),
-              ),
-              textInputAction: TextInputAction.done,
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: working ? _simulateScan : null,
-              icon: const Icon(Icons.keyboard),
-              label: const Text('当作扫到了这个单号'),
-            ),
-            if (_askingToContinue) ...[
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  children: [
-                    const Text('录制时间即将超时，是否需要停止录制？'),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        FilledButton(
-                          onPressed: () => _coordinator?.onDurationPromptAnswered(
-                              continueRecording: false),
-                          child: const Text('停止'),
-                        ),
-                        OutlinedButton(
-                          onPressed: () => _coordinator?.onDurationPromptAnswered(
-                              continueRecording: true),
-                          child: const Text('继续'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 事件列表。
-  ///
-  /// **可折叠、内部限高自滚。**
-  /// 收录在 `Column` 里（整页不滚），所以它必须有确定的边界；
-  /// 而它内部没有平台视图，滚起来是顺的。
-  /// 折叠起来能把纵向空间让给取景画面 —— 平时不需要盯着事件看。
-  Widget _eventsCard() {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      margin: EdgeInsets.zero,
-      child: ExpansionTile(
-        initiallyExpanded: true,
-        title: Text(
-          '事件（${_events.length}）',
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-        ),
-        children: [
-          SizedBox(
-            height: 140,
-            child: _events.isEmpty
-                ? const Center(
-                    child: Text('（还没有事件）', style: TextStyle(fontSize: 12)))
-                : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    itemCount: _events.length,
-                    itemBuilder: (context, index) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text(_events[index],
-                          style: const TextStyle(fontSize: 12)),
-                    ),
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
   static String _two(int value) => value.toString().padLeft(2, '0');
 
   /// `MM-DD HH:mm`。备份页一行里塞得下，且不需要年份 —— 手机上的东西都是最近的。
@@ -1511,37 +1704,3 @@ class _RecorderPageState extends State<RecorderPage> {
       };
 }
 
-/// 采集页里那个**钉住不滚**的取景头。
-///
-/// `pinned: true` 的 `SliverPersistentHeader` 要求 min == max（整块固定高度），
-/// 所以高度由调用方算好传进来。
-///
-/// 这么做是为了让原生预览视图**不进入滚动**：iOS 上平台视图在滚动容器里
-/// 会逐帧重组，真机上就是上下滑动发卡。钉住之后它不动，滚动的是它下面的内容。
-class _PreviewHeader extends SliverPersistentHeaderDelegate {
-  const _PreviewHeader({required this.height, required this.child});
-
-  final double height;
-  final Widget child;
-
-  @override
-  double get minExtent => height;
-
-  @override
-  double get maxExtent => height;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: child,
-      ),
-    );
-  }
-
-  // 只比高度：取景框在同一个工作会话里不会变，没必要因为 widget 实例不同就重建。
-  @override
-  bool shouldRebuild(_PreviewHeader oldDelegate) => oldDelegate.height != height;
-}

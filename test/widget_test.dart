@@ -93,4 +93,75 @@ void main() {
     await tester.pumpAndSettle();
     expect(workButton(), findsOneWidget, reason: '退货这一栏不该再开一个录制页');
   });
+
+  testWidgets('★ 采集页全屏：没有 AppBar，抽屉默认收着', (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    // 需求方 2026-09-22：**页面全屏显示手机摄像头画面**。
+    // 有 AppBar 就铺不满 —— 这条锁的是「发货/退货 不给 AppBar」那个决定，
+    // 后来人顺手加回去一个标题栏，这里会红。
+    expect(find.byType(AppBar), findsNothing, reason: '采集页不能有 AppBar，画面要铺到状态栏底下');
+
+    // 三个抽屉入口常驻可见：兜底手段必须**一眼看得到**，不能藏在别处。
+    final manualTab = find.byKey(const Key('work-sheet-manual'));
+    expect(manualTab, findsOneWidget);
+    expect(find.byKey(const Key('work-sheet-events')), findsOneWidget);
+    expect(find.byKey(const Key('work-sheet-diagnostics')), findsOneWidget);
+
+    // 但面板本身默认**收着** —— 取景画面是这一页的全部意义，
+    // 没点开的东西不该占着它。单号输入框是「手动输入」面板独有的。
+    expect(find.byType(TextField), findsNothing, reason: '抽屉默认收着，不该有输入框占着画面');
+
+    // 点开「手动输入」→ 输入框出来（规格 §3.2.2 的兜底不能丢）。
+    await tester.tap(manualTab);
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('手动输入 ▾'), findsOneWidget, reason: '展开的那一块要显示 ▾');
+
+    // 再点一次 → 收回去。抽屉是**开关**，不是一次性展开。
+    await tester.tap(manualTab);
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsNothing);
+
+    // ⚠️ 会溢出的**不是小屏，是键盘**。
+    //
+    // 360×640 是台正常手机，抽屉全开也就 ~374px，塞得下 560px 的页面。
+    // 但手输面板里有个 `TextField`，一点它键盘就弹起来 —— `Scaffold`
+    // 默认贴着键盘缩，可用高度当场少掉三百多。**这才是真机上的事。**
+    //
+    // 溢出时**被顶出屏幕的是面板顶部**，不是底部 ——
+    // 底部浮层是 `Positioned(bottom: 0)` 钉住的，列比可用高度高时
+    // 多出来的那截从**上面**冒出去（实测手输面板标题在 y = -38）。
+    // 标题和兜底说明当场看不见，而它们正是这个面板存在的理由。
+    //
+    // ⚠️ 所以这里**只能断言矩形**：溢出的子树照样在 widget 树里、照样画出来
+    // （只是被 `Stack` 默认的 `Clip.hardEdge` 裁掉），`find.*` 一律找得到，
+    // `takeException()` 也是 null —— 溢出是 `paint` 阶段报的。
+    // 前一版这两条都写上了，实测在 200×300 和 360×640 两种尺寸下**都不会红**，
+    // 是个永远绿的摆设。矩形断言才真的会红。
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    addTearDown(tester.view.reset);
+
+    await tester.tap(manualTab);
+    await tester.pumpAndSettle();
+
+    // 这一页没有 AppBar，所以正文从 y = 0 开始，屏幕顶就是正文顶。
+    final mustBeOnScreen = <String, Finder>{
+      '抽屉面板': find.byType(SingleChildScrollView),
+      '开始工作': find.text('开始工作'),
+      '抽屉入口': find.byKey(const Key('work-sheet-events')),
+    };
+    for (final entry in mustBeOnScreen.entries) {
+      expect(
+        tester.getRect(entry.value).top,
+        greaterThanOrEqualTo(0.0),
+        reason: '键盘弹起时「${entry.key}」被顶出了屏幕顶，用户够不着',
+      );
+    }
+  });
 }
