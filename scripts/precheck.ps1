@@ -106,17 +106,32 @@ if ($staged.Count -gt 0) {
 Section '2. 大文件检查'
 
 $maxMB = 20
-$big = & git ls-files 2>$null | Where-Object { $_ } | ForEach-Object {
-    if (Test-Path $_) {
-        $i = Get-Item $_ -Force -ErrorAction SilentlyContinue
-        if ($i -and $i.Length -gt ($maxMB * 1MB)) {
-            [pscustomobject]@{ Path = $_; MB = [Math]::Round($i.Length / 1MB, 1) }
-        }
+
+# ⚠️ **不要用 `Test-Path` 去量文件名。**
+#
+# PS 5.1 按**控制台代码页**解码 git 的 stdout，中文文件名会变成一串带非法字符的
+# 乱码；`Test-Path` 对这种路径**直接抛异常**，而异常被当成「文件不存在」——
+# 于是 `docs/实现决策.md` 这类文件**从来没被量过**，这一步却照样打 `[ OK ]`。
+# 一个对中文文件名永远绿的大文件守卫，等于没有守卫。
+#
+# 改成问 git 要 **blob 大小**（`git cat-file --batch-check` 的输出全是 ASCII），
+# 彻底不碰路径 —— 「有没有超过 20MB 的已跟踪文件」本来就是 blob 的属性，
+# 不是路径的属性。顺带也不用管符号链接与子模块（它们的类型不是 blob，被过滤掉）。
+$maxBytes = $maxMB * 1MB
+$big = & git ls-files -s 2>$null |
+    Where-Object { $_ } |
+    ForEach-Object { ($_ -split '\s+')[1] } |
+    Select-Object -Unique |
+    & git cat-file --batch-check 2>$null |
+    Where-Object { $_ -match '^\S+\s+blob\s+(\d+)$' -and [int64]$Matches[1] -gt $maxBytes } |
+    ForEach-Object {
+        $f = $_ -split '\s+'
+        [pscustomobject]@{ Sha = $f[0]; MB = [Math]::Round([int64]$f[2] / 1MB, 1) }
     }
-}
 if ($big) {
     Fail "有超过 ${maxMB}MB 的已跟踪文件"
-    $big | ForEach-Object { Info ("    {0}  {1} MB" -f $_.Path, $_.MB) }
+    $big | ForEach-Object { Info ("    {0}  {1} MB" -f $_.Sha, $_.MB) }
+    Info '    用 `git ls-files -s | Select-String <上面那个 sha>` 找路径。大文件不该进仓库。'
 } else { Pass "无超过 ${maxMB}MB 的已跟踪文件" }
 
 # ─────────────────────────────────────────────────────────────
