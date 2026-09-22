@@ -837,10 +837,14 @@ void main() {
     ///
     /// 时长兜底必须关掉：它将在这几条测试的时间轴里先触发，
     /// 那时测到的就是它、不是静止门槛了。
+    ///
+    /// ⚠️ **静止档位也设成「关闭」**（规格 §3.3.1 的 2026-09-22 📌）：
+    /// 这个模式的 2 秒是**它自己的**，不读档位。拿「关闭」跑，
+    /// 这一组里「它停了」就同时证明了「这 2 秒不来自档位」。
     RecordingCoordinator staticOnly() => make(
           mode: WorkMode.scanThenStaticStop,
           config: const RecorderConfig(
-            staticStop: StaticStopSetting.minutes3,
+            staticStop: StaticStopSetting.off,
             durationFallback: DurationFallbackSetting.off,
           ),
         );
@@ -857,7 +861,7 @@ void main() {
       ));
     }
 
-    test('★ 包裹离场 → 入场 → 静止到设定时长才停', () async {
+    test('★ 包裹离场 → 入场 → 静止 2 秒才停', () async {
       // 这条是「扫码静止停录」**多出来**的那个门槛（与同码停的区别所在）。
       //
       // ⚠️ 入场那一下刻意把面单**放在取景框外**（`x: 0.02`）。
@@ -883,17 +887,50 @@ void main() {
       sighting(waybill, x: 0.02);
       await coordinator.waitForPendingEvents();
 
-      // 入场后只静止 2 分钟：不够。
-      nowMs += 2 * 60 * 1000;
+      // 入场后只过了 1 秒：不够。
+      nowMs += 1000;
       await coordinator.handleHeartbeat();
       await coordinator.waitForPendingEvents();
-      expect(coordinator.isRecording, isTrue, reason: '入场后只静止了 2 分钟');
+      expect(coordinator.isRecording, isTrue, reason: '入场后才 1 秒');
 
-      // 满 3 分钟：停。
-      nowMs += 61 * 1000;
+      // 满 2 秒：停。
+      nowMs += 1000;
       await coordinator.handleHeartbeat();
       await coordinator.waitForPendingEvents();
       expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 那 2 秒停的是「这一段」，不是结束工作（相机仍开着）', () async {
+      // 需求方 2026-09-22 原话：「……然后结束当前段视频录制。**而不是彻底
+      // 停止工作。**」（规格 §3.3.1 📌 第 2 点）
+      //
+      // 这一条在评测上很容易走偏：把「静止 2 秒」接成关相机会很自然
+      // （两者都让画面停下来），但那样操作员每件包裹都得重新点一次【开始】。
+      final coordinator = staticOnly();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      nowMs += 3 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+      nowMs += 1000;
+      sighting(waybill, x: 0.02);
+      await coordinator.waitForPendingEvents();
+
+      nowMs += 2 * 1000;
+      await coordinator.handleHeartbeat();
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isFalse, reason: '这一段确实停了');
+      expect(coordinator.isWorking, isTrue, reason: '工作状态还在');
+      expect(gateway.cameraCloseCount, 0, reason: '相机不该被关掉');
+
+      // 下一件照常开录，不用再点一次【开始】。
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      expect(coordinator.isRecording, isTrue);
 
       await coordinator.dispose();
     });
@@ -931,19 +968,20 @@ void main() {
 
       // A 回来 —— 只有在「A 确实被判过离场」的前提下，静止时钟才会
       // 从这一刻重新计（`TrackedPackageEntered` 会把时钟推到现在）。
-      // 没推开的话，下面这 3 分钟里静止早该满了。
+      // 没推开的话，从开录算起已经过去 5 秒 > 那 2 秒，下面第一下就该停。
       //
       // 同样把面单放在框外，理由见上一条测试（框内复扫会直接停录）。
       nowMs += 1000;
       sighting(waybill, x: 0.02);
       await coordinator.waitForPendingEvents();
 
-      nowMs += 2 * 60 * 1000;
+      nowMs += 1000;
       await coordinator.handleHeartbeat();
       await coordinator.waitForPendingEvents();
-      expect(coordinator.isRecording, isTrue, reason: '静止时钟必须从入场重新计');
+      expect(coordinator.isRecording, isTrue,
+          reason: '静止时钟必须从入场重新计（没推开的话这里早该停了）');
 
-      nowMs += 61 * 1000;
+      nowMs += 1000;
       await coordinator.handleHeartbeat();
       await coordinator.waitForPendingEvents();
       expect(coordinator.isRecording, isFalse);

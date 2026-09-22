@@ -13,6 +13,7 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 /// 下面的 [isolated] 就是把时长兜底推到很远。
 void main() {
   const minute = 60 * 1000;
+  const second = 1000;
   const t0 = 1000000;
 
   final waybillA = WaybillNumber.parse('SF1000000001');
@@ -127,24 +128,49 @@ void main() {
       // 它仍然多一道「包裹先离场、再入场」的前置门槛（[staticStopRequiresPackageReturn]）。
       // 少了这条，`scanThenStaticStop` 那行改成 true 就真的只是把两个模式合并了。
       // 变红配方 = 把 `staticStopRequiresPackageReturn` 改成恒 false。
+      //
+      // ⚠️ 静止档位设成**关闭**：这个模式的 2 秒是**它自己的**（规格 §3.3.1 📌），
+      // 不读档位。用「关闭」跑，停下来了就顺带证明这 2 秒不是档位给的。
       final controller = isolated(
-          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes2);
+          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
       start(controller);
 
       // 面单一直摆着没动，但**从没离场**：静止判定不许开闸。
-      // （已经超过 2 分钟了，若闸开着这里就会停。）
       expect(controller.handle(Heartbeat(t0 + 3 * minute)), isEmpty);
       expect(controller.isRecording, isTrue, reason: '没离过场 = 静止门槛没开');
 
-      // 离场 → 入场 → 再静止够久，这才停。
+      // 离场 → 入场 → 再静止 2 秒，这才停。
       controller.handle(TrackedPackageLeft(t0 + 3 * minute + 1000));
       controller.handle(TrackedPackageEntered(t0 + 3 * minute + 2000));
 
       expect(
-          stops(controller.handle(Heartbeat(t0 + 3 * minute + 2000 + 2 * minute)))
+          stops(controller.handle(
+                  Heartbeat(t0 + 3 * minute + 2000 + 2 * second)))
               .single
               .trigger,
           StopTrigger.sceneStatic);
+    });
+
+    test('★ 扫码静止停录：停掉的是这一段，不是结束工作', () {
+      // 需求方 2026-09-22 原话：「扫码静止停录是面单在镜头下静止两秒，
+      // 然后**结束当前段视频录制**。而不是彻底停止工作。」（规格 §3.3.1 📌 第 2 点）
+      //
+      // 状态机这一层能证明的就是「停录之后还能立刻为下一件开录」——
+      // 「相机还开着」是编排器/页面那一层的事（那里有 `_cameraOpen` 与自己的一组测试）。
+      final controller = isolated(
+          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
+      start(controller);
+      controller.handle(TrackedPackageLeft(t0 + minute));
+      controller.handle(TrackedPackageEntered(t0 + minute + 1000));
+      expect(
+          stops(controller.handle(Heartbeat(t0 + minute + 1000 + 2 * second))),
+          hasLength(1));
+
+      final again = start(controller, at: t0 + 2 * minute);
+
+      expect(again.whereType<StartRecording>(), hasLength(1),
+          reason: '停的只是这一段，下一件照常开录');
+      expect(controller.isRecording, isTrue);
     });
 
     test('停止之后可以重新开录', () {
@@ -465,9 +491,18 @@ void main() {
     });
 
     group('扫码静止停录的门槛', () {
-      test('包裹没离场时，静止也不停', () {
-        final controller = isolated(
-            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
+      // 本组一律把静止档位设成**关闭**（[isolated] 的默认值）——
+      // 规格 §3.3.1 的 2026-09-22 📌 说得很明白：这个模式的 2 秒是**它自己的**，
+      // 不读档位。拿「关闭」跑，「它停了」就同时证明了「这 2 秒不来自档位」。
+      //
+      // ⚠️ 变红配方（每条的「红了就是你要证明的那条」）：
+      // - 把 `ownStaticStopDuration` 改成返回 null → 前四条全红（2 秒那条判据没了，
+      //   档位又是关闭的，于是永远不停）
+      // - 把 `staticStopRequiresPackageReturn` 改成恒 false → 第一条红
+      // - 把 `_staticStopDelay` 改成只读档位 → 后两条红
+
+      test('包裹没离场时，静止多久都不停', () {
+        final controller = isolated(mode: WorkMode.scanThenStaticStop);
         start(controller);
 
         expect(controller.handle(Heartbeat(t0 + 10 * minute)), isEmpty,
@@ -475,43 +510,75 @@ void main() {
       });
 
       test('只离场不回来，也不停', () {
-        final controller = isolated(
-            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
+        final controller = isolated(mode: WorkMode.scanThenStaticStop);
         start(controller);
         controller.handle(TrackedPackageLeft(t0 + minute));
 
         expect(controller.handle(Heartbeat(t0 + 10 * minute)), isEmpty);
       });
 
-      test('离场后再入场才停，且静止从入场之后重新计', () {
-        final controller = isolated(
-            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
+      test('离场后再入场，静止满 2 秒就停；差一点不停', () {
+        final controller = isolated(mode: WorkMode.scanThenStaticStop);
         start(controller);
 
         controller.handle(TrackedPackageLeft(t0 + 4 * minute));
         controller.handle(TrackedPackageEntered(t0 + 5 * minute));
 
-        expect(controller.handle(Heartbeat(t0 + 7 * minute)), isEmpty,
-            reason: '入场后只静止了 2 分钟');
-        expect(stops(controller.handle(Heartbeat(t0 + 8 * minute))).single.trigger,
+        // ⚠️ 这 2 秒**从入场那一刻**起算（不是从离场前那次活动算）。
+        expect(
+            controller.handle(Heartbeat(t0 + 5 * minute + 2 * second - 1)), isEmpty,
+            reason: '差 1 毫秒，不该停');
+        expect(
+            stops(controller.handle(Heartbeat(t0 + 5 * minute + 2 * second)))
+                .single
+                .trigger,
             StopTrigger.sceneStatic);
       });
 
-      test('入场之后又有活动，静止时钟继续往后推', () {
-        final controller = isolated(
-            mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
+      test('入场之后又有活动，这 2 秒从头再计', () {
+        final controller = isolated(mode: WorkMode.scanThenStaticStop);
         start(controller);
         controller.handle(TrackedPackageLeft(t0 + minute));
         controller.handle(TrackedPackageEntered(t0 + 2 * minute));
-        controller.handle(SceneSampled(t0 + 4 * minute, isStatic: false));
+        controller.handle(SceneSampled(t0 + 2 * minute + 1500, isStatic: false));
 
-        expect(controller.handle(Heartbeat(t0 + 6 * minute)), isEmpty);
-        expect(stops(controller.handle(Heartbeat(t0 + 7 * minute))), hasLength(1));
+        expect(controller.handle(Heartbeat(t0 + 2 * minute + 3 * second)), isEmpty,
+            reason: '入场后 1.5 秒有活动 ⇒ 静止时钟推后，3 秒时还差一点');
+        expect(
+            stops(controller.handle(
+                Heartbeat(t0 + 2 * minute + 1500 + 2 * second))),
+            hasLength(1));
       });
 
-      test('另外两个模式不要求这个门槛', () {
+      test('★ 静止档位设成「关闭」也照样停（这 2 秒不是档位给的）', () {
+        // 规格 §3.3.1 📌 第 1 点：少了这条，本模式在「复扫同码就停」之后
+        // 与同码停**完全等价**，只剩一个名字。
+        final controller =
+            isolated(mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
+        start(controller);
+        controller.handle(TrackedPackageLeft(t0 + minute));
+        controller.handle(TrackedPackageEntered(t0 + minute + second));
+
+        expect(
+            stops(controller.handle(Heartbeat(t0 + minute + second + 2 * second))),
+            hasLength(1));
+      });
+
+      test('★ 另外两个模式不吃这 2 秒 —— 那是扫码静止自己的判据', () {
         for (final mode in [WorkMode.continuousScan, WorkMode.sameWaybillStop]) {
-          final controller = isolated(mode: mode, staticStop: StaticStopSetting.minutes3);
+          final controller = isolated(
+              mode: mode, staticStop: StaticStopSetting.off);
+          start(controller);
+
+          expect(controller.handle(Heartbeat(t0 + 10 * second)), isEmpty,
+              reason: '$mode 的静止判据由档位管，档位关闭时 2 秒、10 秒都不停');
+        }
+      });
+
+      test('另外两个模式不要求「离场再入场」这个门槛', () {
+        for (final mode in [WorkMode.continuousScan, WorkMode.sameWaybillStop]) {
+          final controller =
+              isolated(mode: mode, staticStop: StaticStopSetting.minutes3);
           start(controller);
 
           expect(stops(controller.handle(Heartbeat(t0 + 3 * minute))), hasLength(1),

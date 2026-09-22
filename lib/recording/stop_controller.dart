@@ -22,15 +22,20 @@ import 'work_mode.dart';
 /// | 机制 | 规格 | 在哪些模式下生效 |
 /// |---|---|---|
 /// | 同码复扫 | §3.3.2 | 同码停、扫码静止停录 |
-/// | 画面静止 | §3.3.3 | 全部（可设为「关闭」） |
+/// | 画面静止 | §3.3.3 | 同码停、连续扫（档位可设为「关闭」） |
+/// | 扫码静止（本模式自己的 2 秒） | §3.3.1 | **只有**扫码静止停录（**不看档位**） |
 /// | 时长兜底 | §3.3.4 | 全部（**可设为「关闭」**） |
 ///
 /// **两项防忘停录各自独立可选**：静止档位关掉不会连带关掉时长兜底，反之亦然。
 /// （规格原文写的是时长兜底「对所有档位生效（含关闭）」，后来改成可选 ——
 /// 因为它会在每次录制超过设定分钟数时打断正常的长录制。）
 ///
-/// 「扫码静止停录」比其余模式多一个门槛：静止计时只在
-/// **同码包裹离场、再入场之后**才开始（[WorkMode.staticStopRequiresPackageReturn]）。
+/// 「扫码静止停录」与其余模式有**两处**不同（规格 §3.3.1）：
+///
+/// 1. 静止计时只在**同码包裹离场、再入场之后**才开始
+///    （[WorkMode.staticStopRequiresPackageReturn]）
+/// 2. 要静止多久是**这个模式自己的 2 秒**，与 §3.3.3 的档位无关
+///    （[WorkMode.ownStaticStopDuration]）—— 档位设成「关闭」时它照样生效
 class StopController {
   StopController({
     required this.mode,
@@ -189,9 +194,10 @@ class StopController {
   }
 
   List<RecorderAction> _evaluateTimers(int nowMs) {
-    // 1. 画面静止停录（§3.3.3）
-    if (config.staticStop.isEnabled && _staticGateOpen) {
-      if (nowMs - _lastMotionAtMs >= config.staticStop.duration.inMilliseconds) {
+    // 1. 画面静止停录
+    final staticDelay = _staticStopDelay;
+    if (staticDelay != null && _staticGateOpen) {
+      if (nowMs - _lastMotionAtMs >= staticDelay.inMilliseconds) {
         return _stop(StopTrigger.sceneStatic);
       }
     }
@@ -225,6 +231,19 @@ class StopController {
   /// 静止判定的门槛是否已满足。
   bool get _staticGateOpen =>
       !mode.staticStopRequiresPackageReturn || (_packageLeft && _packageReturned);
+
+  /// 本条判据要求静止多久；null = 当前没有启用的静止判据。
+  ///
+  /// **两条独立的规则，模式自己那条优先**（规格 §3.3.1 的 2026-09-22 📌 澄清）：
+  ///
+  /// - 扫码静止停录：模式**自己固定的 2 秒**，**不读档位** —— 档位「关闭」时照样生效
+  /// - 同码停 / 连续扫：§3.3.3 的档位（关闭 / 2~5 分钟），「关闭」= 整条不生效
+  ///
+  /// 因为 2 秒必定早于任何档位（最小 2 分钟），扫码静止停录下档位实际上不会先触发
+  /// —— 那是**结果**，不是这里把档位关掉了。
+  Duration? get _staticStopDelay =>
+      mode.ownStaticStopDuration ??
+      (config.staticStop.isEnabled ? config.staticStop.duration : null);
 
   List<RecorderAction> _stop(StopTrigger trigger) {
     final actions = <RecorderAction>[];
