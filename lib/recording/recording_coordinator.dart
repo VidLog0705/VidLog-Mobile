@@ -45,6 +45,7 @@ class RecordingCoordinator {
     ScanGate? scanGate,
     PackageTracker? packageTracker,
     this.onAction,
+    bool cameraAlreadyOpen = false,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
@@ -53,6 +54,11 @@ class RecordingCoordinator {
         _clock = clock ?? _defaultClock(),
         _scanGate = scanGate ?? ScanGate(),
         _packageTracker = packageTracker ?? PackageTracker() {
+    // 相机是**进程级的同一个原生会话**，跟 Dart 换不换编排器无关 ——
+    // 重建编排器时要把「它已经开着」这个事实继承过来，否则按下【开始】
+    // 那一瞬间界面会以为相机没了，把取景画面换回「相机还没开」那块提示。
+    _cameraOpen = cameraAlreadyOpen;
+
     _subscription = _gateway.events.listen((event) {
       // ⚠️ **分段落盘走单独一条链**，不跟别的事件挤在一起。
       //
@@ -173,6 +179,15 @@ class RecordingCoordinator {
   /// 所以「在工作」和「在录」是两个状态。
   bool _armed = false;
 
+  /// 相机是否开着（**Dart 侧的记忆**，与原生会话对应）。
+  ///
+  /// ⚠️ 与 [_armed] **不是一回事**，这是 2026-09-22 才分开的：需求方要
+  /// 「进发货 / 退货栏就自动开相机，但不开始工作」，于是出现了
+  /// **「相机开着、却没在工作」**这个以前不存在的状态。
+  /// 从此 [_armed] 不能再当「相机开着」用 —— 关相机一律看这个字段，
+  /// 否则进栏自动开的那台相机会在销毁编排器时被漏掉、一直亮着。
+  bool _cameraOpen = false;
+
   Duration _segmentDuration = defaultSegmentDuration;
 
   String? _sessionId;
@@ -193,6 +208,10 @@ class RecordingCoordinator {
 
   /// 是否处在工作状态（相机开着、取景框显示着）。
   bool get isWorking => _armed;
+
+  /// 相机是否开着。**与 [isWorking] 不是一回事** ——
+  /// 进栏自动开相机时，相机开着、却还没开始工作（两者都为真的只有工作那一段）。
+  bool get isCameraOpen => _cameraOpen;
 
   /// 当前这一段录制对应的单号；没在录时为 null。
   WaybillNumber? get currentWaybill => _stopController.currentWaybill;
@@ -266,10 +285,37 @@ class RecordingCoordinator {
   /// （iOS 那边是先开新 writer 再收旧的，Android 那边编码器全程不停）。
   static const defaultSegmentDuration = Duration(minutes: 1);
 
-  /// 开始一次录制。
+  /// 打开相机、显示取景框 —— **不进入工作状态、不开录**。
   ///
-  /// 顺序是刻意的：**先落 manifest 再开相机**。要是反过来，
-  /// 相机开成功、manifest 还没写就被杀，那段录像是彻底找不回来的。
+  /// 与 [startWorking] 分开，是因为需求方 2026-09-22 要「进页面就自动开相机」：
+  /// 进栏就开相机，但没按【开始】时相机不该自己开始工作。
+  ///
+  /// ⚠️ **重复调用是安全的，所以这里不做 Dart 侧去重**：原生 `openCamera`
+  /// 对已经在跑的会话直接早退；而会话被系统中断（来电、后台）之后再调一次，
+  /// 是唯一的恢复机会 —— 去重反而会把恢复的路堵死。
+  Future<void> openCamera() async {
+    await _gateway.openCamera();
+    _cameraOpen = true; // 上面失败会抛；抛了就不记成开着
+    _scanGate.reset();
+    _packageTracker.reset();
+  }
+
+  /// 关相机。**不碰录制** —— 要停录请先 [finish]。
+  ///
+  /// 先翻标志再 `await`：否则两次调用会在 `await` 处交错，把相机关两遍。
+  Future<void> closeCamera() async {
+    if (!_cameraOpen) return;
+    _cameraOpen = false;
+    await _gateway.closeCamera();
+  }
+
+  /// 开始工作：把相机端出来（如果还没开）并进入可扫状态。
+  ///
+  /// 相机可能**已经开着**（进栏时自动开的那台，见 [openCamera]）——
+  /// 那次调用不会重复开。
+  ///
+  /// ⚠️ 注意这里**不落 manifest**：manifest 要等真的要录了才写
+  /// （在 [_beginRecording] 里），到这一步为止还没有会话。
   Future<void> startWorking({
     required String sourceDeviceId,
     Duration? segmentDuration,
@@ -279,21 +325,27 @@ class RecordingCoordinator {
 
     // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**。
     // 到这一步为止**不录** —— 那时还没扫码。
-    await _gateway.openCamera();
+    await openCamera();
 
     _armed = true;
-    _scanGate.reset();
-    _packageTracker.reset();
   }
 
-  /// 结束工作：停录（如果在录）并关相机。
+  /// 停止工作：停录（如果在录）并退出工作状态。
+  ///
+  /// ⚠️ **相机不关。** 需求方 2026-09-22 定的：采集页上那个【结束】
+  /// 回到的是**进栏时那个状态**（相机开着、没开始工作），
+  /// 这样下一件包裹可以直接接着扫，表盘也一直看得见。
+  /// 要连相机一起收，用 [closeCamera]（离开采集栏、以及 [dispose] 走的就是它）。
   Future<void> stopWorking() async {
-    if (_stopController.isRecording) {
-      await finish(StopTrigger.manual);
-    }
-
+    // ⚠️ 走 [onManualStop]（**进状态机**），不能直接调 [finish]。
+    //
+    // [finish] 只是「收尾」这个动作，**它不改状态机** —— 直接调它的话，
+    // 会话收完了、状态机却还以为在录（`isRecording` 仍为 true）而
+    // `_sessionId` 已经是 null。后果有两个：界面据此画的「录制中」是假的；
+    // 下一件包裹扫进来时走的是**复扫**那条路，不是「首次识别开录」。
+    // 这是 2026-09-22 补的，之前那条 `finish` 直调一直没人验过。
+    await onManualStop();
     _armed = false;
-    await _gateway.closeCamera();
   }
 
   /// 扫到面单 → 开一段录制。
@@ -475,10 +527,12 @@ class RecordingCoordinator {
       await finish(StopTrigger.manual);
     }
 
-    if (_armed) {
-      _armed = false;
-      await _gateway.closeCamera();
-    }
+    _armed = false;
+    // ⚠️ **判的是 `_cameraOpen`，不是 `_armed`**（2026-09-22 改）。
+    // 进栏自动开相机之后，「相机开着、没在工作」是常态 ——
+    // 沿用 `if (_armed)` 的话，这台相机会被漏掉、指示灯一直亮，
+    // 而且下个页面开相机时原生可能拒绝（会话已在跑）。
+    await closeCamera();
 
     await _subscription?.cancel();
     _subscription = null;

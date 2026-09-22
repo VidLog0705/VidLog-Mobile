@@ -330,7 +330,9 @@ void main() {
       await coordinator.dispose();
     });
 
-    test('结束工作会关相机', () async {
+    test('结束工作**不关**相机（需求方 2026-09-22 定的）', () async {
+      // 采集页上那个【结束】回到的是**进栏时那个状态**：
+      // 相机开着、没在工作 —— 下一件包裹可以直接接着扫，表盘也一直看得见。
       final coordinator = make();
       nowMs = 1000;
       await coordinator.startWorking(sourceDeviceId: 'device-1');
@@ -338,12 +340,13 @@ void main() {
       await coordinator.stopWorking();
 
       expect(coordinator.isWorking, isFalse);
-      expect(gateway.cameraOpened, isFalse);
+      expect(coordinator.isCameraOpen, isTrue, reason: '相机要留着');
+      expect(gateway.cameraOpened, isTrue);
 
       await coordinator.dispose();
     });
 
-    test('结束工作时正在录 → 先收尾再关相机', () async {
+    test('结束工作时正在录 → 先收尾，相机留着', () async {
       final coordinator = make();
       nowMs = 1000;
       await begin(coordinator);
@@ -354,10 +357,68 @@ void main() {
       await coordinator.stopWorking();
 
       expect(gateway.stopped, isTrue);
-      expect(gateway.cameraOpened, isFalse);
+      expect(coordinator.isRecording, isFalse);
+      expect(coordinator.isCameraOpen, isTrue);
       expect(await index.loadAll(), hasLength(1), reason: '那段要收尾入库');
 
       await coordinator.dispose();
+    });
+
+    test('openCamera() 只开相机，不进工作状态、扫了也不开录', () async {
+      // 需求方 2026-09-22：进发货 / 退货栏就自动开相机，但**不开始工作**。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.openCamera();
+
+      expect(coordinator.isCameraOpen, isTrue);
+      expect(gateway.cameraOpened, isTrue);
+      expect(coordinator.isWorking, isFalse, reason: '还没按【开始】');
+      expect(coordinator.isRecording, isFalse);
+
+      // 没在工作时扫到面单**不该**开录 —— 这正是把「开相机」与「开始工作」
+      // 分开的全部意义。合在一起的话，进栏那一下就自己录起来了。
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.started, isFalse);
+      expect(coordinator.isRecording, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    test('closeCamera() 关掉相机；已经关了就不再关', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.openCamera();
+
+      await coordinator.closeCamera();
+
+      expect(coordinator.isCameraOpen, isFalse);
+      expect(gateway.cameraOpened, isFalse);
+
+      // 变红配方：去掉 `closeCamera` 里的 `if (!_cameraOpen) return;`
+      // —— 计数变成 2（关两遍），原生会话与 Dart 的记忆就此错位。
+      await coordinator.closeCamera();
+      expect(gateway.cameraCloseCount, 1);
+
+      await coordinator.dispose();
+    });
+
+    test('★ dispose() 会关掉「进栏时自动开的那台」相机', () async {
+      // 回归测试：`dispose` 以前判的是 `_armed`（工作过才关相机），
+      // 而进栏自动开相机之后「相机开着、却没在工作」是常态 ——
+      // 照旧判法这台相机会被漏掉、指示灯一直亮。
+      // 变红配方：把 `dispose` 里的 `closeCamera()` 换回 `if (_armed) …`。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.openCamera(); // 只开相机，**不** startWorking
+
+      expect(coordinator.isWorking, isFalse, reason: '确实没在工作');
+      await coordinator.dispose();
+
+      expect(gateway.cameraOpened, isFalse, reason: '这台相机不该被漏掉');
     });
   });
 
@@ -1077,7 +1138,14 @@ class FakeGateway implements RecorderGateway {
   }
 
   @override
-  Future<void> closeCamera() async => cameraOpened = false;
+  Future<void> closeCamera() async {
+    cameraCloseCount++;
+    cameraOpened = false;
+  }
+
+  /// 关了几次。**「已经关了就不再关」是要验的** ——
+  /// 不判状态就重复关，会让原生的会话与 Dart 的记忆错位。
+  int cameraCloseCount = 0;
 
   @override
   Future<void> setZoom(double ratio) async => zoomRatio = ratio;
