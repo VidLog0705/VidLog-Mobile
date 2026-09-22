@@ -294,6 +294,11 @@ final class CameraSegmentRecorder: NSObject {
 
     /// 关闭相机（结束工作）。会先把在录的那段收干净。
     func closeCamera(_ completion: (() -> Void)? = nil) {
+        // 待回弹的自动放大要撤掉：会话马上就要拆了，那个闭包会在两秒后
+        // 去改一台 `captureDevice` 已经是 nil 的设备（或更糟 —— 改到
+        // 下一次开相机的新设备上）。
+        cancelPendingAutoZoomRestore()
+
         stopRecording { [weak self] in
             guard let self else {
                 completion?()
@@ -320,6 +325,10 @@ final class CameraSegmentRecorder: NSObject {
 
     /// 设置缩放倍率。规格 §3.1.2：倍率不得超过设备能力上限。
     func setZoom(_ ratio: CGFloat) {
+        // 操作员自己拖了表盘 —— 那是他**此刻的意图**，要撤销待回弹的自动放大。
+        // 不撤销的话，两秒后画面会从他刚调好的倍率跳回去，看起来像表盘失灵。
+        cancelPendingAutoZoomRestore()
+
         guard let device = captureDevice else { return }
 
         do {
@@ -330,6 +339,115 @@ final class CameraSegmentRecorder: NSObject {
             device.unlockForConfiguration()
         } catch {
             // 变焦失败不该中断录制。
+            NSLog("VidLog: 设置变焦失败 %@", error.localizedDescription)
+        }
+    }
+
+    // MARK: - 面单进框：自动对焦 + 临时放大
+
+    /// 自动放大到几倍（需求方 2026-09-22 裁决 #8：固定 2 倍）。
+    private static let autoZoomFactor: CGFloat = 2.0
+
+    /// 放大保持多久。之后回到操作员原来的倍率。
+    private static let autoZoomHold: TimeInterval = 2.0
+
+    /// 自动放大前的倍率。**只在没有待回弹时才记**，见 `autoFocusAndZoom`。
+    private var savedZoomFactor: CGFloat?
+
+    /// 待回弹的定时任务。非 nil 就表示「现在是自动放大状态」。
+    private var zoomRestoreWorkItem: DispatchWorkItem?
+
+    /// 面单刚进框：对焦到画面正中 + 临时放大，两秒后回到原倍率。
+    ///
+    /// 计时**归原生**，不是 Dart —— 回弹必须落在**同一台 `AVCaptureDevice`
+    /// 对象**上。放 Dart 计时的话，中间一次 `closeCamera`/`openCamera`
+    /// 会让回调去改新会话的倍率。原生自己持有就等于零同步、零新 Dart 状态。
+    ///
+    /// **尽力而为，什么都不抛**：与 `setZoom` 一样，失败就当作没发生。
+    func autoFocusAndZoom() {
+        guard let device = captureDevice else { return }
+
+        // ── 对焦 ──
+        //
+        // 对焦点取 `(0.5, 0.5)`（画面正中），**不是算出来的**。
+        // 取景框永远是屏幕居中的（`Viewfinder.rectOn` 只居中不偏移），
+        // 而正中在任何屏幕方向下都是正中 —— 绕开了 `focusPointOfInterest`
+        // 那一圈方向换算。那一圈是经典 bug 源，且**在这台机器上定不了**：
+        // 本文件里就有一处自相矛盾（分析缓冲按 1280×720 说，另一处按竖屏算）。
+        //
+        // 任何时候要把对焦点挪到非中心，先在真机上把那圈方向问题解决掉，
+        // **不要猜**。
+        if device.isFocusPointOfInterestSupported,
+           device.isFocusModeSupported(.autoFocus) {
+            do {
+                try device.lockForConfiguration()
+                device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                device.focusMode = .autoFocus
+                device.unlockForConfiguration()
+            } catch {
+                NSLog("VidLog: 自动对焦失败 %@", error.localizedDescription)
+            }
+        }
+
+        // ── 放大 ──
+        //
+        // 棘轮式：`min(max(当前倍率, 2.0), 上限)` —— **绝不往回缩**。
+        // 操作员自己拖到 3× 时，自动放大不该先把画面变小一下。
+        let current = device.videoZoomFactor
+        let target = max(device.minAvailableVideoZoomFactor,
+                         min(max(current, Self.autoZoomFactor),
+                             device.maxAvailableVideoZoomFactor))
+        setZoomFactor(target, on: device)
+
+        // ⚠️ **只在「没有待回弹」时记原值。**
+        // 连续扫每件都会触发一次；每次都记的话，记下的就是上一次放大后的值，
+        // 倍率会一级一级往上爬，最后停在设备上限上再也回不来。
+        if zoomRestoreWorkItem == nil {
+            savedZoomFactor = current
+        }
+
+        scheduleAutoZoomRestore()
+    }
+
+    private func scheduleAutoZoomRestore() {
+        zoomRestoreWorkItem?.cancel()
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.restoreAfterAutoZoom()
+        }
+        zoomRestoreWorkItem = work
+
+        // 主队列：`captureDevice` 的配置与关闭都在主线程那侧，避免与
+        // `closeCamera` 抢同一台设备。
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoZoomHold, execute: work)
+    }
+
+    private func restoreAfterAutoZoom() {
+        zoomRestoreWorkItem = nil
+
+        defer { savedZoomFactor = nil }
+
+        guard let device = captureDevice, let saved = savedZoomFactor else { return }
+
+        setZoomFactor(saved, on: device)
+    }
+
+    /// 撤销待回弹的自动放大（操作员自己动了表盘、或相机会话要拆了）。
+    ///
+    /// 不撤销的话：前者表现为「表盘失灵」（画面从刚调好的倍率跳回去），
+    /// 后者表现为「回弹落在一个已经拆掉的会话上」。
+    private func cancelPendingAutoZoomRestore() {
+        zoomRestoreWorkItem?.cancel()
+        zoomRestoreWorkItem = nil
+        savedZoomFactor = nil
+    }
+
+    private func setZoomFactor(_ factor: CGFloat, on device: AVCaptureDevice) {
+        do {
+            try device.lockForConfiguration()
+            device.videoZoomFactor = factor
+            device.unlockForConfiguration()
+        } catch {
             NSLog("VidLog: 设置变焦失败 %@", error.localizedDescription)
         }
     }

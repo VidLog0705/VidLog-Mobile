@@ -718,6 +718,22 @@ class RecordingCoordinator {
 
         if (waybill != null) {
           onBarcodeAccepted?.call(waybill);
+
+          // 面单刚进框：对焦 + 临时放大两秒（需求方 2026-09-22）。
+          //
+          // 挂在**闸之后**这一处，不是为了省钱：`ScanGate` 已经保证
+          // 「同一张面单一直摆在画面里只算一次」，所以这里天然就是
+          // 「新面单进框」。拿开两三秒再放回来还会再来一次 ——
+          // 那正是复扫，也该重新对焦。
+          //
+          // 手输兜底走 `onWaybillDetected`，不经过这里：画面里没有面单，
+          // 放大一下只会让人以为相机坏了。
+          try {
+            await _gateway.autoFocusAndZoom();
+          } on Object {
+            // 尽力而为（I4 的精神）。安卓那条通道整个还没接，这里必定失败。
+          }
+
           // 摄像头识码 —— 来源写实，回放时能看出这一下是机器认的还是人敲的。
           await _handleWaybill(waybill, PunchSource.cameraDecoder);
         }

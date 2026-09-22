@@ -38,9 +38,16 @@ import java.util.Locale
  * ## ⚠️ 与 Dart 侧的方法名对不上（已知缺口，未修）
  *
  * Dart 的 `ChannelRecorderGateway` 调的是 `openCamera` / `startRecording` /
- * `stopRecording` / `closeCamera`，而本类实现的是 `startSession` / `stopSession`
- * —— 每次调用都会落到 `notImplemented`，**Android 端目前整条链路是通的不了**。
- * iOS 侧（`RecorderPlugin.swift`）是对的。
+ * `stopRecording` / `closeCamera` / `autoFocusAndZoom`，而本类实现的是
+ * `startSession` / `stopSession` —— 每次调用都会落到 `notImplemented`，
+ * **Android 端目前整条链路是通的不了**。iOS 侧（`RecorderPlugin.swift`）是对的。
+ *
+ * `autoFocusAndZoom`（面单进框对焦 + 临时放大两秒，2026-09-22）**故意不在这里
+ * 补一个空壳**：补了会让人以为两端都做了。接上 Android 相机链路时，
+ * 它要跟 `openCamera` / `startRecording` 一起补 —— 那需要的是
+ * `CameraSegmentRecorder` 的生命周期拆分，不是在这里加一个 `result.success(null)`。
+ * Dart 侧对它是尽力而为的（调用点吞掉异常），所以现在落到 `notImplemented`
+ * 不会影响任何现有行为。
  *
  * 不能只把名字改过来完事：规格 §3.2.2 要的是「点开始工作 → 出现取景框（**不录**）
  * → 扫到面单才开录」，而 [CameraSegmentRecorder.start] 是**开相机与开录一起做**的，

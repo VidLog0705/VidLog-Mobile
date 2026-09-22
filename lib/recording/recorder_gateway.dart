@@ -103,6 +103,18 @@ abstract interface class RecorderGateway {
 
   Future<void> setZoom(double ratio);
 
+  /// 面单刚进框：对焦到画面正中 + 临时放大，两秒后回到原倍率
+  /// （需求方 2026-09-22）。
+  ///
+  /// **无参数、无返回值、fire-and-forget**：那两秒的计时归**原生**，
+  /// 不是 Dart。回弹必须落在**同一台 `AVCaptureDevice` 对象**上 ——
+  /// 放 Dart 计时的话，中间一次 [closeCamera]/[openCamera]（切栏、结束/开始）
+  /// 会让回调去改**新**会话的倍率。原生自己持有就等于零同步、零新 Dart 状态。
+  ///
+  /// **失败不是错误**：和 [setZoom] 一样是尽力而为。安卓那条通道整个还没接，
+  /// 调用必定失败 —— 调用方吞掉即可（I4 的精神：能力缺失不许把录制搞坏）。
+  Future<void> autoFocusAndZoom();
+
   /// 设备支持的最大变焦倍率。
   ///
   /// 规格 §3.1.2：「倍率不得超过设备能力上限」。原生层本来就会钳，
@@ -171,6 +183,10 @@ class ChannelRecorderGateway implements RecorderGateway {
 
   @override
   Future<double?> maxZoom() => _methods.invokeMethod<double>('maxZoom');
+
+  @override
+  Future<void> autoFocusAndZoom() =>
+      _methods.invokeMethod<void>('autoFocusAndZoom');
 
   @override
   Future<void> speak(String text) =>

@@ -1208,6 +1208,76 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
+  // 面单进框：自动对焦 + 临时放大（需求方 2026-09-22）
+  // ─────────────────────────────────────────────
+
+  group('自动对焦', () {
+    test('★ 每次**采纳的**识码调一次', () async {
+      // 「采纳」= 过了 `ScanGate`（框内、且不是同一张面单一直摆在那儿）。
+      // 挂在闸之后不是为了省钱：闸已经保证「同一张面单只算一次」，
+      // 所以那里天然就是「新面单进框」。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      expect(gateway.autoFocusCalls, 0, reason: '开录那一下是手输兜底路径，不调');
+
+      // 包裹一直在画面里 → 闸压掉，不该反复对焦。
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'SF1000000001', centerX: 0.5, centerY: 0.5));
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'SF1000000001', centerX: 0.5, centerY: 0.5));
+      await coordinator.waitForPendingEvents();
+      expect(gateway.autoFocusCalls, 0, reason: '同一张面单反复上报不算「进框」');
+
+      // 换一张面单进框 → 调一次。
+      nowMs += 5000;
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'YT9999999999', centerX: 0.5, centerY: 0.5));
+      await coordinator.waitForPendingEvents();
+      expect(gateway.autoFocusCalls, 1);
+
+      await coordinator.dispose();
+    });
+
+    test('手输兜底**不**调自动对焦', () async {
+      // 画面里没有面单，放大一下只会让人以为相机坏了。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      await coordinator.onWaybillDetected(otherWaybill,
+          source: PunchSource.manualEntry);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.autoFocusCalls, 0);
+
+      await coordinator.dispose();
+    });
+
+    test('自动对焦失败不能拖垮识码', () async {
+      // 安卓那条通道整个还没接，这里必定失败（I4 的精神：能力缺失
+      // 不许把录制搞坏）。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      gateway.autoFocusThrows = true;
+      // 复扫**同一个**单号（`make()` 默认同码停）：这才是会停录的那一下。
+      // 扫别的单号在本模式下只提示不停，验不出「后续有没有被吞掉」。
+      nowMs += 5000;
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'SF1000000001', centerX: 0.5, centerY: 0.5));
+      await coordinator.waitForPendingEvents();
+
+      // 停录照旧发生 —— 失败的那一下没有被吞掉后续。
+      expect(coordinator.isRecording, isFalse, reason: '同码停模式该照常停');
+
+      await coordinator.dispose();
+    });
+  });
+
+  // ─────────────────────────────────────────────
   // 换段式连续扫（§3.3.1，2026-09-22 需求变更）
   // ─────────────────────────────────────────────
 
@@ -1451,6 +1521,19 @@ class FakeGateway implements RecorderGateway {
 
   @override
   Future<double?> maxZoom() async => 4.0;
+
+  @override
+  Future<void> autoFocusAndZoom() async {
+    autoFocusCalls++;
+    if (autoFocusThrows) throw Exception('这台设备不支持对焦');
+  }
+
+  /// 自动对焦被调了几次。**「接线到底没到底」那条测试的立足点** ——
+  /// 这个抽象成员存在的主要理由就是逼测试把它记下来。
+  int autoFocusCalls = 0;
+
+  /// 让自动对焦抛 —— 验「能力缺失不许把录制搞坏」。
+  bool autoFocusThrows = false;
 
   /// 读出来的提示，按顺序记下。
   final spoken = <String>[];

@@ -132,6 +132,16 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             // 相机没开时给 nil —— Dart 侧用保守的默认值，不去猜设备。
             result(recorder?.maxZoomRatio.map { Double($0) })
 
+        case "autoFocusAndZoom":
+            // 面单进框：对焦 + 临时放大两秒（需求方 2026-09-22）。
+            //
+            // 刻意**不给 FlutterError 分支**：和 `setZoom` 一样是尽力而为的
+            // no-op —— 相机没开、设备不支持对焦，都不该让 Dart 侧看见错误。
+            // 两秒后自动回弹的那笔账**由 `recorder` 自己记**（见类里的说明），
+            // 这里只管把请求递进去。
+            recorder?.autoFocusAndZoom()
+            result(nil)
+
         case "speak":
             speak(call, result: result)
 
