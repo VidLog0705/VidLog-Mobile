@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../primitives.dart';
+import 'business_type.dart';
 
 /// 会话落盘元数据（`session.json` 的形状）。
 class SessionManifest {
@@ -11,6 +12,7 @@ class SessionManifest {
     required this.sourceDeviceId,
     required this.startedAt,
     required this.segments,
+    this.businessType,
   });
 
   final String sessionId;
@@ -19,12 +21,24 @@ class SessionManifest {
   final DateTime startedAt;
   final List<SegmentManifest> segments;
 
+  /// 这一件是发货还是退货。
+  ///
+  /// **它不是标签本身** —— 标签表（`labels.jsonl`）才是，见 [LabelStore]。
+  /// 这份清单里记它，是为了让**进程被杀之后**的孤儿收尾也补得上标签：
+  /// 那时内存里的东西全没了，只剩盘上这几份文件。
+  ///
+  /// `null` = 没记（老版本写的清单、或调用方没给）。**不猜**，那种会话
+  /// 收尾时就不写标签 —— 检索时显示 `unknown`，比猜错一个强。
+  final BusinessType? businessType;
+
   Map<String, Object?> toJson() => {
         'sessionId': sessionId,
         'waybill': waybill.value,
         'sourceDeviceId': sourceDeviceId,
         'startedAt': startedAt.toUtc().toIso8601String(),
         'segments': segments.map((s) => s.toJson()).toList(),
+        // 追加字段（只加不改）：老版本读新文件只是忽略它。
+        'businessType': businessType?.wire,
       };
 
   static SessionManifest fromJson(Map<String, Object?> json) => SessionManifest(
@@ -35,6 +49,7 @@ class SessionManifest {
         segments: ((json['segments'] as List?) ?? const [])
             .map((e) => SegmentManifest.fromJson(e as Map<String, Object?>))
             .toList(),
+        businessType: BusinessType.tryParse(json['businessType']),
       );
 }
 
@@ -121,12 +136,17 @@ class OrphanSession {
     required this.waybill,
     required this.sourceDeviceId,
     required this.segments,
+    this.businessType,
   });
 
   final String sessionId;
   final WaybillNumber waybill;
   final String sourceDeviceId;
   final List<SegmentProduct> segments;
+
+  /// 从清单里读回来的「发货 / 退货」。收尾时靠它补标签 ——
+  /// 孤儿那条路上没有别的地方还记得这件事。
+  final BusinessType? businessType;
 }
 
 /// 录制工作区 —— 会话落盘与孤儿发现。
@@ -239,6 +259,7 @@ class RecordingWorkspace {
         waybill: manifest.waybill,
         sourceDeviceId: manifest.sourceDeviceId,
         segments: segments,
+        businessType: manifest.businessType,
       ));
     }
 

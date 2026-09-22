@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/business_type.dart';
+import 'package:vidlog_mobile/recording/label_store.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart' show StopTrigger;
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/recording/recording_workspace.dart';
@@ -44,9 +46,32 @@ void main() {
     );
   }
 
+  /// 最后一次 [makeFinalizer] 用到的标签表 —— 收尾写标签的测试靠它读回结果。
+  /// 每个 suffix 一份独立的 `labels.jsonl`（理由同索引）。
+  late LabelStore labels;
+
+  /// 读回标签表。
+  ///
+  /// [LabelStore] **只写不读**（界面上还没有要显示它的地方，理由写在它自己的
+  /// 注释里），所以测试直接读文件 —— 正好也把「落盘形态」验在字节这一层。
+  List<Map<String, Object?>> readLabels(String path) {
+    final file = File(path);
+    if (!file.existsSync()) return const [];
+
+    return file
+        .readAsLinesSync()
+        .where((line) => line.trim().isNotEmpty)
+        .map((line) => jsonDecode(line) as Map<String, Object?>)
+        .toList();
+  }
+
   (SessionFinalizer, JsonLinesRecordingIndex) makeFinalizer({String suffix = ''}) {
     final index = JsonLinesRecordingIndex('$root/index$suffix.jsonl');
-    return (SessionFinalizer(rootDirectory: root, index: index), index);
+    labels = LabelStore('$root/labels$suffix.jsonl');
+    return (
+      SessionFinalizer(rootDirectory: root, index: index, labels: labels),
+      index,
+    );
   }
 
   // ─────────────────────────────────────────────
@@ -96,6 +121,155 @@ void main() {
       );
 
       expect(outcome.reason, StopTrigger.sceneStatic);
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 标签表（发货 / 退货）—— 母仓 §6.2 / I5
+  // ─────────────────────────────────────────────
+
+  group('发货 / 退货写进标签表', () {
+    Future<FinalizeOutcome> finalizeWith(
+      BusinessType? type, {
+      List<SegmentProduct>? segments,
+      String sessionId = 's1',
+    }) async {
+      final (finalizer, _) = makeFinalizer(suffix: '-labels');
+      return finalizer.finalize(
+        sessionId: sessionId,
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: segments ?? [makeSegment(sessionId, 0)],
+        reason: StopTrigger.manual,
+        businessType: type,
+      );
+    }
+
+    test('★ 落盘形态与电脑端逐字一致', () async {
+      // 电脑端 `LabelDto` 的 4 个属性名就是这 4 个键（PascalCase），
+      // 标签键是 `LabelKeys.BusinessType = "business-type"`，取值
+      // `BusinessTypes.OutboundValue = "outbound"` / `ReturnValue = "return"`。
+      // 改了这里，两端的标签表就不是同一份格式了 —— 那正是这个测试要拦的。
+      await finalizeWith(BusinessType.returning);
+
+      final json = readLabels(labels.path).single;
+
+      expect(json.keys, ['EvidenceId', 'Key', 'Value', 'UpdatedAt']);
+      expect(json['EvidenceId'], 's1-000');
+      expect(json['Key'], 'business-type');
+      expect(json['Value'], 'return');
+      expect(DateTime.parse(json['UpdatedAt']! as String).isUtc, isTrue,
+          reason: '墙钟时刻落盘必须带时区');
+    });
+
+    test('枚举的拼法就是电脑端的字面量', () {
+      expect(BusinessType.outbound.wire, 'outbound');
+      expect(BusinessType.returning.wire, 'return');
+      expect(BusinessType.labelKey, 'business-type');
+    });
+
+    test('认不出来的取值不猜', () {
+      // 电脑端 `LabelStore` 解析不出来时**默认发货**；手机端刻意不跟 ——
+      // 标签宁可不写，也不写错的。
+      expect(BusinessType.tryParse('outbound'), BusinessType.outbound);
+      expect(BusinessType.tryParse('return'), BusinessType.returning);
+      expect(BusinessType.tryParse('shipment'), isNull);
+      expect(BusinessType.tryParse(null), isNull);
+      expect(BusinessType.tryParse(42), isNull);
+
+      // 大小写敏感，与电脑端一致（`Enum.TryParse` 默认如此）。
+      // 这里**不**做「宽容一点」的处理：两端对「什么算合法取值」必须同一套，
+      // 否则手机端认了、电脑端不认，那条标签就是个死值。
+      expect(BusinessType.tryParse('RETURN'), isNull);
+    });
+
+    test('清单里的 businessType 往返；老清单没有这个字段 → null', () {
+      final manifest = SessionManifest(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        startedAt: started,
+        segments: const [],
+        businessType: BusinessType.returning,
+      );
+
+      expect(manifest.toJson()['businessType'], 'return');
+      expect(SessionManifest.fromJson(manifest.toJson()).businessType,
+          BusinessType.returning);
+
+      // 老版本写的清单：整个键都不在（新增字段只加不改）。
+      final old = manifest.toJson()..remove('businessType');
+      expect(SessionManifest.fromJson(old).businessType, isNull);
+
+      // 认不出来的取值也是 null，不是电脑端那种「默认发货」。
+      final alien = manifest.toJson()..['businessType'] = 'shipment';
+      expect(SessionManifest.fromJson(alien).businessType, isNull);
+    });
+
+    test('★ 每个分段各写一条', () async {
+      // 一个会话 N 个分段 = N 个 evidenceId，电脑端按 evidenceId 查标签 ——
+      // 只给第一个分段写，后面那些在电脑端就是「不知道是发货还是退货」。
+      await finalizeWith(
+        BusinessType.outbound,
+        segments: [makeSegment('s1', 0), makeSegment('s1', 1)],
+      );
+
+      final written = readLabels(labels.path);
+      expect(written.map((j) => j['EvidenceId']), ['s1-000', 's1-001']);
+      expect(written.map((j) => j['Value']), ['outbound', 'outbound']);
+    });
+
+    test('没给 businessType 就什么都不写', () async {
+      // 老清单 / 调用方没给 —— 不猜一个。
+      await finalizeWith(null);
+
+      expect(readLabels(labels.path), isEmpty);
+    });
+
+    test('★ 写标签失败不算收尾失败', () async {
+      // 与「写索引失败」刻意区别对待：索引决定这段录像存不存在，
+      // 标签只是可修正的备注。为它把一段文件完好、哈希也算完的录像判成失败，
+      // 等于让它保持孤儿身份、每次启动重试，而用户其实什么都没损失。
+      //
+      // 造一个必失败的标签表：路径落在**目录**上（写文件时必然被拒）。
+      Directory('$root/labels-is-a-dir').createSync(recursive: true);
+      final broken = LabelStore('$root/labels-is-a-dir');
+
+      final index = JsonLinesRecordingIndex('$root/index-broken-labels.jsonl');
+      final finalizer =
+          SessionFinalizer(rootDirectory: root, index: index, labels: broken);
+
+      final outcome = await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [makeSegment('s1', 0)],
+        reason: StopTrigger.manual,
+        businessType: BusinessType.outbound,
+      );
+
+      expect(outcome.succeeded, isTrue, reason: '录像入库了就是入库了');
+      expect((await index.loadAll()), hasLength(1));
+    });
+
+    test('标签写在索引之后 —— 索引失败时不写标签', () async {
+      // 标签指向一条索引里没有的证据，是纯粹的垃圾。
+      final index = _ThrowingIndex();
+      final finalizer = SessionFinalizer(
+          rootDirectory: root,
+          index: index,
+          labels: labels = LabelStore('$root/labels-after-index.jsonl'));
+
+      await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [makeSegment('s1', 0)],
+        reason: StopTrigger.manual,
+        businessType: BusinessType.outbound,
+      );
+
+      expect(readLabels(labels.path), isEmpty);
     });
   });
 
@@ -300,7 +474,9 @@ void main() {
 
   group('孤儿恢复', () {
     Future<RecordingWorkspace> killedSession(String sessionId,
-        {bool finalized = false, bool writeSegment = true}) async {
+        {bool finalized = false,
+        bool writeSegment = true,
+        BusinessType? businessType}) async {
       final workspace = RecordingWorkspace('$root/work');
 
       final segments = <SegmentManifest>[];
@@ -323,6 +499,7 @@ void main() {
         sourceDeviceId: 'device-1',
         startedAt: started,
         segments: segments,
+        businessType: businessType,
       ));
 
       if (finalized) await workspace.markFinalized(sessionId);
@@ -376,6 +553,30 @@ void main() {
       expect(await index.loadAll(), hasLength(1));
     });
 
+    test('★ 进程被杀之后，孤儿收尾照样补得上标签', () async {
+      // 这时内存里的东西全没了，只剩盘上这几份文件 ——
+      // `session.json` 里的 businessType 就是「这一件是发货还是退货」的唯一依据。
+      final workspace = await killedSession('s-killed',
+          businessType: BusinessType.returning);
+      final (finalizer, index) = makeFinalizer(suffix: '-orphan-labels');
+
+      await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();
+
+      expect((await index.loadAll()), hasLength(1));
+      expect(readLabels(labels.path).single['Value'], 'return');
+    });
+
+    test('清单里没记 businessType 就不写标签（不猜）', () async {
+      // 老版本写的清单没有这个字段。猜一个「发货」比留空更糟：
+      // 电脑端会拿它去算保留期。
+      final workspace = await killedSession('s-killed');
+      final (finalizer, _) = makeFinalizer(suffix: '-orphan-none');
+
+      await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();
+
+      expect(readLabels(labels.path), isEmpty);
+    });
+
     test('收尾成功后打标记，下次启动不再重复收尾', () async {
       final workspace = await killedSession('s-killed');
       final (finalizer, _) = makeFinalizer();
@@ -390,8 +591,10 @@ void main() {
       // 不能当成不可恢复丢掉。
       final workspace = await killedSession('s-killed');
       final brokenIndex = _ThrowingIndex();
-      final finalizer =
-          SessionFinalizer(rootDirectory: root, index: brokenIndex);
+      final finalizer = SessionFinalizer(
+          rootDirectory: root,
+          index: brokenIndex,
+          labels: labels = LabelStore('$root/labels.jsonl'));
 
       final outcomes =
           await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();

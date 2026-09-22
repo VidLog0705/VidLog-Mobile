@@ -4,6 +4,8 @@ import 'package:crypto/crypto.dart';
 
 import '../primitives.dart';
 import '../states.dart';
+import 'business_type.dart';
+import 'label_store.dart';
 import 'recorder_events.dart' show StopTrigger;
 import 'recording_index.dart';
 import 'recording_workspace.dart';
@@ -76,12 +78,19 @@ Future<ContentHash> hashFile(String path) async {
 /// 这里只能依赖原生录制器自己的收尾结果。**这是一处已知的验证强度差异**，
 /// 需要真机回归来补 —— 见 `docs/` 的未完成清单。
 class SessionFinalizer {
-  SessionFinalizer({required this.rootDirectory, required this.index});
+  SessionFinalizer({
+    required this.rootDirectory,
+    required this.index,
+    required this.labels,
+  });
 
   /// 本机数据的根目录；索引里的相对路径相对它。
   final String rootDirectory;
 
   final RecordingIndex index;
+
+  /// 标签表（`<root>/labels.jsonl`）。收尾时顺手把「发货 / 退货」写进去。
+  final LabelStore labels;
 
   Future<FinalizeOutcome> finalize({
     required String sessionId,
@@ -89,6 +98,7 @@ class SessionFinalizer {
     required String sourceDeviceId,
     required List<SegmentProduct> segments,
     required StopTrigger reason,
+    BusinessType? businessType,
   }) async {
     if (segments.isEmpty) {
       return FinalizeOutcome(
@@ -110,6 +120,7 @@ class SessionFinalizer {
         waybill: waybill,
         sourceDeviceId: sourceDeviceId,
         segment: segment,
+        businessType: businessType,
       );
 
       firstFailure ??= result.isPublished ? null : (result.failureReason ?? '收尾失败（未给出原因）');
@@ -134,6 +145,7 @@ class SessionFinalizer {
     required WaybillNumber waybill,
     required String sourceDeviceId,
     required SegmentProduct segment,
+    BusinessType? businessType,
   }) async {
     final file = File(segment.filePath);
     if (!await file.exists()) {
@@ -149,10 +161,11 @@ class SessionFinalizer {
     }
 
     final location = relativeLocation(segment.filePath);
+    final evidenceId = '$sessionId-${segment.sequence.toString().padLeft(3, '0')}';
 
     try {
       await index.add(RecordingEntry(
-        evidenceId: '$sessionId-${segment.sequence.toString().padLeft(3, '0')}',
+        evidenceId: evidenceId,
         sessionId: sessionId,
         waybill: waybill,
         startedAt: segment.startedAt,
@@ -172,11 +185,43 @@ class SessionFinalizer {
       );
     }
 
+    await _writeBusinessTypeLabel(evidenceId, businessType);
+
     return FinalizedSegment(
       source: segment,
       location: location,
       contentHash: contentHash,
     );
+  }
+
+  /// 把「发货 / 退货」作为标签写进 `labels.jsonl`。
+  ///
+  /// 写在索引**之后**：标签指向一条索引里没有的证据，是纯粹的垃圾。
+  ///
+  /// ⚠️ **写标签失败不算收尾失败** —— 与写索引失败（上面那条）刻意区别对待。
+  /// 索引决定「这段录像存不存在」，标签只是**可修正的备注**：为它把一段
+  /// 已经算完哈希、文件也完好的录像判成「收尾失败」，等于让它保持孤儿身份、
+  /// 每次启动重试，而用户其实什么都没损失。母仓 §6.2 那句话在这里的读法是
+  /// **宁可少一个标签，也不能少一条录像**。
+  ///
+  /// 没给 [businessType] 就什么都不写（老清单 / 调用方没给）—— 标签宁可不写，
+  /// 也不猜一个。
+  Future<void> _writeBusinessTypeLabel(
+    String evidenceId,
+    BusinessType? businessType,
+  ) async {
+    if (businessType == null) return;
+
+    try {
+      await labels.append(RecordingLabel(
+        evidenceId: evidenceId,
+        key: BusinessType.labelKey,
+        value: businessType.wire,
+        updatedAt: DateTime.now(),
+      ));
+    } on Object {
+      // 见上面的理由：标签丢了是小事，把录像判成失败是大事。
+    }
   }
 
   /// 把绝对路径转成相对根目录的路径（规格 §6.2：只存相对路径）。
@@ -221,6 +266,8 @@ class OrphanRecovery {
         sourceDeviceId: orphan.sourceDeviceId,
         segments: orphan.segments,
         reason: StopTrigger.processKilled,
+        // 从清单里读回来的 —— 进程被杀之后，只有它还记着这一件是发货还是退货。
+        businessType: orphan.businessType,
       );
 
       if (outcome.succeeded) {

@@ -4,6 +4,7 @@ import 'dart:math';
 
 import '../primitives.dart';
 import '../scanning/scan_gate.dart';
+import 'business_type.dart';
 import 'package_tracker.dart';
 import 'punch_log.dart';
 import 'recorder_config.dart';
@@ -129,6 +130,17 @@ class RecordingCoordinator {
   /// （见 `_dispatch`）—— 关播报不等于关提示，「单号不同，请核对」那类提示
   /// 在屏幕上仍然要看得到。
   bool voiceEnabled = true;
+
+  /// 这一件是发货还是退货（需求方 2026-09-22 裁决 #11）。
+  ///
+  /// ⚠️ **与 [voiceEnabled] 一样是可变字段，不是构造参数** —— 换段的那些
+  /// 会话是在这里开起来的（换件时用户什么都没点），所以这个值必须一直挂在
+  /// 编排器上。而界面上发货↔退货互切**不重建编排器**（只重新播报一句），
+  /// 做成构造参数的话，切完栏下一段仍旧写着上一栏的标签。
+  ///
+  /// `null` = 还不知道 / 调用方没给。那种会话收尾时**不写标签** ——
+  /// 见 [SessionFinalizer.finalize] 上关于「宁可不写，也不猜」的说明。
+  BusinessType? businessType;
 
   /// 相机扫到一个单号（**已经过取景框过滤与去重**）。
   ///
@@ -384,6 +396,7 @@ class RecordingCoordinator {
       sourceDeviceId: _sourceDeviceId,
       startedAt: _sessionStartedWallClock,
       segments: const [],
+      businessType: businessType,
     ));
 
     await _gateway.startRecording(
@@ -574,6 +587,7 @@ class RecordingCoordinator {
         sourceDeviceId: _sourceDeviceId,
         segments: List.of(_segments),
         reason: trigger,
+        businessType: businessType,
       );
 
       if (outcome.succeeded) {
@@ -777,6 +791,7 @@ class RecordingCoordinator {
               ))
           .toList()
         ..sort((a, b) => a.sequence.compareTo(b.sequence)),
+      businessType: businessType,
     ));
   }
 

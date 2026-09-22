@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/business_type.dart';
+import 'package:vidlog_mobile/recording/label_store.dart';
 import 'package:vidlog_mobile/recording/package_tracker.dart';
 import 'package:vidlog_mobile/recording/punch_log.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
@@ -44,6 +47,7 @@ void main() {
   late JsonLinesRecordingIndex index;
   late PunchLog punchLog;
   late PackageTracker tracker;
+  late LabelStore labels;
   late List<RecorderAction> actions;
 
   RecordingCoordinator make({
@@ -60,11 +64,13 @@ void main() {
     index = JsonLinesRecordingIndex('$root/index.jsonl');
     punchLog = PunchLog('$root/punches.jsonl');
     tracker = PackageTracker();
+    labels = LabelStore('$root/labels.jsonl');
 
     return RecordingCoordinator(
       gateway: gateway,
       workspace: workspace,
-      finalizer: SessionFinalizer(rootDirectory: root, index: index),
+      finalizer:
+          SessionFinalizer(rootDirectory: root, index: index, labels: labels),
       punchLog: punchLog,
       mode: mode,
       config: config,
@@ -770,7 +776,10 @@ void main() {
       final coordinator = RecordingCoordinator(
         gateway: gateway = FakeGateway(),
         workspace: workspace = RecordingWorkspace('$root/work'),
-        finalizer: SessionFinalizer(rootDirectory: root, index: _ThrowingIndex()),
+        finalizer: SessionFinalizer(
+            rootDirectory: root,
+            index: _ThrowingIndex(),
+            labels: labels = LabelStore('$root/labels.jsonl')),
         punchLog: punchLog = PunchLog('$root/punches.jsonl'),
         mode: WorkMode.sameWaybillStop,
         config: const RecorderConfig(staticStop: StaticStopSetting.off),
@@ -1123,7 +1132,10 @@ void main() {
       final coordinator = RecordingCoordinator(
         gateway: gateway = FakeGateway(),
         workspace: workspace = RecordingWorkspace('$root/work'),
-        finalizer: SessionFinalizer(rootDirectory: root, index: _ThrowingIndex()),
+        finalizer: SessionFinalizer(
+            rootDirectory: root,
+            index: _ThrowingIndex(),
+            labels: labels = LabelStore('$root/labels.jsonl')),
         punchLog: punchLog = PunchLog('$root/punches.jsonl'),
         mode: WorkMode.sameWaybillStop,
         config: const RecorderConfig(staticStop: StaticStopSetting.off),
@@ -1436,6 +1448,86 @@ void main() {
 
         await coordinator.dispose();
       }
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 发货 / 退货落盘（母仓 §6.2 / I5）
+  // ─────────────────────────────────────────────
+
+  group('发货 / 退货写进标签表', () {
+    /// 标签表只写不读（`LabelStore` 自己的注释里写了理由），测试直接读文件。
+    List<Map<String, Object?>> readLabels() {
+      final file = File(labels.path);
+      if (!file.existsSync()) return const [];
+      return file
+          .readAsLinesSync()
+          .where((line) => line.trim().isNotEmpty)
+          .map((line) => jsonDecode(line) as Map<String, Object?>)
+          .toList();
+    }
+
+    test('★ 收尾时把当前模式写到每个证据上', () async {
+      final coordinator = make();
+      // 与 `voiceEnabled` 同形：中途改的字段，不进构造函数。
+      coordinator.businessType = BusinessType.returning;
+
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
+
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+
+      final label = readLabels().single;
+      expect(label['EvidenceId'], '$sessionId-000');
+      expect(label['Key'], 'business-type');
+      expect(label['Value'], 'return');
+
+      await coordinator.dispose();
+    });
+
+    test('★ 换段：每一段各得一条，挂在自己的 evidenceId 上', () async {
+      // 电脑端按 evidenceId 查标签。一个会话 N 段就 N 个 evidenceId，
+      // 只给最后一段写，前面那些在电脑端就是「不知道是发货还是退货」。
+      final coordinator = make(mode: WorkMode.continuousScan);
+      coordinator.businessType = BusinessType.outbound;
+
+      nowMs = 1000;
+      await begin(coordinator);
+      final firstSession = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: firstSession, sequence: 0, startMs: 0, endMs: 30000);
+
+      nowMs += 90 * 1000;
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+      final secondSession = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: secondSession, sequence: 0, startMs: 0, endMs: 30000);
+
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+
+      expect(readLabels().map((j) => j['EvidenceId']),
+          ['$firstSession-000', '$secondSession-000']);
+      expect(readLabels().map((j) => j['Value']), ['outbound', 'outbound']);
+
+      await coordinator.dispose();
+    });
+
+    test('没设 businessType 就什么都不写', () async {
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+
+      expect(readLabels(), isEmpty);
+      await coordinator.dispose();
     });
   });
 }

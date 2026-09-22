@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../primitives.dart';
+import '../recording/business_type.dart';
 import '../recording/device_identity.dart';
+import '../recording/label_store.dart';
 import '../recording/lan_probe.dart';
 import '../recording/punch_log.dart';
 import '../recording/recorder_config.dart';
@@ -73,6 +75,7 @@ class _RecorderPageState extends State<RecorderPage> {
   late SessionFinalizer _finalizer;
   late RecordingIndex _index;
   late PunchLog _punchLog;
+  late LabelStore _labels;
 
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
@@ -84,11 +87,20 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 也不符合「同一时刻只有一段录制」的前提。
   int _tab = 0;
 
-  /// 录制页属于哪一栏 —— 只影响标题与后续的上报归类，不影响采集流程本身。
+  /// 采集页当前属于哪一栏：1 = 发货，2 = 退货。
   ///
-  /// ⚠️ 「发货 / 退货」目前**只是一个标签**，还没有落到数据上
-  /// （不影响落盘、打点、清理策略）。它具体要影响什么，等需求方定。
-  bool get _isReturn => _tab == 2;
+  /// **只在进入采集栏时更新，切走不动。** 工作中切到备份或设置栏看一眼再回来，
+  /// 这一段录像仍然属于原来那一栏 —— 拿 `_tab` 现算的话，人只是去设置页翻了
+  /// 一眼，回来那一件的标签就变了（换件开新段时尤其明显：
+  /// 扫下一件那一刻人可能正站在设置页上）。
+  int _workTab = 1;
+
+  /// 录制页属于哪一栏。标题、顶部那个 Chip、以及**落盘的标签**共用这一个来源。
+  bool get _isReturn => _workTab == 2;
+
+  /// 当前这一栏对应哪个业务类型（发货 / 退货）。
+  BusinessType get _businessType =>
+      _isReturn ? BusinessType.returning : BusinessType.outbound;
 
   /// 用户选的设置（工作模式 + 两个档位）。落盘在 `<root>/settings.json`。
   ///
@@ -226,7 +238,14 @@ class _RecorderPageState extends State<RecorderPage> {
 
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
-      _finalizer = SessionFinalizer(rootDirectory: root.path, index: _index);
+      // 与电脑端同一个位置（`<root>/labels.jsonl`），键名也逐字相同 ——
+      // 两端的标签表是同一份形态（`labels/label_store.dart` 里有说明）。
+      _labels = LabelStore('${root.path}/labels.jsonl');
+      _finalizer = SessionFinalizer(
+        rootDirectory: root.path,
+        index: _index,
+        labels: _labels,
+      );
       // 与电脑端同一个位置（`<root>/punches.jsonl`），键名也逐字相同 ——
       // 两端的打点日志是同一份形态。
       _punchLog = PunchLog('${root.path}/punches.jsonl');
@@ -339,11 +358,23 @@ class _RecorderPageState extends State<RecorderPage> {
     // 播音开关是**可变字段**，新建出来的编排器默认是「开」，
     // 所以要在这里补一次 —— 不然「开始工作」重建之后它会自己打开。
     _applyVoice();
+
+    // 发货 / 退货也是可变字段（换段那些会话是在编排器里开起来的，
+    // 而用户切栏不重建编排器）。新建出来的默认是 null，同样要补一次。
+    _applyBusinessType();
   }
 
   /// 把当前的播报开关推给编排器（它自己不会去读设置）。
   void _applyVoice() {
     _coordinator?.voiceEnabled = _voiceOn;
+  }
+
+  /// 把「这一件是发货还是退货」推给编排器（它自己不会去读界面）。
+  ///
+  /// 与 [_applyVoice] 同一个理由、同一个时机：它在工作中可以改
+  /// （发货↔退货互切不重建编排器），所以每次进采集栏都要推一次。
+  void _applyBusinessType() {
+    _coordinator?.businessType = _businessType;
   }
 
   /// 画面静下来 / 又动起来。
@@ -470,6 +501,14 @@ class _RecorderPageState extends State<RecorderPage> {
     }
 
     const workTabs = {1, 2};
+
+    // 进了采集栏就记下「现在这一栏是发货还是退货」，**切走时不改回去** ——
+    // 下一段录像（换件开的那一段）要按这里记的值打标签。见 `_workTab` 的说明。
+    if (workTabs.contains(index)) {
+      setState(() => _workTab = index);
+      _applyBusinessType();
+    }
+
     if (!workTabs.contains(index)) {
       // 离开采集栏。**工作中 / 正在录时不关相机** —— 手指误滑到设置就掐掉
       // 一段正在录的像，比多开一会儿糟糕得多。
