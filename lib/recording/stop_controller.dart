@@ -73,6 +73,11 @@ class StopController {
           actions.addAll(_onRescan(monotonicMs, waybill));
         } else {
           _start(monotonicMs, waybill);
+          // 规格 §3.3.6：滴一声 + 播「开始录像」。
+          // **换段开下一段走的也是这一条**（连续扫扫到别的单号时，编排器
+          // 收掉上一段后会带着新单号再进来一次）—— 于是「换段只播开始录像」
+          // 是白拿的，不必在 `_stop` 那边为换段再补一句。
+          actions.add(const Speak(VoicePrompt.startRecording, beep: true));
           actions.add(const StartRecording());
         }
 
@@ -171,7 +176,11 @@ class StopController {
     if (scanned != _waybill) {
       // 规格 §3.3.2 错码保护（**只有**同码停 / 扫码静止停录两个模式还启用）：
       // **不停录**，只语音提示，直到扫到正确面单才停。
-      return const [Speak(VoicePrompt.differentWaybill)];
+      //
+      // 这一条也要滴（规格 §3.3.6）：它和「开录」一样是**系统认了这一下**的
+      // 回执。只出声不滴的话，操作员在嘈杂的仓库里分不清是系统在说
+      // 「面单错误」还是旁边那台设备在念时间。
+      return const [Speak(VoicePrompt.differentWaybill, beep: true)];
     }
 
     return mode.stopsOnSameWaybillRescan
@@ -230,6 +239,20 @@ class StopController {
     _packageReturned = false;
     _promptShownAtMs = null;
     _nextPromptAtMs = null;
+
+    // 规格 §3.3.6：**只有复扫同码这一条停录出声**（滴 + 播「停止录像」）。
+    //
+    // 另外四种停录刻意一声不响，逐条都有理由：
+    // - `manual`（点【结束】）—— 由 `startWorking`/`stopWorking` 那边播
+    //   「停止工作」，在这里再播一句是同一件事说两遍；
+    // - `nextWaybill`（连续扫换段）—— 换件是正常路径，紧接着就有「开始录像」，
+    //   中间插一句「停止」会让人以为录断了；
+    // - `sceneStatic` / `durationFallback`—— 用户多半已经走开，
+    //   补一句只会像设备在自言自语；而且这两条收尾时相机还开着、
+    //   下一件包裹随时会来，多说一句就盖住了下一句「开始录像」。
+    if (trigger == StopTrigger.sameWaybillRescan) {
+      actions.add(const Speak(VoicePrompt.stopRecording, beep: true));
+    }
 
     actions.add(StopRecording(trigger));
     return actions;

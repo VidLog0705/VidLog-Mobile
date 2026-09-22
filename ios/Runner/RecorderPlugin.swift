@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import Flutter
 import Foundation
 
@@ -23,7 +24,7 @@ import Foundation
 /// | `stopRecording` | Dart → 原生 | 停止；**等最后一段封完才返回** |
 /// | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
 /// | `setZoom` | Dart → 原生 | 变焦 |
-/// | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4） |
+/// | `speak` | Dart → 原生 | 语音播报，`beep` 为真时先滴一声（规格 §3.3.2 / §3.3.4 / §3.3.6） |
 /// | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
 /// | `sceneSampled` | 原生 → Dart | 画面是否静止 |
 /// | `failed` | Dart ← 原生 | 相机/编码出错 |
@@ -39,11 +40,36 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var recorder: CameraSegmentRecorder?
     private var eventSink: FlutterEventSink?
 
-    /// 语音播报（规格 §3.3.2 / §3.3.4）。
+    /// 语音播报（规格 §3.3.2 / §3.3.4 / §3.3.6）。
     ///
     /// 用系统 TTS：不用多带一份音频资源，也**没有许可证要核对**（规格 §10）。
     /// 持住这个实例 —— `AVSpeechSynthesizer` 被释放时会把没念完的话一起丢掉。
     private let speaker = AVSpeechSynthesizer()
+
+    /// 「滴」一声用的系统提示音 id（规格 §3.3.6）。
+    ///
+    /// 用 `AudioServicesPlaySystemSound` 而**不是** `UIDevice.playInputClick()`：
+    /// 后者跟随系统的「键盘反馈」开关 —— 用户把它关掉时功能提示音会一起消失，
+    /// 而那一声「滴」是操作员判断「系统认了这一下」的唯一反馈，会被当成 bug
+    /// （表盘那个拨轮声用 `playInputClick` 是对的，它本来就该跟着系统开关走；
+    /// 这两个音性质不同，所以走两条路）。
+    ///
+    /// 音频资源：**零**。与 TTS 同一条理由（规格 §10 的许可证账目）。
+    /// ⚠️ 音色**本机不可验**（开发机是 Windows、没有真机）。要换就改这一个数字 ——
+    /// `1057` = Tink（短促、最像「滴」）、`1005` = New Mail、`1104` = sms-received1。
+    private static let beepSoundId: SystemSoundID = 1057
+
+    /// 滴完之后隔多久开口。
+    ///
+    /// 系统提示音是**异步**播的，紧接着念的话两个音会叠在一起，
+    /// 听起来像「滴」被咬了半口。让出一小段，用户听到的才是
+    /// 规格 §3.3.6 要的顺序：先滴、再播。
+    private static let beepLeadIn: TimeInterval = 0.3
+
+    /// 排着队还没开口的那一次播报。
+    ///
+    /// 用来兑现「新提示顶掉旧的那句」：见 [speak] 里的说明。
+    private var pendingSpeech: DispatchWorkItem?
 
     /// 预览视图的类型名，与 Dart 侧 `UiKitView(viewType:)` 一致。
     static let previewViewType = "vidlog/camera_preview"
@@ -169,11 +195,14 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
     }
 
-    /// 读出一句提示。
+    /// 读出一句提示。`beep` 为真时**先滴一声再开口**（规格 §3.3.6）。
     ///
     /// 引擎没装中文语音时 `voice` 会给 nil —— **不能因此判定失败**：
     /// 那时系统会退化成默认语音，用户至少还听得见有提示。
     /// 播报是尽力而为的，Dart 侧也按成功处理（见 `RecorderGateway.speak`）。
+    ///
+    /// **不等念完就 `result(nil)`**：TTS 是异步的，等它等于让 Dart 侧
+    /// 那条事件链干等一两秒。Dart 只关心「递出去了没有」。
     private func speak(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let text = args["text"] as? String, !text.isEmpty
@@ -182,16 +211,38 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             return
         }
 
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-
         // 新提示顶掉旧的那句。两句提示本来就不会同时出现，
-        // 而「面单不同」连着报两次时，叠着念比只念一遍更糟 ——
+        // 而「面单错误，请扫描正确面单」连着报两次时，叠着念比只念一遍更糟 ——
         // 用户要先听完才知道是同一句。
+        //
+        // ⚠️ 排队等着开口的那一次也要顶掉（连续扫时两句提示可能只隔几百毫秒，
+        // 秒前那句此刻还没出声）。少了这一步，`stopSpeaking` 拦不住它 ——
+        // 它是在这之后才被 `speaker.speak` 交进去的。
+        pendingSpeech?.cancel()
+        pendingSpeech = nil
+
         if speaker.isSpeaking {
             speaker.stopSpeaking(at: .immediate)
         }
-        speaker.speak(utterance)
+
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+
+        guard args["beep"] as? Bool == true else {
+            speaker.speak(utterance)
+            result(nil)
+            return
+        }
+
+        // 顺序是规格 §3.3.6 的原话：「滴一声**然后**播报」。
+        AudioServicesPlaySystemSound(Self.beepSoundId)
+
+        let item = DispatchWorkItem { [weak self] in
+            self?.pendingSpeech = nil
+            self?.speaker.speak(utterance)
+        }
+        pendingSpeech = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.beepLeadIn, execute: item)
 
         result(nil)
     }

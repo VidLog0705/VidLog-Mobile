@@ -156,14 +156,18 @@ abstract interface class RecorderGateway {
   /// **尽力而为**：安卓没接，调用方吞掉即可。
   Future<void> playDetentSound();
 
-  /// 读出一句提示（规格 §3.3.2 的「面单不同」、§3.3.4 的时长询问）。
+  /// 读出一句提示（规格 §3.3.2 / §3.3.4 / §3.3.6）。
   ///
   /// 为什么交给原生而不是放音频文件：措辞是中文、要能改，
   /// 而系统 TTS 不需要多带一份音频资源，也不用核对它的许可证（规格 §10）。
   ///
+  /// [beep] 为真时**先「滴」一声再开口**（规格 §3.3.6）。滴声与语音必须
+  /// **两个不同的音**（同一个音分不出「系统认了这一下」和「系统在说话」），
+  /// 且同样只许用系统内置的 —— 一样不许引入音频素材文件。
+  ///
   /// **失败不是错误**：设备可能没装中文语音包、或用户关了朗读。
   /// 提示丢一句是小事，不能让它拖垮停录。
-  Future<void> speak(String text);
+  Future<void> speak(String text, {bool beep = false});
 
   /// 原生事件流。
   Stream<NativeRecorderEvent> get events;
@@ -230,8 +234,8 @@ class ChannelRecorderGateway implements RecorderGateway {
       _methods.invokeMethod<void>('autoFocusAndZoom');
 
   @override
-  Future<void> speak(String text) =>
-      _methods.invokeMethod<void>('speak', {'text': text});
+  Future<void> speak(String text, {bool beep = false}) => _methods
+      .invokeMethod<void>('speak', {'text': text, 'beep': beep});
 
   @override
   Stream<NativeRecorderEvent> get events =>

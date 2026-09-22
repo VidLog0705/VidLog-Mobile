@@ -177,6 +177,20 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 秒数就老老实实 `setState`。
   Duration _elapsed = Duration.zero;
 
+  /// 画面正上方那个实时时间的当前值（规格 §3.2.6）。
+  ///
+  /// ⚠️ 这里用的是**墙钟**，与录制判据正好相反（规格 §3.6.3 要单调时钟）。
+  /// 区别在用途：录制判据问的是「过了多久」，用户改系统时间不该影响它；
+  /// 这个钟问的是「现在几点」，而那本来就是墙钟回答的问题 ——
+  /// 也是事后对着录像核时间时唯一说得通的时间。
+  DateTime _now = DateTime.now();
+
+  /// 驱动 [_now] 的秒针。
+  ///
+  /// **与 [_heartbeat] 分开**：心跳只在录制期间跑（`StartRecording` 起、
+  /// `StopRecording` 停），而「现在几点」在没开始录的时候一样要看。
+  Timer? _clockTick;
+
   /// 盘上的实况：工作区有几个会话、其中几个还没收尾、索引里几条。
   ///
   /// 真机验收时**失败必须是可见的** —— 上一次拿不到孤儿卡片时，
@@ -230,15 +244,37 @@ class _RecorderPageState extends State<RecorderPage> {
   @override
   void initState() {
     super.initState();
+    _startClock();
     unawaited(_bootstrap());
   }
 
   @override
   void dispose() {
+    _clockTick?.cancel();
     _heartbeat?.cancel();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
     super.dispose();
+  }
+
+  /// 起那个实时时间的秒针（规格 §3.2.6）。
+  ///
+  /// **先对齐到整秒再转周期**：`Timer.periodic` 的相位是从启动那一刻算的，
+  /// 直接周期 1 秒的话首次触发落在半秒处，屏幕上那个秒数就永远比真实时间
+  /// 慢最多 1 秒。对着录像核时间时，这种偏差会让人先怀疑是哪边不准 ——
+  /// 而这里多花的只是一次 `Future.delayed` 的账，不是十行代码。
+  void _startClock() {
+    final untilNextSecond =
+        Duration(milliseconds: 1000 - DateTime.now().millisecond);
+
+    _clockTick = Timer(untilNextSecond, () {
+      if (!mounted) return;
+      setState(() => _now = DateTime.now());
+
+      _clockTick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() => _now = DateTime.now());
+      });
+    });
   }
 
   RecorderConfig get _config => RecorderConfig(
@@ -627,6 +663,16 @@ class _RecorderPageState extends State<RecorderPage> {
       // 标识是不变的，所以改名不会篡改历史录像的来源。
       await _coordinator!.startWorking(sourceDeviceId: _identity!.deviceId);
 
+      // 规格 §3.3.6：点【开始】→ 播「开始工作」，**不滴**（需求方 2026-09-22 裁决）。
+      //
+      // 为什么在这里、不在 `startWorking` 里：这句的起因是「用户按了那个按钮」，
+      // 不是「状态机走到了某个状态」—— 与上面 [modeAnnouncementFor] 那两句
+      // 是同一类东西，所以走同一条路（`RecordingCoordinator.speak`，不经状态机）。
+      // 塞进 `startWorking` 的话，所有需要「在工作状态」的测试都会平白多出一句播报。
+      //
+      // 位置在 `startWorking` **之后**：相机没开起来就不该说「开始工作」。
+      await _coordinator!.speak(VoicePrompt.startWorking);
+
       _log('开始工作 · 模式 ${_modeLabel(_mode)}');
       _startHeartbeat();
 
@@ -748,6 +794,13 @@ class _RecorderPageState extends State<RecorderPage> {
   Future<void> _stopWorking() async {
     _heartbeat?.cancel();
     _heartbeat = null;
+
+    // 规格 §3.3.6：点【结束】→ 播「停止工作」，**不滴**（同上）。
+    //
+    // ⚠️ **播在收尾之前**：`stopWorking` 里要等落库（写 manifest、封段），
+    // 那是磁盘 I/O，几百毫秒起步。放在后面的话用户按完按钮要先愣一下才听到
+    // 声音 —— 而那一下「滞」正是他要的反馈本身。
+    await _coordinator?.speak(VoicePrompt.stopWorking);
 
     try {
       await _coordinator?.stopWorking();
@@ -1524,6 +1577,37 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── 画面**正上方**：实时时间 → 完整单号（规格 §3.2.6）──
+            //
+            // 居中、两行，压在状态行**上面**。放在这儿是因为它俩是同一类东西：
+            // 都是给「事后对着录像核时间、核单号」用的当场凭据，
+            // 而状态行讲的是「这台设备现在在干什么」，不是同一件事。
+            Center(
+              child: _strokedText(
+                _clockStamp(_now),
+                key: const Key('recorder-clock'),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1,
+                  // ⚠️ 两个 Text 叠出来的是**同一个字符串**，行高必须一致，
+                  // 否则描边层与填充层会错开半个像素、字看起来是糊的。
+                  height: 1.1,
+                ),
+              ),
+            ),
+
+            // 第二行只在**录制中**才有内容（规格 §3.2.6）。
+            //
+            // 没在录时不放占位符、也不拿上一件的号凑数：那一行是「这一段录的
+            // 是哪一件」，空着时它没有答案 —— 填一个进去，用户会以为录上了。
+            if (recording && (_coordinator?.currentWaybill?.value.isNotEmpty ?? false)) ...[
+              const SizedBox(height: 2),
+              Center(child: _waybillLine(_coordinator!.currentWaybill!.value)),
+            ],
+
+            const SizedBox(height: 6),
             Row(
               children: [
                 Icon(
@@ -1536,9 +1620,11 @@ class _RecorderPageState extends State<RecorderPage> {
                 Expanded(
                   child: Text(
                     // 「在工作（相机开着）」和「在录」是两回事，界面上要分得清。
-                    recording
-                        ? '录制中 · ${_coordinator?.currentWaybill ?? ""}'
-                        : _status,
+                    //
+                    // ⚠️ 单号**不在这儿**了（2026-09-22 晚些）：它挪到上面自成
+                    // 一行 —— 挤在这一行里只能省略号收尾，而截断的单号
+                    // 看起来仍然像个完整单号，抄下来就是错的。
+                    recording ? '录制中' : _status,
                     style: const TextStyle(color: Colors.white, fontSize: 16),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1576,6 +1662,58 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  /// 白色描边字：**画两层** —— 底下那层只描边，上面那层只填充。
+  ///
+  /// 为什么不直接给白字加个阴影：取景画面是**实景**，底色不可控。
+  /// 仓库顶灯、白墙、白面单 —— 整片白的时候纯白字就是看不见。
+  /// 而看不见的时间比没有时间更糟：用户会以为设备卡死了。
+  /// 深色描边在任何底色上都留得住字的轮廓。
+  ///
+  /// `clipBehavior: Clip.none` 是必须的：`Stack` 默认会把内容裁到自己的尺寸，
+  /// 而描边有一半在字形轮廓**外面**，裁掉就变成了细一圈的填充字。
+  Widget _strokedText(
+    String text, {
+    required Key key,
+    required TextStyle style,
+    Color strokeColor = Colors.black,
+    double strokeWidth = 3,
+  }) {
+    return Stack(
+      key: key,
+      clipBehavior: Clip.none,
+      children: [
+        Text(
+          text,
+          style: style.copyWith(
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = strokeWidth
+              ..color = strokeColor,
+          ),
+        ),
+        Text(text, style: style),
+      ],
+    );
+  }
+
+  /// 当前这一件的**完整**单号（规格 §3.2.6）。
+  ///
+  /// ⚠️ **不许省略、不许截断**：这里刻意**没有** `maxLines`、**没有**
+  /// `overflow: ellipsis`。一个被截掉尾巴的单号看起来仍然像一个完整单号 ——
+  /// 操作员照着抄就会抄下一个错的，而这种错当场看不出来（这正是这条要求
+  /// 存在的理由）。太长就让它换行，宁可占两行也不给一个假的完整。
+  Widget _waybillLine(String waybill) => Text(
+        waybill,
+        key: const Key('recorder-waybill'),
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Colors.redAccent,
+          fontSize: 22,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1,
+        ),
+      );
+
   /// 底部浮层：刻度盘 → 时长兜底询问 → 抽屉面板 → 操作按钮 → 抽屉入口。
   ///
   /// ## 为什么刻度盘在**这一列里**、而不是 `Positioned` 贴边
@@ -1599,7 +1737,11 @@ class _RecorderPageState extends State<RecorderPage> {
             // ⚠️ 它必须留在这一列里、**不能改成叠在画面上的浮层**：
             // 压在取景框正中会挡住条码（面单必须放进中心框才认得到），
             // 而挡住的后果用户只会看到「扫不出来」，看不出是界面盖的。
-            if (showPreview && _dialOpen)
+            // ⚠️ 门控是 `working`（点了【结束】就消失），不是 [showPreview]。
+            // 需求方 2026-09-22 晚些：「对焦功能只在发货或者退货页面点开始后
+            // 点结束前才触发对焦」。相机开着、却没开始工作时把【对焦】按钮
+            // **整个藏掉** —— 留一个点了不生效的按钮，用户只会当成坏了。
+            if (showPreview && working && _dialOpen)
               Align(
                 alignment: Alignment.centerRight,
                 child: ZoomDial(
@@ -1634,8 +1776,9 @@ class _RecorderPageState extends State<RecorderPage> {
             // 它就摆在这一列里、【开始】的正上方且靠右，于是天然落在那个角落上，
             // 不用 Stack、不会重叠、也不会在小屏上把【开始】挤出去。
             //
-            // 只在相机开着时出现：没画面的时候调焦是件没意义的事。
-            if (showPreview)
+            // 只在**相机开着、而且在工作**时出现：没画面时调焦没意义，
+            // 而没在工作时按需求方的裁决就是不该能调（见上面表盘那一处）。
+            if (showPreview && working)
               Align(
                 alignment: Alignment.centerRight,
                 child: _focusButton(),
@@ -2289,6 +2432,15 @@ class _RecorderPageState extends State<RecorderPage> {
   /// `MM-DD HH:mm`。备份页一行里塞得下，且不需要年份 —— 手机上的东西都是最近的。
   static String _stamp(DateTime at) =>
       '${_two(at.month)}-${_two(at.day)} ${_two(at.hour)}:${_two(at.minute)}';
+
+  /// `年/月/日/时/分/秒`，六段都要带（规格 §3.2.6）。
+  ///
+  /// 与 [_stamp] 的区别不只是多几段：这是采集页正上方那个钟，
+  /// 它要能被**逐字念出来对着录像核**，所以年月日时分秒一段都不能省
+  /// （少一段就得靠猜是今年还是去年）。月/日/时/分/秒各补零到两位 ——
+  /// 不等宽的话这个钟每秒都在左右晃。
+  static String _clockStamp(DateTime at) => '${at.year}/${_two(at.month)}/'
+      '${_two(at.day)} ${_two(at.hour)}:${_two(at.minute)}:${_two(at.second)}';
 
   /// `mm:ss`（超过一小时就是三位数的分钟，不折成小时 —— 一段录像不会是几小时）。
   static String _durationLabel(Duration d) =>

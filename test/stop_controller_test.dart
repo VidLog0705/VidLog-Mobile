@@ -102,16 +102,49 @@ void main() {
       expect(controller.isRecording, isFalse);
     });
 
-    test('扫码静止停录：复扫同码**不**停止（2026-09-21 裁定）', () {
-      // 曾经取的是 §3.3.2 的字面读法（复扫也停），那会让这个模式
-      // 与「同码停」完全等价、目标跟踪做了也永远不会被触发。
-      // 裁定取 §3.3.1：只能靠「离场→入场→静止」停。
+    test('★ 扫码静止停录：复扫同码**也**停止（2026-09-22 二次推翻）', () {
+      // ⚠️ **这条测试在 2026-09-22 被需求方推翻过一次，方向反过来。**
+      //
+      // 更早的写法断言的是「复扫同码**不**停」，理由是 §3.3.1 的停止条件列
+      // 只写了「离场→入场→静止」，若也认复扫这个模式就与「同码停」等价了。
+      // 需求方 2026-09-22 晚些三次口述全都指向「复扫同码就停」，
+      // 遂作废该裁定（规格 §3.3.1 记为「二次推翻」）。
+      //
+      // 变红配方 = 把 `WorkMode.stopsOnSameWaybillRescan` 的
+      // `scanThenStaticStop` 那行改回 `false`。**红的必须是这一条。**
       final controller = isolated(
           mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes3);
       start(controller);
 
-      expect(stops(controller.handle(WaybillDetected(t0 + minute, waybillA))), isEmpty);
-      expect(controller.isRecording, isTrue);
+      final actions = controller.handle(WaybillDetected(t0 + minute, waybillA));
+
+      expect(stops(actions).single.trigger, StopTrigger.sameWaybillRescan);
+      expect(controller.isRecording, isFalse);
+    });
+
+    test('★ 两个模式的区别还在：静止兜底的门槛不同', () {
+      // 「扫码静止改成复扫同码就停」之后，这个模式**没有**变成同码停的副本 ——
+      // 它仍然多一道「包裹先离场、再入场」的前置门槛（[staticStopRequiresPackageReturn]）。
+      // 少了这条，`scanThenStaticStop` 那行改成 true 就真的只是把两个模式合并了。
+      // 变红配方 = 把 `staticStopRequiresPackageReturn` 改成恒 false。
+      final controller = isolated(
+          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.minutes2);
+      start(controller);
+
+      // 面单一直摆着没动，但**从没离场**：静止判定不许开闸。
+      // （已经超过 2 分钟了，若闸开着这里就会停。）
+      expect(controller.handle(Heartbeat(t0 + 3 * minute)), isEmpty);
+      expect(controller.isRecording, isTrue, reason: '没离过场 = 静止门槛没开');
+
+      // 离场 → 入场 → 再静止够久，这才停。
+      controller.handle(TrackedPackageLeft(t0 + 3 * minute + 1000));
+      controller.handle(TrackedPackageEntered(t0 + 3 * minute + 2000));
+
+      expect(
+          stops(controller.handle(Heartbeat(t0 + 3 * minute + 2000 + 2 * minute)))
+              .single
+              .trigger,
+          StopTrigger.sceneStatic);
     });
 
     test('停止之后可以重新开录', () {
@@ -176,6 +209,120 @@ void main() {
 
       expect(stops(actions), isEmpty);
       expect(actions.whereType<Speak>(), isNotEmpty);
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 声音提示（§3.3.6，需求方 2026-09-22 晚些）
+  // ─────────────────────────────────────────────
+  //
+  // 规格那张表有六行，**三行要滴、三行不要**。这里逐行验，
+  // 因为「多滴了一声」和「少滴了一声」在真机上都是要重出一版包的错。
+
+  group('声音提示（§3.3.6）', () {
+    /// 把动作里那两句播报摘出来，顺序与滴声一起看。
+    List<(VoicePrompt, bool)> sounds(List<RecorderAction> actions) =>
+        actions.whereType<Speak>().map((a) => (a.prompt, a.beep)).toList();
+
+    test('★ 识别到单号开录：滴一声 + 播「开始录像」', () {
+      final controller = isolated(mode: WorkMode.sameWaybillStop);
+
+      expect(sounds(start(controller)), [(VoicePrompt.startRecording, true)]);
+    });
+
+    test('★ 复扫到同一单号停录：滴一声 + 播「停止录像」', () {
+      final controller = isolated(mode: WorkMode.sameWaybillStop);
+      start(controller);
+
+      final actions = controller.handle(WaybillDetected(t0 + minute, waybillA));
+
+      expect(sounds(actions), [(VoicePrompt.stopRecording, true)]);
+    });
+
+    test('★ 连续扫换段：只播「开始录像」，不播上一段的「停止录像」', () {
+      // 这是「换段只播开始」那条规格。一句「停止」接着一句「开始」
+      // 会让操作员以为录断了，而实际上本段是正常收尾的。
+      final controller = isolated(mode: WorkMode.continuousScan);
+      start(controller);
+
+      final rotate = controller.handle(WaybillDetected(t0 + minute, waybillB));
+      expect(sounds(rotate), isEmpty, reason: '换段那一下本身不出声');
+
+      // 下一段重新进来（编排器在收尾之后带着新单号再喂一次）。
+      final next = controller.handle(WaybillDetected(t0 + minute + 100, waybillB));
+
+      expect(sounds(next), [(VoicePrompt.startRecording, true)]);
+    });
+
+    test('★ 扫到不同面单：滴一声 + 播「面单错误，请扫描正确面单」，且不停录', () {
+      final controller = isolated(mode: WorkMode.sameWaybillStop);
+      start(controller);
+
+      final actions = controller.handle(WaybillDetected(t0 + minute, waybillB));
+
+      expect(sounds(actions), [(VoicePrompt.differentWaybill, true)]);
+      expect(stops(actions), isEmpty);
+    });
+
+    test('★ 画面静止自动停：**不播**「停止录像」', () {
+      // 刻意不播（规格 §3.3.6 的约束）。用户多半已经走开，
+      // 补一句只会像设备在自言自语，还会盖住下一件的「开始录像」。
+      // 变红配方 = 在 `_stop` 里把那条 `if (trigger == ...)` 去掉。
+      final controller = isolated(
+          mode: WorkMode.sameWaybillStop, staticStop: StaticStopSetting.minutes2);
+      start(controller);
+
+      final actions = controller.handle(Heartbeat(t0 + 3 * minute));
+
+      expect(stops(actions).single.trigger, StopTrigger.sceneStatic);
+      expect(sounds(actions), isEmpty);
+    });
+
+    test('★ 时长兜底自动停：**不播**「停止录像」', () {
+      final controller = durationOnly();
+      start(controller);
+      controller.handle(Heartbeat(t0 + 4 * minute)); // 先弹出询问，没人理
+
+      final actions = controller.handle(Heartbeat(t0 + 5 * minute));
+
+      expect(stops(actions).single.trigger, StopTrigger.durationFallback);
+      expect(sounds(actions), isEmpty);
+    });
+
+    test('★ 时长兜底点【停止】：也不播「停止录像」', () {
+      // 那是用户手里的按钮按出来的，但他按的不是【结束】——
+      // 规格 §3.3.6 那张表里没有这一行，所以照旧一声不响。
+      final controller = durationOnly();
+      start(controller);
+      controller.handle(Heartbeat(t0 + 4 * minute));
+
+      final actions = controller.handle(
+          DurationPromptAnswered(t0 + 4 * minute + 1000, continueRecording: false));
+
+      expect(stops(actions).single.trigger, StopTrigger.durationFallback);
+      expect(sounds(actions), isEmpty);
+    });
+
+    test('★ 手动停止：状态机一声不响（那两句由编排器播）', () {
+      // 「点【结束】播『停止工作』」不在状态机里 —— 那是「用户点了按钮」，
+      // 不是录制事件。见 `RecordingCoordinator.stopWorking`。
+      // 在这里再播一句「停止录像」就是同一件事说两遍。
+      final controller = isolated(mode: WorkMode.sameWaybillStop);
+      start(controller);
+
+      final actions = controller.handle(ManualStopRequested(t0 + minute));
+
+      expect(stops(actions).single.trigger, StopTrigger.manual);
+      expect(sounds(actions), isEmpty);
+    });
+
+    test('★ 时长兜底那句询问**不滴**（规格那张表里没它）', () {
+      final controller = durationOnly();
+      start(controller);
+
+      final actions = controller.handle(Heartbeat(t0 + 4 * minute));
+
+      expect(sounds(actions), [(VoicePrompt.durationTimeout, false)]);
     });
   });
 

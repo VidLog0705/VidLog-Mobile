@@ -145,6 +145,59 @@ void main() {
         reason: '规格 §3.3.2:183 禁止这个按钮');
   });
 
+  testWidgets('★ 采集页画面正上方有实时时间，且带描边（规格 §3.2.6）',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    final clock = find.byKey(const Key('recorder-clock'));
+    expect(clock, findsOneWidget);
+
+    // ① 格式必须是「年/月/日/时/分/秒」六段全带。
+    // 需求方原话：「按年/月/日/时/分/秒显示」。少一段（比如省掉年）
+    // 就得靠猜是今年还是去年，而这个钟是为「事后对着录像核时间」用的。
+    final texts = tester
+        .widgetList<Text>(find.descendant(of: clock, matching: find.byType(Text)))
+        .map((t) => t.data)
+        .whereType<String>()
+        .toList();
+
+    expect(texts, isNotEmpty);
+    for (final text in texts) {
+      expect(
+        text,
+        matches(RegExp(r'^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}$')),
+        reason: '钟的格式不对：$text',
+      );
+    }
+
+    // ② 两层都画：底下那层只描边、上面那层只填充。
+    // **白字压实景**是这个需求唯一的技术理由（取景框底色不可控，
+    // 整片白的时候纯白字看不见）。只画一层的话这里会红。
+    expect(texts, hasLength(2), reason: '白字要画两层（描边层 + 填充层）');
+
+    // ③ 显示的是**当下**，不是一个画死的字符串。
+    // 少了这条，一个把 '2026/01/01 00:00:00' 写死的钟也能过上面两条 ——
+    // 而那种钟在真机上看起来完全正常，只有核时间的时候才发现是错的。
+    final match = RegExp(r'^(\d{4})/(\d{2})/(\d{2}) (\d{2}):(\d{2}):(\d{2})$')
+        .firstMatch(texts.first)!;
+    final shown = DateTime(
+      int.parse(match[1]!), int.parse(match[2]!), int.parse(match[3]!),
+      int.parse(match[4]!), int.parse(match[5]!), int.parse(match[6]!),
+    );
+    expect(shown.difference(DateTime.now()).inSeconds.abs(),
+        lessThanOrEqualTo(2),
+        reason: '钟显示的不是「现在」：$shown');
+
+    // ⚠️ **「一秒一秒在走」这一条测不了**，只能真机验。
+    // widget 测试里 `Timer` 走的是假时钟，而 `DateTime.now()` **不是** ——
+    // `tester.pump(Duration(seconds: 2))` 会让计时器空转两秒而墙钟纹丝不动，
+    // 于是断言「秒数变了」必然假红（不是代码坏了，是测不了）。
+    // 所以这一条记在 `真机验收清单.md` 里，不在这里假装验过。
+  });
+
   testWidgets('★ 采集页全屏：没有 AppBar，抽屉默认收着', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 

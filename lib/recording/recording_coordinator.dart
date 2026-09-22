@@ -528,10 +528,13 @@ class RecordingCoordinator {
   /// （安卓那条通道整个还没接）。丢一句提示是小事；把它抛上去，会让
   /// 「错码保护」这条路径整个失败 —— 而那一下本该只是提示一下、继续录。
   /// 异常一律吞掉，界面上的日志与提示不受影响。
-  Future<void> _speakThroughGateway(VoicePrompt prompt) async {
+  Future<void> _speakThroughGateway(VoicePrompt prompt, {bool beep = false}) async {
     if (!voiceEnabled) return; // 关播报 = 关声音，不关提示。
+
+    // ⚠️ 滴声也归这道闸管（规格 §3.3.6）：它写在 `speak` 里面，
+    // 所以「关掉播报」是**一次关掉全部声音**，而不是关掉朗读、留下滴滴声。
     try {
-      await _gateway.speak(prompt.spokenText);
+      await _gateway.speak(prompt.spokenText, beep: beep);
     } on Object {
       // 忽略。
     }
@@ -683,7 +686,9 @@ class RecordingCoordinator {
 
         // 播报关掉时**只是不出声**：`onAction` 上面已经调用过了，
         // 界面上的提示与日志照旧（关播报不等于关提示）。
-        if (action is Speak) await _speakThroughGateway(action.prompt);
+        if (action is Speak) {
+          await _speakThroughGateway(action.prompt, beep: action.beep);
+        }
 
         if (action is StopRecording) {
           await finish(action.trigger);
@@ -742,10 +747,17 @@ class RecordingCoordinator {
           //
           // 手输兜底走 `onWaybillDetected`，不经过这里：画面里没有面单，
           // 放大一下只会让人以为相机坏了。
-          try {
-            await _gateway.autoFocusAndZoom();
-          } on Object {
-            // 尽力而为（I4 的精神）。安卓那条通道整个还没接，这里必定失败。
+          //
+          // ⚠️ **只在工作期间**（规格 §3.1.6，需求方 2026-09-22 晚些）：
+          // 相机开着但用户还没按【开始】时，画面不该自己动 ——
+          // 那时他只把手机架在那儿，一动他会以为相机坏了。
+          // 这里判的是 `_armed` 而不是「相机开着」，两者 2026-09-22 起就不是一回事。
+          if (_armed) {
+            try {
+              await _gateway.autoFocusAndZoom();
+            } on Object {
+              // 尽力而为（I4 的精神）。安卓那条通道整个还没接，这里必定失败。
+            }
           }
 
           // 摄像头识码 —— 来源写实，回放时能看出这一下是机器认的还是人敲的。

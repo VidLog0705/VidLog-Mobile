@@ -85,10 +85,25 @@ void main() {
   ///
   /// 原来是 `coordinator.start(waybill:)` 一步做完，现在拆成两步：
   /// 规格 §3.2.2 的流程是「点开始工作 → 画面出现取景框 → 扫到面单才开录」。
+  /// 进入「正在录第一件」的状态。
+  ///
+  /// ⚠️ 收尾时会把 [FakeGateway.spoken] / [FakeGateway.beeped] **清空**。
+  ///
+  /// 开录那一下本身会播「开始录像」（规格 §3.3.6），而下面几十条测试关心的是
+  /// **那之后**发生的事（错码保护、换段、停录…）。不清的话每条都得写成
+  /// `['开始录像', …]` —— 那些测试并不关心开录那一声，却会被它绑住：
+  /// 哪天改了开录的措辞，一片不相干的测试跟着红。
+  ///
+  /// 「开录要出声」这件事由 `stop_controller_test.dart` 的
+  /// 「声音提示（§3.3.6）」那一组专管，那里验得比这里细。
   Future<void> begin(RecordingCoordinator coordinator, {WaybillNumber? bill}) async {
     await coordinator.startWorking(sourceDeviceId: 'device-1');
     await coordinator.onWaybillDetected(bill ?? waybill);
     await coordinator.waitForPendingEvents();
+
+    gateway.spoken.clear();
+    gateway.beeped.clear();
+    actions.clear();
   }
 
   /// 造一个分段文件并上报「已封闭」。
@@ -830,18 +845,29 @@ void main() {
           ),
         );
 
-    /// 造一次识码，走的是与相机同一条路（取景框正中，不会被框滤掉）。
-    void sighting(WaybillNumber bill) {
+    /// 造一次识码，走的是与相机同一条路。
+    ///
+    /// 默认落在取景框正中（会被扫描闸采纳）。给坐标就能造「相机认得到、
+    /// 但面单没正对着框」那一种 —— 见下面第一条测试的说明。
+    void sighting(WaybillNumber bill, {double x = 0.5, double y = 0.5}) {
       gateway.emit(BarcodeDetectedEvent(
         text: bill.value,
-        centerX: 0.5,
-        centerY: 0.5,
+        centerX: x,
+        centerY: y,
       ));
     }
 
     test('★ 包裹离场 → 入场 → 静止到设定时长才停', () async {
-      // 这是「扫码静止停录」与「同码停」的区别所在：
-      // 复扫同码**不停**（2026-09-21 裁定），只有这条链才停。
+      // 这条是「扫码静止停录」**多出来**的那个门槛（与同码停的区别所在）。
+      //
+      // ⚠️ 入场那一下刻意把面单**放在取景框外**（`x: 0.02`）。
+      // 框内的复扫同码从 2026-09-22 起**会直接停录**（规格 §3.3.1 的
+      // 「二次推翻」），那条路根本走不到静止判定。
+      //
+      // 而这条兜底真正管的就是这种情形：**包裹回来了，但面单没正对着框** ——
+      // 相机认得到（跟踪得上，所以算「入场」）、扫描闸不采纳（不在框内，
+      // 所以不算一次复扫）。少了这个前提，下面验的就不是静止判定，
+      // 而是「复扫同码停录」那条路了。
       final coordinator = staticOnly();
       nowMs = 1000;
       await begin(coordinator);
@@ -854,7 +880,7 @@ void main() {
 
       // 包裹回到画面：静止时钟从这一刻重新计。
       nowMs += 1000;
-      sighting(waybill);
+      sighting(waybill, x: 0.02);
       await coordinator.waitForPendingEvents();
 
       // 入场后只静止 2 分钟：不够。
@@ -906,8 +932,10 @@ void main() {
       // A 回来 —— 只有在「A 确实被判过离场」的前提下，静止时钟才会
       // 从这一刻重新计（`TrackedPackageEntered` 会把时钟推到现在）。
       // 没推开的话，下面这 3 分钟里静止早该满了。
+      //
+      // 同样把面单放在框外，理由见上一条测试（框内复扫会直接停录）。
       nowMs += 1000;
-      sighting(waybill);
+      sighting(waybill, x: 0.02);
       await coordinator.waitForPendingEvents();
 
       nowMs += 2 * 60 * 1000;
@@ -981,7 +1009,12 @@ void main() {
       await coordinator.onWaybillDetected(otherWaybill);
       await coordinator.waitForPendingEvents();
 
-      expect(gateway.spoken, ['面单不同']);
+      // 措辞是需求方 2026-09-22 晚些给的原话（原为「面单不同」）。
+      // 这里刻意写**字面量**而不是 `VoicePrompt.spokenText`：
+      // 取枚举的话，枚举里打错一个字测试照样绿 —— 而这个字符串是要念给
+      // 操作员听的，写错了他就不知道下一步该干什么。
+      expect(gateway.spoken, ['面单错误，请扫描正确面单']);
+      expect(gateway.beeped, [true], reason: '规格 §3.3.6：这一条要滴一声');
       await coordinator.dispose();
     });
 
@@ -1056,7 +1089,39 @@ void main() {
       coordinator.voiceEnabled = true;
       await coordinator.onWaybillDetected(otherWaybill);
       await coordinator.waitForPendingEvents();
-      expect(gateway.spoken, ['面单不同']);
+      expect(gateway.spoken, ['面单错误，请扫描正确面单']);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 状态机的 beep 标记会传到原生（规格 §3.3.6）', () async {
+      // 状态机只产出「要滴」这个意图，真正让手机响的是网关这一层。
+      // 接线漏了的话，规格 §3.3.6 那张表整张失效 —— 声音有、滴声没有，
+      // 而单测若只断言 `Speak.prompt` 是看不出来的。
+      // 变红配方 = 把 `_speakThroughGateway(action.prompt, beep: action.beep)`
+      // 里的 `beep:` 去掉。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.spoken, hasLength(1));
+      expect(gateway.beeped, [true], reason: '错码保护要滴');
+
+      await coordinator.dispose();
+    });
+
+    test('★ speak() 走状态机外面的那条路时不滴', () async {
+      // 「进栏播报模式」「点【开始】/【结束】」这三句都不滴（需求方裁决）：
+      // 滴声是「系统认了这一下」的回执，而这几个都不是识码。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.speak(VoicePrompt.shippingModeOn);
+
+      expect(gateway.beeped, [false]);
 
       await coordinator.dispose();
     });
@@ -1260,6 +1325,42 @@ void main() {
 
       await coordinator.onWaybillDetected(otherWaybill,
           source: PunchSource.manualEntry);
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.autoFocusCalls, 0);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 相机开着、但**没在工作**时，面单进框不对焦（规格 §3.1.6）', () async {
+      // 需求方 2026-09-22 晚些：「对焦功能只在发货或者退货页面点开始后
+      // 点结束前才触发对焦」。进栏自动开相机之后，「相机开着、却没在工作」
+      // 是常态 —— 那时用户只是把手机架在那儿，画面自己推近再缩回来
+      // 只会让人以为相机坏了。**点【结束】之后同理。**
+      // 变红配方 = 去掉那处 `if (_armed)`。
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.openCamera(); // 只开相机，**不** startWorking
+
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'SF1000000001', centerX: 0.5, centerY: 0.5));
+      await coordinator.waitForPendingEvents();
+
+      expect(gateway.autoFocusCalls, 0);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 点【结束】之后不再对焦', () async {
+      // 与上一条是同一个门控的另一半：`_armed` 落下去之后就该停。
+      final coordinator = make();
+      nowMs = 1000;
+      await begin(coordinator);
+      await coordinator.stopWorking();
+
+      nowMs += 5000;
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'YT9999999999', centerX: 0.5, centerY: 0.5));
       await coordinator.waitForPendingEvents();
 
       expect(gateway.autoFocusCalls, 0);
@@ -1653,12 +1754,16 @@ class FakeGateway implements RecorderGateway {
   /// 读出来的提示，按顺序记下。
   final spoken = <String>[];
 
+  /// 每次 `speak` 有没有要「滴」（规格 §3.3.6）。与 [spoken] 一一对应。
+  final beeped = <bool>[];
+
   /// 让下一次 `speak` 抛异常 —— 验「播报失败不能拖垮停录」。
   bool speakThrows = false;
 
   @override
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {bool beep = false}) async {
     if (speakThrows) throw Exception('这台设备没有 TTS');
     spoken.add(text);
+    beeped.add(beep);
   }
 }

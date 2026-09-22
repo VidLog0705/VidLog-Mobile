@@ -30,7 +30,7 @@ import java.util.Locale
  * | `startSession` | Dart → 原生 | 开始录制，参数含工作区目录、单号、单段时长 |
  * | `stopSession` | Dart → 原生 | 停止并封掉当前分段 |
  * | `setZoom` | Dart → 原生 | 变焦 |
- * | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4） |
+ * | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4 / §3.3.6） |
  * | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
  * | `sceneSampled` | 原生 → Dart | 画面是否静止 |
  * | `failed` | 原生 → Dart | 相机/编码出错 |
@@ -56,6 +56,11 @@ import java.util.Locale
  * `CameraSegmentRecorder` 的生命周期拆分，不是在这里加一个 `result.success(null)`。
  * Dart 侧对它是尽力而为的（调用点吞掉异常），所以现在落到 `notImplemented`
  * 不会影响任何现有行为。
+ *
+ * `speak` 的 `beep` 参数（规格 §3.3.6 的「滴一声再播报」）在 Android 侧
+ * **被忽略**：本类的 `speak` 只读 `text`。这不算新缺口 —— 它跟上面那条一样，
+ * 反正整条链路都没接上。接 Android 时要一起补，且滴声同样**不许引入音频素材**：
+ * 用 `ToneGenerator`（系统内置、零资源），不要往 `res/raw/` 里塞 wav。
  *
  * 不能只把名字改过来完事：规格 §3.2.2 要的是「点开始工作 → 出现取景框（**不录**）
  * → 扫到面单才开录」，而 [CameraSegmentRecorder.start] 是**开相机与开录一起做**的，
@@ -172,8 +177,11 @@ class RecorderChannel(private val activity: FlutterActivity) :
                     result.error("bad_args", "缺少 text", null)
                 } else {
                     // QUEUE_FLUSH：新提示顶掉旧的那句。
-                    // 两句提示本来就不会同时出现，而「面单不同」连着报两次时
-                    // 叠着念比只念一遍更糟 —— 用户要先听完才知道是同一句。
+                    // 两句提示本来就不会同时出现，而「面单错误，请扫描正确面单」
+                    // 连着报两次时叠着念比只念一遍更糟 —— 用户要先听完才知道是同一句。
+                    //
+                    // ⚠️ 这里**没有读 `beep`**（规格 §3.3.6 要的「先滴一声」）。
+                    // 补法见类注释：`ToneGenerator`，不是音频文件。
                     //
                     // 引擎还没就绪时这次调用会静默失败，**这是可接受的**：
                     // 播报是尽力而为，Dart 侧也按成功处理（见 RecorderGateway.speak）。
