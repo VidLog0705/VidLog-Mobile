@@ -142,6 +142,33 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 表盘刻度画到哪 —— 设备的真实上限，问不到时用 [zoomMaxRatio]。
   double _maxZoom = zoomMaxRatio;
 
+  /// 表盘的**左端** —— 设备的真实下限（规格 §3.1.2）。
+  ///
+  /// 2026-09-22 起不是常数：原生层改成优先挑带超广角的双/三镜头设备，
+  /// 那时是 **0.5**。问不到就是 1.0，也就是「这台设备没有超广角」，
+  /// 表盘左半圈画成平的。
+  double _minZoom = zoomMinRatio;
+
+  /// 半圆刻度盘现在是不是摊开着（需求方 2026-09-22：收进【对焦】按钮）。
+  ///
+  /// 之前表盘是**常驻**的 —— 压在取景画面上，挡着用户看面单。
+  bool _dialOpen = false;
+
+  /// 上一次响过拨轮声的那个刻度（取整到 0.1）。
+  ///
+  /// **滑过一格响一声**，不是每次 `onPanUpdate` 都响 —— 后者一秒能响几十下，
+  /// 那是噪音不是反馈。用的判据就是规格 §3.1.2 那句「每个刻度 0.1」。
+  int? _lastDetentTick;
+
+  /// 上一次重新对焦的时刻（表盘滑动时）。
+  ///
+  /// **节流**：拖动时每帧都对焦既没意义（相机来不及合焦）又会把配置线程压满。
+  /// 手指抬起时再补一次最终的（见 [_onZoomEnd]）。
+  DateTime? _lastFocusAt;
+
+  /// 滑动时两次重新对焦之间至少隔多久。
+  static const _focusThrottle = Duration(milliseconds: 250);
+
   /// 当前会话已录时长。
   ///
   /// 曾经用 `ValueNotifier` 想省掉每秒重建 —— **那是白费**：
@@ -500,6 +527,12 @@ class _RecorderPageState extends State<RecorderPage> {
       await _coordinator?.speak(announcement);
     }
 
+    // 换栏就收起表盘：它属于刚才那一页。
+    //
+    // ⚠️ 必须明写这一句，不能指望「关相机顺手就收了」—— 发货 ↔ 退货**不关相机**
+    // （见下），那条路上没有任何东西会碰表盘。
+    if (_dialOpen && mounted) setState(_closeDial);
+
     const workTabs = {1, 2};
 
     // 进了采集栏就记下「现在这一栏是发货还是退货」，**切走时不改回去** ——
@@ -552,12 +585,14 @@ class _RecorderPageState extends State<RecorderPage> {
 
       await coordinator.openCamera();
 
-      // 相机开起来之后才问得到设备上限（规格 §3.1.2）。
-      await _readDeviceMaxZoom();
+      // 相机开起来之后才问得到设备范围（规格 §3.1.2）。
+      await _readDeviceZoomRange();
 
       if (!mounted) return;
       setState(() {
         _zoom = 1; // 每次进栏回到 1 倍 —— 上一趟拖到 4 倍不该留给下一件
+        // 表盘也收起来：它属于刚才那一趟（需求方 2026-09-22 收进【对焦】按钮）。
+        _closeDial();
         _status = '把面单放进取景框';
       });
     } on Object catch (error) {
@@ -597,7 +632,7 @@ class _RecorderPageState extends State<RecorderPage> {
 
       // 相机开起来之后才问得到设备上限（规格 §3.1.2）——
       // 表盘的刻度要画到设备的真实上限，不然划到底是 8 倍、画面却停在 2 倍。
-      await _readDeviceMaxZoom();
+      await _readDeviceZoomRange();
 
       if (mounted) {
         setState(() => _status = '把面单放进取景框');
@@ -609,22 +644,43 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  /// 问一次设备支持的变焦上限，用来定表盘刻度（规格 §3.1.2）。
+  /// 问一次设备支持的变焦范围，用来定表盘两端（规格 §3.1.2）。
   ///
   /// **拿不到就用默认值**：问了不代表问得到（Android 端的通道还没接上、
   /// 或者相机刚开、设备还没报能力）。为这个把「开始工作」弄失败是本末倒置。
-  Future<void> _readDeviceMaxZoom() async {
+  ///
+  /// 范围的取舍与不变量收在 [zoomRangeFrom] 里（有测试）——
+  /// 这里只负责把问到的两个数递过去。
+  Future<void> _readDeviceZoomRange() async {
+    double? min;
     double? max;
     try {
       max = await _gateway.maxZoom();
+      min = await _gateway.minZoom();
     } on Object {
+      // 一样失败就一样按默认值办：两端各自兜底，不必知道是谁抛的。
+      min = null;
       max = null;
     }
 
-    // `>= 1` 而不是 `> 1`：设备报 1.0 就是「不能变焦」，那也是实话，
-    // 表盘会画成划不动 —— 比骗用户「能划到 8 倍」强。
     if (!mounted) return;
-    setState(() => _maxZoom = (max != null && max >= 1) ? max : zoomMaxRatio);
+    setState(() {
+      final (lower, upper) = zoomRangeFrom(min, max);
+      _minZoom = lower;
+      _maxZoom = upper;
+    });
+  }
+
+  /// 收起表盘。**只改字段，不 setState** —— 调用方要么本来就在 `setState`
+  /// 里，要么直接把本方法递给 `setState`。
+  ///
+  /// 三个字段一起清：摊开状态、拨轮声记的「上一格」、对焦节流的时钟。
+  /// 少清后两个不会出大事，但「第一下响不响取决于上一趟拖到哪」这种事
+  /// 没必要留着 —— 那正是真机验收时会怀疑「拨轮声坏了」的东西。
+  void _closeDial() {
+    _dialOpen = false;
+    _lastDetentTick = null;
+    _lastFocusAt = null;
   }
 
   /// 用户滑动半圆刻度盘。
@@ -632,11 +688,59 @@ class _RecorderPageState extends State<RecorderPage> {
     // 先更新表盘再发命令：原生变焦是异步的，等它回来再画会明显跟手不上。
     setState(() => _zoom = ratio);
 
+    // ── 拨轮声 ──
+    //
+    // 跟着**语音播报**那个开关（它是全 App 唯一的声音开关）：用户说「嫌吵」
+    // 的时候要能一次关掉所有声音，而不是发现还有个表盘在响。
+    // ⚠️ 设置页那张卡的说明里必须写清这一点，否则那句话就变成假话。
+    final tick = (ratio * 10).round();
+    if (tick != _lastDetentTick) {
+      _lastDetentTick = tick;
+      if (_voiceOn) {
+        unawaited(_gateway.playDetentSound().catchError(
+          (Object error) => _log('⚠️ 拨轮声失败：$error'),
+        ));
+      }
+    }
+
     try {
       await _gateway.setZoom(ratio);
     } on Object catch (error) {
       // 变焦失败不该中断录制（原生层也是这个态度），只留一条日志。
       _log('⚠️ 变焦失败：$error');
+    }
+
+    await _refocusThrottled();
+  }
+
+  /// 手指从表盘上抬起：**补一次对焦**。
+  ///
+  /// 滑动过程中是节流着对的，手指停下的那一刻才是最终位置 ——
+  /// 那一下必须让它实，不然用户看到的是「松手之后画面才是清楚的」。
+  Future<void> _onZoomEnd() async {
+    _lastFocusAt = DateTime.now();
+    await _refocus();
+  }
+
+  /// 节流版的 [_refocus]（见 [_focusThrottle]）。
+  Future<void> _refocusThrottled() async {
+    final now = DateTime.now();
+    final last = _lastFocusAt;
+    if (last != null && now.difference(last) < _focusThrottle) return;
+
+    _lastFocusAt = now;
+    await _refocus();
+  }
+
+  /// 重新对焦到画面正中。规格 §3.1.2：「无论怎么滑都自动对焦」。
+  ///
+  /// 倍率一变，原来对好的那点就不实了 —— 所以每滑一段都要重对一次。
+  /// 失败只记一条日志：对不上焦是小事，**不能让它把录制搞坏**（I4 的精神）。
+  Future<void> _refocus() async {
+    try {
+      await _gateway.focusNow();
+    } on Object catch (error) {
+      _log('⚠️ 对焦失败：$error');
     }
   }
 
@@ -656,6 +760,7 @@ class _RecorderPageState extends State<RecorderPage> {
         _status = '已结束工作';
         _askingToContinue = false;
         _elapsed = Duration.zero;
+        _closeDial(); // 结束工作 = 相机要关了，表盘没有存在的余地
       });
     }
     await _refreshDiagnostics();
@@ -1489,13 +1594,20 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (showPreview)
+            // 表盘摊开时占**最上面**，整块压住取景画面上方。
+            //
+            // ⚠️ 它必须留在这一列里、**不能改成叠在画面上的浮层**：
+            // 压在取景框正中会挡住条码（面单必须放进中心框才认得到），
+            // 而挡住的后果用户只会看到「扫不出来」，看不出是界面盖的。
+            if (showPreview && _dialOpen)
               Align(
                 alignment: Alignment.centerRight,
                 child: ZoomDial(
                   ratio: _zoom,
+                  minZoom: _minZoom,
                   maxZoom: _maxZoom,
                   onChanged: _onZoomChanged,
+                  onEnd: _onZoomEnd,
                 ),
               ),
 
@@ -1517,6 +1629,18 @@ class _RecorderPageState extends State<RecorderPage> {
             //
             // 时长兜底那个【停止】/【继续】问询还在（规格 §3.3.4），
             // 但它只在问询时出现，不是常驻按钮。
+            // 【对焦】按钮 —— **底部【开始】按钮的右上方**（需求方 2026-09-22 裁决）。
+            //
+            // 它就摆在这一列里、【开始】的正上方且靠右，于是天然落在那个角落上，
+            // 不用 Stack、不会重叠、也不会在小屏上把【开始】挤出去。
+            //
+            // 只在相机开着时出现：没画面的时候调焦是件没意义的事。
+            if (showPreview)
+              Align(
+                alignment: Alignment.centerRight,
+                child: _focusButton(),
+              ),
+
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
@@ -1532,6 +1656,60 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             _sheetTabs(),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 【对焦】按钮：**方形、半透明**，点一下摊开表盘、再点一下收起。
+  ///
+  /// 需求方 2026-09-22 点名的形状是「方形半透明按钮」。颜色用中性的
+  /// 半透明黑而不是主题色：它压在**取景画面**上，主题色在浅色主题下
+  /// 会是一块浅底、白图标看不见（表盘读数那边踩过同一个坑）。
+  ///
+  /// **摊开与否是它自己说出来的**（图标与底色都变）：表盘占的那块地方
+  /// 在收起时是空的，如果按钮本身毫无变化，用户会怀疑刚才那下点没点上。
+  Widget _focusButton() {
+    final open = _dialOpen;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: SizedBox(
+        width: 56,
+        height: 56,
+        child: Material(
+          color: open ? Colors.black.withValues(alpha: 0.55)
+                      : Colors.black.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            key: const Key('recorder-focus-button'),
+            borderRadius: BorderRadius.circular(8),
+            // 收起时把三个字段一起清掉（见 `_closeDial` 的说明）。
+            // 摊开时不清：那样每次点开都从「没响过」开始，第一下滑动必定响一声，
+            // 而用户只是把面板收了又开。
+            onTap: () => setState(() {
+              if (_dialOpen) {
+                _closeDial();
+              } else {
+                _dialOpen = true;
+              }
+            }),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.center_focus_strong,
+                  size: 22,
+                  color: Colors.white.withValues(alpha: open ? 1.0 : 0.85),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  '对焦',
+                  style: TextStyle(fontSize: 11, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1837,8 +2015,8 @@ class _RecorderPageState extends State<RecorderPage> {
                   : null,
               title: const Text('语音播报'),
               subtitle: const Text(
-                '扫到不是同一件的包裹时出声提醒（规格 §3.3.2 错码保护）。'
-                '旁边有人、或者嫌吵时关掉。',
+                '扫到不是同一件的包裹时出声提醒（规格 §3.3.2 错码保护），'
+                '表盘滑过刻度时的「咔哒」声也归它管。旁边有人、或者嫌吵时关掉。',
               ),
             ),
             const Text(

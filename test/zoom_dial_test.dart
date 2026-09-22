@@ -161,6 +161,71 @@ void main() {
     });
   });
 
+  group('★ 设备报回来的范围 → 表盘两端', () {
+    test('双镜头设备：0.5 → 上限', () {
+      expect(zoomRangeFrom(0.5, 4.0), (0.5, 4.0));
+    });
+
+    test('只有广角镜头：下限 1.0，左半圈是平的', () {
+      expect(zoomRangeFrom(1.0, 4.0), (1.0, 4.0));
+    });
+
+    test('问不到（通道没接、相机没开）时两端各自兜底', () {
+      // 上限兜底是 zoomMaxRatio，下限兜底是 1.0 —— 两者不能互相顶替：
+      // 一个问不到不代表另一个也问不到。
+      expect(zoomRangeFrom(null, null), (zoomMinRatio, zoomMaxRatio));
+      expect(zoomRangeFrom(null, 4.0), (zoomMinRatio, 4.0));
+      expect(zoomRangeFrom(0.5, null), (0.5, zoomMaxRatio));
+    });
+
+    test('★ 报了个大于 1 的下限也不认 —— 左半圈会倒着走', () {
+      // 原生层理论上不会这么报，但这是**外部数据**。认了 2 的话，
+      // 表盘左半圈会变成「越往左画面越小」，而右半圈从 2 起 —— 两段接不上。
+      expect(zoomRangeFrom(2.0, 4.0), (zoomMinRatio, 4.0));
+    });
+
+    test('报 0 / 负数 / 非数都不认', () {
+      for (final bad in [0.0, -1.0, double.nan]) {
+        expect(zoomRangeFrom(bad, 4.0), (zoomMinRatio, 4.0), reason: '下限 $bad');
+      }
+    });
+
+    test('★ 上下限反了也不能让下限大于上限', () {
+      // `num.clamp(下限, 上限)` 在下限大于上限时**会抛** —— 而表盘里就有
+      // 一句 `ratio.clamp(minZoom, maxZoom)`（`ZoomDial.build`）。
+      // 这条守的就是「别把一份能把自己搞崩的范围递给表盘」。
+      final (lower, upper) = zoomRangeFrom(8.0, 0.5);
+      expect(lower, zoomMinRatio);
+      expect(upper, zoomMaxRatio);
+      expect(lower, lessThanOrEqualTo(upper));
+    });
+
+    test('★ 任何输入下都不变量都成立：0 < 下限 ≤ 1 ≤ 上限', () {
+      final inputs = <double?>[null, 0.0, 0.3, 0.5, 1.0, 1.5, 2.0, 8.0, -1.0, double.nan];
+
+      for (final min in inputs) {
+        for (final max in inputs) {
+          final (lower, upper) = zoomRangeFrom(min, max);
+          expect(lower, greaterThan(0), reason: 'min=$min max=$max');
+          expect(lower, lessThanOrEqualTo(1), reason: 'min=$min max=$max');
+          expect(upper, greaterThanOrEqualTo(1), reason: 'min=$min max=$max');
+          expect(lower, lessThanOrEqualTo(upper), reason: 'min=$min max=$max');
+        }
+      }
+    });
+
+    test('表盘拿到任何一份范围都不会在 clamp 上抛', () {
+      // 上面那条不变量的**用途**在这里：`clamp(下限, 上限)` 不抛。
+      for (final min in [null, 0.0, 2.0, 8.0]) {
+        for (final max in [null, 0.5, 1.0, 4.0]) {
+          final (lower, upper) = zoomRangeFrom(min, max);
+          expect(() => 3.0.clamp(lower, upper), returnsNormally,
+              reason: 'min=$min max=$max → ($lower, $upper)');
+        }
+      }
+    });
+  });
+
   test('★ 从左划到右是单调递增的', () {
     // 单调是「跟手」的前提：中间任何一处回跳，手感就是错的。
     var previous = 0.0;
