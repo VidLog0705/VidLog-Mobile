@@ -204,4 +204,70 @@ void main() {
       expect(await videoBytesOnDisk('${temp.path}/不存在'), 0);
     });
   });
+
+  /// 视频记录那一页的搜索框（需求方 2026-09-23 照界面草图加）。
+  ///
+  /// 这里守的是**匹配的字就是屏幕上真有的字**：列表副标题上写着 `09-23`，
+  /// 那么敲 `09-23` 就必须搜得到。两处各写一套格式的话，
+  /// 屏幕上明明有却搜不出来 —— 用户只会以为搜索坏了（踩坑 #13）。
+  group('按单号或日期搜（纯本地，不走许可）', () {
+    RecordingSession session({
+      String waybill = 'SF1000000001',
+      String sessionId = 'sess-1',
+      required DateTime startedAt,
+    }) =>
+        RecordingSession(
+          sessionId: sessionId,
+          waybill: WaybillNumber.parse(waybill),
+          startedAt: startedAt,
+          duration: const Duration(minutes: 5),
+          bytes: 0,
+          segmentCount: 1,
+          evidenceIds: const ['e1'],
+        );
+
+    final target = session(startedAt: DateTime(2026, 9, 23, 14, 5));
+
+    test('★ 副标题上那一段日期，敲进去搜得到', () {
+      // 列表上显示的就是 `09-23`（见 `dayStamp`）。它必须能搜。
+      expect(dayStamp(target.startedAt), '09-23');
+      expect(matchesQuery(target, '09-23'), isTrue);
+    });
+
+    test('⚠️ 敲完整日期也搜得到 —— 只认 MM-DD 的话会「一条都搜不到」', () {
+      // 用户更可能敲这种形式。搜不到和搜索坏了在用户眼里是同一件事。
+      expect(matchesQuery(target, '2026-09-23'), isTrue);
+    });
+
+    test('单号按**模糊**匹配（规格 §3.8：精确 / 前缀 / 模糊）', () {
+      expect(matchesQuery(target, 'SF1000000001'), isTrue, reason: '精确');
+      expect(matchesQuery(target, 'SF100'), isTrue, reason: '前缀');
+      expect(matchesQuery(target, '000001'), isTrue, reason: '模糊');
+    });
+
+    test('别的单号、别的日子都搜不到', () {
+      expect(matchesQuery(target, 'SF999'), isFalse);
+      expect(matchesQuery(target, '09-24'), isFalse);
+      expect(matchesQuery(target, '2026-09-24'), isFalse);
+    });
+
+    test('空搜索词 = 不过滤（不是「什么都搜不到」）', () {
+      // 这一条是**最容易写反**的：空串当匹配失败的话，搜索框一空整页就空了。
+      expect(matchesQuery(target, ''), isTrue);
+      expect(matchesQuery(target, '   '), isTrue);
+    });
+
+    test('大小写不敏感', () {
+      expect(matchesQuery(target, 'sf100'), isTrue);
+    });
+
+    test('会话 id 那一支也得算数', () {
+      // 列表上「单号为空就显示会话 id」（见 `_recordsCard`），所以那一串
+      // 也算「界面上真有的字」。这条钉的是 `matchesQuery` 里会话 id 那一支 ——
+      // 去掉它这条就红。
+      // （构造不出「单号为空」的会话：`WaybillNumber.parse` 空串直接抛，
+      //  所以这里用一条有单号的会话来钉那一支。）
+      expect(matchesQuery(target, 'sess-1'), isTrue);
+    });
+  });
 }

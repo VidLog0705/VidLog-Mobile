@@ -269,10 +269,18 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 盘上视频的实际占用（含未收尾的片段）。
   int _videoBytes = 0;
 
-  /// 录像记录列表：筛选 / 每页条数 / 当前页（0 起）。
+  /// 视频记录列表：搜索词 / 筛选 / 每页条数 / 当前页（0 起）。
   bool _recordsTodayOnly = false;
   int _recordsPageSize = 5;
   int _recordsPage = 0;
+
+  /// 视频记录的搜索词（单号或日期）。
+  ///
+  /// **纯本地筛选，不查网、不查许可**（文档 §04 的 L8：未激活 / 试用到期 /
+  /// 校验失败都不得挡住检索）。判定在 `recording_totals.dart` 的
+  /// `matchesQuery` 里，那里有测试。
+  final TextEditingController _recordsSearch = TextEditingController();
+  String _recordsQuery = '';
 
   /// 采集页底部抽屉展开的是哪一块；null = 都收着。
   ///
@@ -293,6 +301,7 @@ class _RecorderPageState extends State<RecorderPage> {
     _retryTimer?.cancel();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
+    _recordsSearch.dispose();
     super.dispose();
   }
 
@@ -1361,7 +1370,7 @@ class _RecorderPageState extends State<RecorderPage> {
         _ => '设置',
       };
 
-  /// 备份页：本机身份 → 三个统计 → 电脑备份 → 录像记录。
+  /// 备份页：本机身份 → 三个统计 → 电脑备份 → 视频记录。
   ///
   /// ## 为什么这一页先做，而且今天只能做成这样
   ///
@@ -1393,39 +1402,80 @@ class _RecorderPageState extends State<RecorderPage> {
 
   // ── ① 本机身份 ───────────────────────────────
 
-  /// 本机名 + 局域网 IP。
+  /// 本机名 + 局域网 IP —— 两个**带标签的胶囊**（需求方 2026-09-23 照界面草图定）。
   ///
   /// 本机名是给**电脑端**区分机位用的（需求方 2026-09-22），所以它得可改，
   /// 而且改完必须落盘 —— 只在内存里留着的名字，断联重连一次就没了，
   /// 电脑端那台机位就变成一个没人认得的新设备。
+  ///
+  /// 标签（「机位名」「手机局域网IP」）是这次新加的：光看值，
+  /// 这两串东西一个是名字、一个是地址，得猜。
   Widget _identityCard() {
     final identity = _identity;
 
     return Card(
-      child: ListTile(
-        leading: const Icon(Icons.smartphone),
-        title: Text(identity?.deviceName ?? defaultDeviceName),
-        subtitle: Text(
-          _lanIp == null ? '未连局域网' : '局域网 $_lanIp',
-          style: const TextStyle(fontSize: 12),
-        ),
-        trailing: IconButton(
-          tooltip: '改本机名',
-          icon: const Icon(Icons.edit_outlined),
-          onPressed: identity == null ? null : _editDeviceName,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        child: Row(
+          children: [
+            const Icon(Icons.smartphone),
+            const SizedBox(width: 8),
+            // `Wrap` 而不是 `Row`：两个胶囊在窄屏上排不下一行，
+            // 而**挤成省略号比换行糟得多** —— 这两个值一个字都不能缺。
+            Expanded(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _identityChip('机位名', identity?.deviceName ?? defaultDeviceName),
+                  _identityChip('手机局域网IP', _lanIp ?? '未连局域网'),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: '改本机名',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: identity == null ? null : _editDeviceName,
+            ),
+          ],
         ),
       ),
     );
   }
 
-  // ── ② 今日 / 全部 / 总占用 ─────────────────────
+  /// 身份行上的一个胶囊：小字标签 + 值。
+  ///
+  /// 标签与值分成两个 `Text`（不拼成一串）—— 拼起来的话，
+  /// 「未命名机位」这个值在界面上就不作为一个整体存在了，测试和人都找不着它。
+  Widget _identityChip(String label, String value) => Chip(
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$label ',
+              style: const TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+            Text(value, style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+      );
+
+  // ── ② 本机 / 本机全部 / 总占用 ─────────────────
 
   /// 三个数字并排。
   ///
-  /// 三个口径都是**需求方 2026-09-22 定的**，不是这里随手挑的：
-  /// - **今日** = 起录时间落在今天 0:00~23:59 的条数
-  /// - **全部** = 录到的总条数，**一个单号从开始到结束算一条**（不是索引行数）
+  /// 三个口径都是**需求方 2026-09-22 定的**，2026-09-23 照草图改了前两块的标字：
+  /// - **本机** = 起录时间落在今天 0:00~23:59 的条数
+  /// - **本机全部** = 录到的总条数，**一个单号从开始到结束算一条**（不是索引行数）
   /// - **总占用** = 盘上视频的**实际**大小；传到电脑后删掉手机上的，就按删后的算
+  ///
+  /// ⚠️ 第一块底下写着「今日录的」：草图给它的标字是「本机」，
+  /// 而这个数字只数**今天**那一天的 —— 不加这一句，它会读成「本机上全部」，
+  /// 与旁边那块重复。**这一处是照着草图落的最容易歧义的一个**，
+  /// 需求方要是不想要这三个字，删掉即可（数字本身不用动）。
   ///
   /// ⚠️ 总占用可能**大于**上面那些条的大小之和 —— 它含还没走完收尾的孤儿片段。
   /// 它答的是「这些视频在手机上占了多少地方」，不是「已入库的占了多少」。
@@ -1436,9 +1486,9 @@ class _RecorderPageState extends State<RecorderPage> {
         padding: const EdgeInsets.symmetric(vertical: 16),
         child: Row(
           children: [
-            _statCell('今日', '$_todayCount 条'),
+            _statCell('本机', '$_todayCount 条', note: '今日录的'),
             _thinDivider(),
-            _statCell('全部', '${_sessions.length} 条'),
+            _statCell('本机全部', '${_sessions.length} 条'),
             _thinDivider(),
             _statCell('总占用', _sizeLabel(_videoBytes), note: '手机上现存'),
           ],
@@ -1492,6 +1542,23 @@ class _RecorderPageState extends State<RecorderPage> {
     // 「配对过」与「填了地址」是**两件事**：填了地址只说明知道去哪儿找它，
     // 配对过才说明它认这台手机的凭据（能把包收下）。
     final paired = (identity?.credential ?? '').isNotEmpty;
+    final online = hasHost && paired && _hostOnline;
+
+    // 还有多少条没备份上去 —— **这是整页最要紧的那个数字**
+    // （需求方 2026-09-23 照草图加的：「58个未备份，连接后自动备份」）。
+    //
+    // 判定与列表上那个小标**共用 `summarizeUploadState`**：两处各写一套的话，
+    // 迟早出现「上面说 3 个没备份、下面每一条都写着已备份」，而用户没有任何
+    // 办法判断哪个才对。
+    //
+    // ⚠️ 归档状态还没读出来（`_archiveRecords` 空）时，这里会把所有录像都算成
+    // 未备份。**这个方向是对的** —— 与 `summarizeUploadState` 同一条规矩：
+    // 宁可说「还没备份」，也不能说「已备份」。
+    final pending = _sessions
+        .where((session) =>
+            summarizeUploadState(session.evidenceIds, _archiveRecords) !=
+            UploadState.archived)
+        .length;
 
     return Card(
       child: Padding(
@@ -1507,9 +1574,65 @@ class _RecorderPageState extends State<RecorderPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
+                _hostBadge(hasHost, paired),
+                if (!online) ...[
+                  const SizedBox(width: 6),
+                  // ⚠️ 只是个「这儿有事要处理」的记号，**不说是什么事**
+                  // —— 具体是哪一件，写在下面那行和按钮上。
+                  // 一个只有感叹号、别的什么都不说的图标，用户只能猜（踩坑 #13）。
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    size: 18,
+                    color: Colors.orange,
+                  ),
+                ],
+              ],
+            ),
+            if (_sessions.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                pending > 0
+                    ? '$pending 个未备份，${paired ? '连上电脑后会自动传过去' : '连接后自动备份'}'
+                    : '${_sessions.length} 个都已经备份到电脑端了。',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: pending > 0 ? Colors.black87 : Colors.green[700],
+                ),
+              ),
+            ],
+            _kv('电脑端名字', name.isEmpty ? '未填' : name),
+            _kv('局域网 IP', hasHost ? address : '未填'),
+            _kv(
+              '配对',
+              paired ? '已配对' : (hasHost ? '未配对 —— 点下面【配对电脑】' : '未配对'),
+            ),
+            if (_nextRetryAt != null)
+              _kv('下次自动重试', _stamp(_nextRetryAt!)),
+            const SizedBox(height: 8),
+            Text(
+              !paired
+                  ? '还没和电脑端配对，录像传不上去。'
+                      '这些录像现在只在这台手机上，手机丢了就没了。'
+                  : (online
+                      // I1 的原文口径：**收到回执之前不清理**。这里说的是同一件事，
+                      // 只是用用户的话说。清理本身是 M6 的事，所以末句如实写着。
+                      ? '收尾好的录像会自己传到电脑端。'
+                          '在收到电脑端的回执之前，手机上那份不会删 —— '
+                          '按保留期自动清理还没做（M6）。'
+                      : '电脑端现在不在线，可重新搜索。'
+                          '收尾好的录像会在连上之后自己传过去。'),
+              style: const TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            // `Wrap` 而不是 `Row`：五个按钮一行排不下，硬塞会把最后那个
+            // 挤出屏幕外面 —— 而**被挤出去的那个会显得像根本没做**。
+            Wrap(
+              spacing: 4,
+              children: [
                 FilledButton.tonalIcon(
-                  // 没配对就点不动，而**为什么点不动**写在下面那行「配对」上 ——
-                  // 一个改了没反应的按钮和一句没头没尾的禁用一样糟（踩坑 #13）。
+                  // 没配对就点不动，而**为什么点不动**写在上面那行「配对」和
+                  // 那段说明里 —— 一个改了没反应的按钮和一句没头没尾的禁用一样糟
+                  // （踩坑 #13）。
                   onPressed: (!paired || _uploading) ? null : () => _runUploads(manual: true),
                   icon: _uploading
                       ? const SizedBox(
@@ -1520,44 +1643,34 @@ class _RecorderPageState extends State<RecorderPage> {
                       : const Icon(Icons.cloud_upload_outlined, size: 18),
                   label: Text(_uploading ? '备份中…' : '立即备份'),
                 ),
-              ],
-            ),
-            _kv('电脑端名字', name.isEmpty ? '未填' : name),
-            _kv(
-              '局域网 IP',
-              hasHost ? address : '未填',
-              trailing: _hostBadge(hasHost),
-            ),
-            _kv(
-              '配对',
-              paired ? '已配对' : (hasHost ? '未配对 —— 点下面【配对电脑】' : '未配对'),
-            ),
-            if (_nextRetryAt != null)
-              _kv('下次自动重试', _stamp(_nextRetryAt!)),
-            const SizedBox(height: 8),
-            Text(
-              paired
-                  // I1 的原文口径：**收到回执之前不清理**。这里说的是同一件事，
-                  // 只是用用户的话说。清理本身是 M6 的事，所以末句如实写着。
-                  ? '收尾好的录像会自己传到电脑端。'
-                      '在收到电脑端的回执之前，手机上那份不会删 —— '
-                      '按保留期自动清理还没做（M6）。'
-                  : '还没和电脑端配对，录像传不上去。'
-                      '这些录像现在只在这台手机上，手机丢了就没了。',
-              style: const TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
                 TextButton(
-                  onPressed: identity == null ? null : _editHost,
-                  child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
+                  onPressed: identity == null ? null : _probeHost,
+                  child: const Text('重新搜索'),
                 ),
                 TextButton(
                   onPressed: identity == null ? null : _pairHost,
                   child: Text(paired ? '重新配对' : '配对电脑'),
                 ),
+                TextButton(
+                  onPressed: identity == null ? null : _editHost,
+                  child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
+                ),
+                // ⚠️ **这个按钮现在是禁用状态，而且不会自己好** ——
+                // 草图上有它，但「扫码连接」要扫的是**电脑端显示的二维码**，
+                // 而电脑端今天只解码（面单）、不出码。写在这里而不是删掉：
+                // 需求方画了它，就该看得见「它为什么还不亮」，
+                // 而不是以为漏做了（踩坑 #13 的另一种形态）。
+                // 电脑端出了二维码之后，这里改成开扫、把地址回填给 `_pairHost`。
+                const TextButton(
+                  onPressed: null,
+                  child: Text('扫码连接'),
+                ),
               ],
+            ),
+            const Text(
+              '「扫码连接」要等电脑端先出一个二维码（还没做）—— '
+              '现在在电脑端上能看到它的 IP，用【改电脑端地址】填进来。',
+              style: TextStyle(fontSize: 11, color: Colors.black45),
             ),
           ],
         ),
@@ -1565,12 +1678,23 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  /// 「连接 / 离线」小标，贴在 IP 那一行的右端。
+  /// 连通状态小标，贴在「电脑备份」那一行的右端（2026-09-23 照草图从 IP 行挪上来的）。
   ///
-  /// **没配对就什么也不显示。** 显示「离线」会让人以为「配对过、只是没连上」，
-  /// 而真实情况是**根本没配过对** —— 这两件事要修的东西不一样。
-  Widget _hostBadge(bool hasHost) {
-    if (!hasHost) return const SizedBox.shrink();
+  /// **没配对就说「未连接」，不说「离线」。** 「离线」会让人以为
+  /// 「配对过、只是没连上」，而真实情况是**根本没配过对** ——
+  /// 这两件事要修的东西不一样。草图这里写的是「未连接」，正是这个意思，
+  /// 所以这个标从「什么都不显示」改成了照写。
+  Widget _hostBadge(bool hasHost, bool paired) {
+    if (!hasHost || !paired) {
+      return const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.link_off, size: 14, color: Colors.grey),
+          SizedBox(width: 4),
+          Text('未连接', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        ],
+      );
+    }
 
     if (_probingHost) {
       return const Text('探测中…', style: TextStyle(fontSize: 12, color: Colors.black45));
@@ -1634,9 +1758,9 @@ class _RecorderPageState extends State<RecorderPage> {
         UploadState.pending => (text: '未备份', color: Colors.grey),
       };
 
-  // ── ④ 录像记录 ───────────────────────────────
+  // ── ④ 视频记录 ───────────────────────────────
 
-  /// 录像记录列表：筛选 + 分页。
+  /// 视频记录列表：搜索 + 筛选 + 分页。
   ///
   /// 分页是需求方 2026-09-22 定的（每页 5/10/15，左右箭头换页）——
   /// 不是为了性能，是因为手机一屏放不下，而**总页数得看得见**。
@@ -1646,9 +1770,17 @@ class _RecorderPageState extends State<RecorderPage> {
   Widget _recordsCard() {
     // 「今日」的判据与上面那个统计**共用 `isSameDay`** —— 两处各写一套，
     // 迟早会出现「上面写 3 条、下面列 2 条」而用户无从判断谁对。
-    final filtered = _recordsTodayOnly
-        ? _sessions.where((s) => isSameDay(s.startedAt, DateTime.now())).toList()
-        : _sessions;
+    //
+    // 搜索是**纯本地筛选**：不查网、不查许可（文档 §04 的 L8 ——
+    // 未激活 / 试用到期 / 校验失败都不得挡住检索与回放）。
+    // 判定在 `recording_totals.dart` 的 `matchesQuery`，那里有测试。
+    final query = _recordsQuery.trim();
+    final filtered = [
+      for (final session in _sessions)
+        if ((!_recordsTodayOnly || isSameDay(session.startedAt, DateTime.now())) &&
+            matchesQuery(session, query))
+          session,
+    ];
 
     final pageCount = filtered.isEmpty
         ? 1
@@ -1672,7 +1804,7 @@ class _RecorderPageState extends State<RecorderPage> {
               children: [
                 Expanded(
                   child: Text(
-                    '录像记录（共 ${filtered.length} 条）',
+                    '视频记录（共 ${filtered.length} 条）',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
@@ -1694,11 +1826,46 @@ class _RecorderPageState extends State<RecorderPage> {
               ],
             ),
           ),
+          // 搜索框（需求方 2026-09-23 照草图加）：单号或日期，**纯本地筛**。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: TextField(
+              controller: _recordsSearch,
+              style: const TextStyle(fontSize: 14),
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: '搜索单号或日期',
+                hintStyle: const TextStyle(fontSize: 13),
+                prefixIcon: const Icon(Icons.search, size: 20),
+                suffixIcon: query.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: '清空搜索',
+                        icon: const Icon(Icons.clear, size: 18),
+                        onPressed: () => setState(() {
+                          _recordsSearch.clear();
+                          _recordsQuery = '';
+                          _recordsPage = 0;
+                        }),
+                      ),
+                border: const OutlineInputBorder(),
+              ),
+              onChanged: (value) => setState(() {
+                _recordsQuery = value;
+                // 和换筛选同一个理由：换了搜索词就回第一页。
+                _recordsPage = 0;
+              }),
+            ),
+          ),
           if (rows.isEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Text(
-                _recordsTodayOnly ? '今天还没有录完的录像。' : '本机还没有收尾入库的录像。',
+                // 搜不到时**必须说出来搜的是什么**：一片空白看起来像这一页坏了，
+                // 而不是「手机上确实没有这个单号」（踩坑 #13）。
+                query.isNotEmpty
+                    ? '没有找到和「$query」有关的录像。'
+                    : (_recordsTodayOnly ? '今天还没有录完的录像。' : '本机还没有收尾入库的录像。'),
                 style: const TextStyle(fontSize: 13, color: Colors.black54),
               ),
             )
@@ -2982,8 +3149,11 @@ class _RecorderPageState extends State<RecorderPage> {
   static String _two(int value) => value.toString().padLeft(2, '0');
 
   /// `MM-DD HH:mm`。备份页一行里塞得下，且不需要年份 —— 手机上的东西都是最近的。
+  ///
+  /// 日期那一段走 [dayStamp]：搜索框要按**屏幕上真有的字**匹配，
+  /// 两处各写一套的话，写着 `09-23` 却搜不出来（见 `matchesQuery`）。
   static String _stamp(DateTime at) =>
-      '${_two(at.month)}-${_two(at.day)} ${_two(at.hour)}:${_two(at.minute)}';
+      '${dayStamp(at)} ${_two(at.hour)}:${_two(at.minute)}';
 
   /// `年/月/日/时/分/秒`，六段都要带（规格 §3.2.6）。
   ///

@@ -116,6 +116,37 @@ int countToday(List<RecordingSession> sessions, DateTime now) =>
 bool isSameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
 
+/// `MM-DD` —— 列表副标题里那一段日期。
+///
+/// **显示与匹配必须走同一个函数。** 两处各写一套的话，屏幕上明明写着
+/// `09-23` 却搜不出来，用户只会以为搜索坏了（踩坑 #13 的同一条）。
+String dayStamp(DateTime at) => '${_two(at.month)}-${_two(at.day)}';
+
+String _two(int value) => value.toString().padLeft(2, '0');
+
+/// 一条录像要不要出现在搜索结果里（规格 §3.8 的两个维度：单号、日期）。
+///
+/// 匹配的是**那一行界面上真有的字**：单号（没有单号时列表显示会话 id）+ 时间。
+///
+/// 日期收两种写法：`09-23`（副标题上的形式）与 `2026-09-23`（用户更可能
+/// 敲的形式）。只认前一种的话，敲完整日期会**一条都搜不到** —— 而「搜不到」
+/// 和「搜索坏了」在用户眼里是同一件事。
+///
+/// ⚠️ 这是**纯本地筛选**，不查网、不查许可（文档 §04 的 L8：未激活 /
+/// 试用到期 / 校验失败都不得挡住检索与回放）。这里加任何许可判断都是越线。
+bool matchesQuery(RecordingSession session, String query) {
+  final q = query.trim().toLowerCase();
+  if (q.isEmpty) return true;
+
+  final at = session.startedAt;
+  final fullDate = '${at.year}-${_two(at.month)}-${_two(at.day)}';
+
+  return session.waybill.value.toLowerCase().contains(q) ||
+      session.sessionId.toLowerCase().contains(q) ||
+      dayStamp(at).contains(q) ||
+      fullDate.contains(q);
+}
+
 /// 盘上视频的实际占用。
 ///
 /// 需求方 2026-09-22 定的口径：**「按实际存储到手机的视频大小总量计算，

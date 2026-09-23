@@ -35,13 +35,17 @@ void main() {
 
     // ② 三个统计。数字本身才是这一块的实质内容。
     //
-    // ⚠️ 这里不用 `findsNWidgets(2)` 去数「今日 / 全部 各出现两次」——
-    // 它们在下面那张卡的筛选器上还有一个。`ListView` 懒构建，下面那张卡
-    // 此刻还没被 build，数出来只有 1。**筛选器上的那对字在下面单独验。**
-    expect(find.text('今日'), findsWidgets);
-    expect(find.text('全部'), findsWidgets);
+    // 标字是需求方 2026-09-23 照界面草图定的：本机 / 本机全部 / 总占用。
+    // 第一块底下那句「今日录的」**是这里自己加的**（草图只有「本机」两个字）——
+    // 光写「本机」会被读成「本机上全部」，和旁边那块撞车。理由写在 `_totalsCard`。
+    //
+    // ⚠️ 下面那张卡的筛选器上还有一个「全部」，容易和这里的「本机全部」
+    // 看串。`ListView` 懒构建，此刻它还没被 build，所以这几条只可能命中的是
+    // 统计那一块。**筛选器上那对字在下面单独验。**
+    expect(find.text('本机'), findsOneWidget);
+    expect(find.text('本机全部'), findsOneWidget);
     expect(find.text('总占用'), findsOneWidget);
-    expect(find.text('0 条'), findsNWidgets(2), reason: '空机上今日和全部都是 0 条');
+    expect(find.text('0 条'), findsNWidgets(2), reason: '空机上本机和本机全部都是 0 条');
     expect(find.text('0 B'), findsOneWidget, reason: '空机上总占用是 0 B');
 
     // ③ 电脑备份。没配对就必须**明说传不上去**，而不是显示一个看起来正常的
@@ -51,6 +55,10 @@ void main() {
     expect(find.textContaining('录像传不上去'), findsOneWidget);
 
     // 没配对就不该有任何连通状态 —— 显示「离线」会让人以为「配过对、只是没连上」。
+    //
+    // ⚠️ 但**要显示「未连接」**：这是需求方 2026-09-23 照草图定的，
+    // 而且它说的正是实话（没配过对），不会和「离线」混淆。
+    expect(find.text('未连接'), findsOneWidget);
     expect(find.text('离线'), findsNothing);
     expect(find.text('连接'), findsNothing);
     expect(find.text('探测中…'), findsNothing);
@@ -64,16 +72,31 @@ void main() {
       isNull,
     );
 
+    // 【扫码连接】**这一版是禁用且不会自己好的**（需求方 2026-09-23 草图上
+    // 有它，但电脑端今天不出二维码）。这条断言是**刻意钉住的**：
+    // 哪天电脑端出了码、把它接上了，这里会红 —— 那时该做的事是
+    // 顺着这条注释去改 `_hostCard`，而不是把断言删掉图个绿。
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, '扫码连接'))
+          .onPressed,
+      isNull,
+      reason: '扫码连接还没接上电脑端的二维码，不该是可点的',
+    );
+
     // ⚠️ 这一页在真机上比一屏长，而 `ListView` 是**懒构建**的：下面那张卡
     // 不滚下去压根不会被 build，`find.text` 找不到它 —— 不是它不在，
     // 是它还没建。真机上这块本来也要滑，所以这里滚一下才是如实的。
     await tester.scrollUntilVisible(
-      find.text('录像记录（共 0 条）'),
+      find.text('视频记录（共 0 条）'),
       200,
       scrollable: find.byType(Scrollable).first,
     );
 
-    expect(find.text('录像记录（共 0 条）'), findsOneWidget); // ④ 录像记录
+    expect(find.text('视频记录（共 0 条）'), findsOneWidget); // ④ 视频记录
+
+    // ⑤ 搜索框（需求方 2026-09-23 照草图加）。空的搜索框显示的是 hint。
+    expect(find.text('搜索单号或日期'), findsOneWidget);
 
     // 真正的回归守卫是这条：以后谁往这一页塞一个假装连上了的状态，这里会红。
     // 假数字在真机上会被当成真的 —— 这个项目已经吃过一次亏。
@@ -85,7 +108,7 @@ void main() {
     await tester.pumpWidget(const VidLogApp());
 
     await tester.scrollUntilVisible(
-      find.text('录像记录（共 0 条）'),
+      find.text('视频记录（共 0 条）'),
       200,
       scrollable: find.byType(Scrollable).first,
     );
@@ -115,7 +138,7 @@ void main() {
     // 真机上按 `真机验收清单.md` §1.17 核，那一条才是真正的验收。
   });
 
-  testWidgets('★ 录像记录的分页控件在这儿，档位是需求方定的 5/10/15', (WidgetTester tester) async {
+  testWidgets('★ 视频记录的分页控件在这儿，档位是需求方定的 5/10/15', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 
     // 与上一条同一个理由：这一页比一屏长，不滚下去这张卡不会被 build。
