@@ -80,7 +80,7 @@ void main() {
     expect(find.textContaining('已连接'), findsNothing);
   });
 
-  testWidgets('★ 空机上每一条录像的小标都说「未备份」，没有一条敢说「已备份」',
+  testWidgets('★ 什么都没备份的时候，整页一个「已备份」都不许出现',
       (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 
@@ -90,22 +90,29 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
 
-    // 备份状态那一格的字只有这五种可能（`_uploadLook`）。空机、没配对、
-    // 一条归档记录都没有的时候，**一个「已备份」都不许出现** ——
-    // 那是这个项目唯一不能出的那句假话（不变量 I3）。
+    // ⚠️ **这一条比它看起来弱，先读清楚它到底锁住了什么。**
+    //
+    // 空机、没配对，一条录像都没有 ⇒ **一个小标都不会被画出来**，
+    // 所以下面那四条 `findsNothing` 对「小标」而言是**平凡成立**的。
+    // 它真正挡住的是**别的地方**（电脑备份那张卡、以后新加的卡片、
+    // 页面顶上）出现一句「已备份」—— 那是这个项目唯一不能出的假话
+    // （不变量 I3，§3.4.3 ★ 来自一次真实故障）。
+    // 与上面 `expect(find.textContaining('已连接'), findsNothing)` 同一个路子。
+    //
+    // **不要**把这条读成「六段传到五段会说备份失败」验过了 —— 没有。
     for (final word in ['已备份', '备份中…', '待重试', '备份失败']) {
-      expect(find.text(word), findsNothing, reason: '空机上出现了「$word」');
+      expect(find.text(word), findsNothing, reason: '还没备份任何东西，却出现了「$word」');
     }
 
-    // ⚠️ **小标本身在这里验不了**：它是 `_uploadChip(session)` 画出来的，
+    // ⚠️ **小标本身在这里够不着**：它是 `_uploadChip(session)` 画的，
     // 而 `session` 要 `_bootstrap` 先读出 `index.jsonl` —— 那要走
     // `path_provider` 平台通道，widget 测试里没有实现（见本文件开头那条）。
-    // 所以「六段传到五段要说备份失败」那条规矩钉在它**下游**两个可测的地方：
+    // 所以那条规矩钉在它**下游**两个可测的地方：
     // `archive_summary_test.dart`（归并规则，含 ★ 那条）
     // 和 `recording_totals_test.dart`（evidenceIds 从哪来）。
-    // 剩下的接线（`_archiveRecords` 有没有赋值、小标读的是不是这个字段）
-    // 是两行赋值，且坏掉的后果是**偏保守**的（一律显示「未备份」），
-    // 真机上按 `真机验收清单.md` §1.17 核。
+    // 剩下没测的是**接线**（`_archiveRecords` 有没有赋值、小标读的是不是这个字段）——
+    // 两行赋值，且坏掉的后果**偏保守**（一律显示「未备份」，不会说「已备份」）。
+    // 真机上按 `真机验收清单.md` §1.17 核，那一条才是真正的验收。
   });
 
   testWidgets('★ 录像记录的分页控件在这儿，档位是需求方定的 5/10/15', (WidgetTester tester) async {
