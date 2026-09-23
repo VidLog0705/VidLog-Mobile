@@ -756,7 +756,8 @@ class RecordingCoordinator {
             try {
               await _gateway.autoFocusAndZoom();
             } on Object {
-              // 尽力而为（I4 的精神）。安卓那条通道整个还没接，这里必定失败。
+              // 尽力而为（I4 的精神）。设备可能不支持对焦，也可能正忙着 ——
+              // **失败不许把识别流程带下去**，否则扫到单号反而不开录了。
             }
           }
 

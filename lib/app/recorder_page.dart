@@ -1015,7 +1015,8 @@ class _RecorderPageState extends State<RecorderPage> {
         _status = '把面单放进取景框';
       });
     } on Object catch (error) {
-      // 安卓那条通道整个还没接，这里必定失败。**如实显示**，不假装。
+      // 开相机可能真的失败（没权限、相机被别的应用占着、设备忙）。
+      // **如实显示**，不假装 —— 吞掉的话屏幕上就是一片没有画面的空白。
       if (mounted) setState(() => _status = '开相机失败：$error');
     }
   }
@@ -1562,8 +1563,9 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// ⚠️ 「连接 / 离线」探的是**电脑端那台机器**（M3 已经在 8720 端口上开着的
   /// HTTP 服务），既不代表本机有网，也不代表「备份通道建好了」——
-  /// 手机端还没有一行上传代码。所以卡里同时留着一句实话（见下方
-  /// 「手机端还没有上传功能」），免得那个绿色小字被读成「我的数据已经在电脑上了」。
+  /// 上传代码（M5）2026-09-23 已经写完，所以这一页现在**直接说备份状态**
+  /// （`N 个未备份` + 每条的小标），而不是靠一句免责声明兜着。
+  /// 那个绿色小字仍然不能自己单独解释自己：**它旁边必须有那个数字。**
   Widget _hostCard() {
     final identity = _identity;
     final name = identity?.hostName ?? '';
