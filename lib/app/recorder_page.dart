@@ -1448,6 +1448,11 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// 标签与值分成两个 `Text`（不拼成一串）—— 拼起来的话，
   /// 「未命名机位」这个值在界面上就不作为一个整体存在了，测试和人都找不着它。
+  ///
+  /// ⚠️ **值是 `Flexible` + 省略号**：本机名是**用户自己敲的**，
+  /// 敲一个长名字（「三号仓西门第七个机位」）就足以把这一行撑爆 ——
+  /// 而溢出的后果是黄黑条或者整行被挤出屏幕，不是「难看一点」。
+  /// 省略号是看得见的截断，不是悄悄改掉用户的名字（名字本身照原样存着，点铅笔能看全）。
   Widget _identityChip(String label, String value) => Chip(
         visualDensity: VisualDensity.compact,
         padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -1458,7 +1463,14 @@ class _RecorderPageState extends State<RecorderPage> {
               '$label ',
               style: const TextStyle(fontSize: 11, color: Colors.black54),
             ),
-            Text(value, style: const TextStyle(fontSize: 12)),
+            Flexible(
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
           ],
         ),
       );

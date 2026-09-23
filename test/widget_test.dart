@@ -170,6 +170,35 @@ void main() {
     // `docs/真机验收清单.md` §1.12。
   });
 
+  testWidgets('★ 备份页在窄屏上不溢出（两个胶囊 + 五个按钮）', (WidgetTester tester) async {
+    // 默认测试画布是 800×600（横着的），比任何手机都宽 ——
+    // 而**布局溢出只在窄屏上才出得来**，宽画布上它永远是绿的。
+    // 390 逻辑像素 ≈ 常见手机的宽度。
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(const VidLogApp());
+    await tester.pump();
+
+    // 这一页比一屏长：不滚到底，下面那两张卡不会被 build，
+    // 也就等于没验（`ListView` 懒构建）。
+    await tester.scrollUntilVisible(
+      find.text('1/1'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    // `RenderFlex` 溢出在测试里是一条**真错误**（黄黑条那个东西），
+    // 会被记下来交给 `takeException`。宽画布上它永远绿，所以这条必须窄着跑。
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: '窄屏上溢出了 —— 多半是新加的胶囊或按钮那两处 Wrap 没兜住',
+    );
+  });
+
   // ─────────────────────────────────────────────
   // 进栏播报（需求方 2026-09-22）
   // ─────────────────────────────────────────────
