@@ -1834,8 +1834,8 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 填 / 改电脑端的地址与名字。
   ///
-  /// 地址眼下**只用于探测**（M5 做真正的配网时才会拿它去入网）；
-  /// 名字只用于显示 —— 真连没连上由探测决定，不由名字决定。
+  /// 地址既用于探测、也用于**入网配对**（M5：`_pairHost` 拿它发
+  /// `enrollRequest`）；名字只用于显示 —— 真连没连上由探测决定，不由名字决定。
   Future<void> _editHost() async {
     final identity = _identity;
     if (identity == null) return;
@@ -2822,7 +2822,7 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             const SizedBox(height: 4),
             const Text(
-              '⚠️ 现在这里只是记下你的选择 —— 真正开删要等上传备份接通（M5）。'
+              '⚠️ 现在这里只是记下你的选择 —— 真正开删要等清理执行层接通（M6）。'
               '今天不会有任何文件被删。另外【被锁定】的证据永远不清。',
               style: TextStyle(fontSize: 12),
             ),
@@ -2944,7 +2944,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
                   '【语音播报】是立刻生效的。\n'
                   '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
-                  '要等上传备份接通（M5），在那之前任何文件都不会被删。',
+                  '要等清理执行层接通（M6），在那之前任何文件都不会被删。',
           style: const TextStyle(fontSize: 12),
         ),
       ),
