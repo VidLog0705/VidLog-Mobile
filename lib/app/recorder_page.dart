@@ -17,6 +17,7 @@ import '../recording/recorder_gateway.dart';
 import '../recording/recording_coordinator.dart';
 import '../recording/recording_index.dart';
 import '../recording/recording_settings.dart';
+import '../recording/retention_setting.dart';
 import '../recording/recording_totals.dart';
 import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
@@ -114,6 +115,12 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 时长兜底档位。**与静止档位互相独立** —— 关一个不影响另一个。
   DurationFallbackSetting _durationFallback = DurationFallbackSetting.fallback;
+
+  /// 归档后的本地保留期，发货一份（规格 §3.5.2.1）。
+  RetentionSetting _retentionOutbound = RetentionSetting.fallback;
+
+  /// 归档后的本地保留期，退货一份。**与发货那份互相独立** —— 改一个不动另一个。
+  RetentionSetting _retentionReturn = RetentionSetting.fallback;
 
   /// 把时长兜底的首次询问时机缩短，好让验收不必真的等 4 分钟。
   /// **只压首次询问时机**，不动档位本身，也不碰静止档位。
@@ -324,6 +331,8 @@ class _RecorderPageState extends State<RecorderPage> {
       _mode = _settings!.mode;
       _staticStop = _settings!.staticStop;
       _durationFallback = _settings!.durationFallback;
+      _retentionOutbound = _settings!.retentionOutbound;
+      _retentionReturn = _settings!.retentionReturn;
 
       await _buildCoordinator();
 
@@ -2083,6 +2092,8 @@ class _RecorderPageState extends State<RecorderPage> {
     StaticStopSetting? staticStop,
     DurationFallbackSetting? durationFallback,
     bool? voiceEnabled,
+    RetentionSetting? retentionOutbound,
+    RetentionSetting? retentionReturn,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -2092,10 +2103,14 @@ class _RecorderPageState extends State<RecorderPage> {
       if (staticStop != null) _staticStop = staticStop;
       if (durationFallback != null) _durationFallback = durationFallback;
       if (voiceEnabled != null) settings.voiceEnabled = voiceEnabled;
+      if (retentionOutbound != null) _retentionOutbound = retentionOutbound;
+      if (retentionReturn != null) _retentionReturn = retentionReturn;
 
       settings.mode = _mode;
       settings.staticStop = _staticStop;
       settings.durationFallback = _durationFallback;
+      settings.retentionOutbound = _retentionOutbound;
+      settings.retentionReturn = _retentionReturn;
     });
 
     // ⚠️ **播报是唯一立刻生效的一项。** 它不参与任何判定（只出声），
@@ -2133,6 +2148,8 @@ class _RecorderPageState extends State<RecorderPage> {
         _modeCard(),
         const SizedBox(height: 12),
         _fallbackCard(),
+        const SizedBox(height: 12),
+        _retentionCard(),
         const SizedBox(height: 12),
         _voiceCard(),
         const SizedBox(height: 12),
@@ -2325,6 +2342,104 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  // ── ②c 归档后的本地保留期 ─────────────────────
+
+  /// 归档成功后本地留多久，**发货与退货各一份**（规格 §3.5.2.1）。
+  ///
+  /// 需求方 2026-09-23 点名要的，原话是「用下拉式选择」。这里用下拉而不是
+  /// 分段按钮，是因为它有八个档位 —— 分段按钮铺不下，会挤成一行看不清的字。
+  ///
+  /// ## 为什么手机端没有「归档层」那个下拉（电脑端有）
+  ///
+  /// 规格 §3.5.1 要求：归档层就是本机磁盘时**不提供**清理选项，
+  /// 因为那时本地这份是唯一副本。**那个危险在手机上不存在** ——
+  /// 手机的归档层是电脑端（局域网）/ NAS / 网盘，三者都在**别的设备**上。
+  /// 所以这里不摆一个「归档层」下拉：它在这台机器上没有第二种可能，
+  /// 摆上去就是个改了没反应的开关（踩坑 #13）。
+  ///
+  /// ⚠️ 手机端真正要防的是另一件事：**还没备份上去的那批绝不能删**。
+  /// 那是规格 §3.5.3① 的豁免（未成功归档的 = 唯一副本），与归档层选哪种无关。
+  Widget _retentionCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('归档后的本地保留期',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              '备份成功之后，手机上的原片再留多久。发货与退货各一份，改一份不动另一份。'
+              '保留期从「备份成功那一刻」起算，不是从录完起算。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+
+            _retentionRow(
+              key: 'settings-retention-outbound',
+              title: '发货',
+              value: _retentionOutbound,
+              onChanged: (value) => _updateSettings(retentionOutbound: value),
+            ),
+            const Divider(height: 24),
+            _retentionRow(
+              key: 'settings-retention-return',
+              title: '退货',
+              value: _retentionReturn,
+              onChanged: (value) => _updateSettings(retentionReturn: value),
+            ),
+
+            const SizedBox(height: 12),
+            const Text(
+              '⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动'
+              '（硬性豁免，关不掉），所以它实际是「备份成功后最快 24 小时清理」。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '⚠️ 现在这里只是记下你的选择 —— 真正开删要等上传备份接通（M5）。'
+              '今天不会有任何文件被删。另外【被锁定】的证据永远不清。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _retentionRow({
+    required String key,
+    required String title,
+    required RetentionSetting value,
+    required ValueChanged<RetentionSetting> onChanged,
+  }) {
+    return Row(
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(width: 12),
+        DropdownButton<RetentionSetting>(
+          key: Key(key),
+          value: value,
+          isDense: true,
+          // 八个档位，「30 天」那项不能把这一行撑破。
+          underline: const SizedBox.shrink(),
+          items: [
+            for (final setting in RetentionSetting.values)
+              DropdownMenuItem(value: setting, child: Text(setting.label)),
+          ],
+          // `_settingsReady`：盘上的设置还没读出来时不给改 ——
+          // 改了会被随后读出来的盘上值覆盖，等于改了没反应还看不出来。
+          onChanged: _settingsReady
+              ? (v) {
+                  if (v != null) onChanged(v);
+                }
+              : null,
+        ),
+      ],
+    );
+  }
+
   Widget _settingTitle(String title, String blurb) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2403,7 +2518,9 @@ class _RecorderPageState extends State<RecorderPage> {
                   '【语音播报】不受这条限制，它立刻生效。'
               : '【工作模式】与【防忘停录】在点「开始工作」时生效。'
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
-                  '【语音播报】是立刻生效的。',
+                  '【语音播报】是立刻生效的。\n'
+                  '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
+                  '要等上传备份接通（M5），在那之前任何文件都不会被删。',
           style: const TextStyle(fontSize: 12),
         ),
       ),

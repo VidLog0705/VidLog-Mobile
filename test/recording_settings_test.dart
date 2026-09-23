@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recording_settings.dart';
+import 'package:vidlog_mobile/recording/retention_setting.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
 /// 用户设置落盘（工作模式 + 两个兜底档位）。
@@ -27,13 +28,15 @@ void main() {
 
   String path() => '${temp.path}/settings.json';
 
-  test('没有文件 → 四项都是硬兜底值，而且**不建文件**', () async {
+  test('没有文件 → 各项都是硬兜底值，而且**不建文件**', () async {
     final settings = await RecordingSettings.load(path());
 
     expect(settings.mode, WorkMode.fallback);
     expect(settings.staticStop, StaticStopSetting.fallback);
     expect(settings.durationFallback, DurationFallbackSetting.fallback);
     expect(settings.voiceEnabled, isTrue, reason: '读不出来时播报按**开**算');
+    expect(settings.retentionOutbound, RetentionSetting.fallback);
+    expect(settings.retentionReturn, RetentionSetting.fallback);
 
     // 没改过就不写盘：默认值本来就是对的，没必要替一件没发生的事写一次。
     expect(File(path()).existsSync(), isFalse);
@@ -138,6 +141,87 @@ void main() {
     final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
 
     expect(raw['mode'], 'scanThenStaticStop');
+  });
+
+  // ─────────────────────────────────────────────
+  // 归档后的本地保留期（规格 §3.5.2.1）
+  // ─────────────────────────────────────────────
+
+  group('保留期：发货与退货各一份', () {
+    test('★ 两份分开存，改一份不动另一份', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.retentionOutbound = RetentionSetting.days7;
+      settings.retentionReturn = RetentionSetting.days30;
+      await settings.save();
+
+      final reloaded = await RecordingSettings.load(path());
+
+      expect(reloaded.retentionOutbound, RetentionSetting.days7);
+      expect(reloaded.retentionReturn, RetentionSetting.days30);
+    });
+
+    test('⚠️「全部保留」与「不保留」必须是两个值，不能都读成缺字段', () async {
+      // `keepAll.days == null`、`none.days == 0`。若哪天把「全部保留」
+      // 实现成「缺字段就当 0」，这一条会红 —— 而那个 bug 在真机上表现为
+      // **用户选了「全部保留」，东西却在备份后第二天被删掉**。
+      final settings = await RecordingSettings.load(path());
+      settings.retentionOutbound = RetentionSetting.keepAll;
+      settings.retentionReturn = RetentionSetting.none;
+      await settings.save();
+
+      final reloaded = await RecordingSettings.load(path());
+
+      expect(reloaded.retentionOutbound, RetentionSetting.keepAll);
+      expect(reloaded.retentionReturn, RetentionSetting.none);
+      expect(reloaded.retentionOutbound.days, isNull);
+      expect(reloaded.retentionReturn.days, 0);
+    });
+
+    test('垃圾值一律回落到「全部保留」—— 朝**少删**的那头落', () async {
+      for (final garbage in <Object?>['7 天', '', <int>[], true, 999, -1]) {
+        File(path()).writeAsStringSync(
+          jsonEncode({'retentionOutbound': garbage, 'retentionReturn': garbage}),
+        );
+
+        final settings = await RecordingSettings.load(path());
+
+        expect(settings.retentionOutbound, RetentionSetting.keepAll,
+            reason: '「$garbage」不该被当成任何一个真实档位');
+        expect(settings.retentionReturn, RetentionSetting.keepAll);
+      }
+    });
+
+    test('档位超范围回落不夹取（999 不会变成 30 天）', () async {
+      File(path()).writeAsStringSync(jsonEncode({'retentionOutbound': 999}));
+
+      final settings = await RecordingSettings.load(path());
+
+      expect(settings.retentionOutbound, RetentionSetting.keepAll);
+    });
+  });
+
+  group('RetentionSetting.fromConfig', () {
+    test('认天数，前后空白修掉，也认 num 与数字串', () {
+      expect(RetentionSetting.fromConfig(' 7 '), RetentionSetting.days7);
+      expect(RetentionSetting.fromConfig(7.0), RetentionSetting.days7);
+      expect(RetentionSetting.fromConfig(0), RetentionSetting.none);
+    });
+
+    test('认不出的一律回落到 fallback（全部保留）', () {
+      expect(RetentionSetting.fromConfig(null), RetentionSetting.fallback);
+      expect(RetentionSetting.fromConfig('days7'), RetentionSetting.fallback,
+          reason: '存的是天数不是名字');
+      expect(RetentionSetting.fromConfig(<String>[]), RetentionSetting.fallback);
+    });
+
+    test('下拉里的名字与需求方列举的一致', () {
+      // 需求方原话是「不保留/3/5/7/10/15/30/」；**「全部保留」是规格 §3.5.2
+      // 本来就规定的默认**，所以多这一项 —— 这个偏差要跟他确认（交接.md §5）。
+      expect(
+        RetentionSetting.values.map((s) => s.label).toList(),
+        ['全部保留', '不保留', '3 天', '5 天', '7 天', '10 天', '15 天', '30 天'],
+      );
+    });
   });
 
   group('WorkMode.fromConfig', () {

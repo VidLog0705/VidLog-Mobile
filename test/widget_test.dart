@@ -5,6 +5,7 @@ import 'package:vidlog_mobile/app/recorder_page.dart';
 import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart';
+import 'package:vidlog_mobile/recording/retention_setting.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
 void main() {
@@ -273,7 +274,9 @@ void main() {
       (WidgetTester tester) async {
     // ⚠️ 先把视口拉高。设置页是 `ListView`，**屏幕外的卡片根本没建** ——
     // 默认的 800×600 下第三、四块不在树里，`find` 会找不到它们。
-    tester.view.physicalSize = const Size(400, 1600);
+    // 2400 是 2026-09-23 加上「归档后的本地保留期」那块之后的高度 ——
+    // 再加卡片就要跟着往上调，否则红的是 `find` 而不是真正想验的那条守卫。
+    tester.view.physicalSize = const Size(400, 2400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -319,6 +322,23 @@ void main() {
           .onSelectionChanged,
       isNull,
     );
+
+    // 归档后的本地保留期那两块下拉同理（规格 §3.5.2.1）。
+    // 它们**两份各自一个**，所以两条都验 —— 只验一条的话，
+    // 另一条漏掉守卫（`onChanged: (v) => ...` 而没套 `_settingsReady`）
+    // 在真机上就是「退货那一份改了没反应」。
+    for (final key in const [
+      'settings-retention-outbound',
+      'settings-retention-return',
+    ]) {
+      expect(
+        tester
+            .widget<DropdownButton<RetentionSetting>>(find.byKey(Key(key)))
+            .onChanged,
+        isNull,
+        reason: '「$key」在设置读出来之前必须禁用',
+      );
+    }
 
     // 页上有两个开关，靠 key 取 —— 这也顺带把「哪个开关是哪个」钉住了。
     SwitchListTile switchAt(String key) =>

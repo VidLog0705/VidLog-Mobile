@@ -3,11 +3,13 @@ import 'dart:io';
 
 import 'recorder_config.dart';
 import 'recording_workspace.dart' show writeFileAtomically;
+import 'retention_setting.dart';
 import 'work_mode.dart';
 
 /// 用户选的录制设置（`<root>/settings.json`）。
 ///
-/// 落盘的四项：工作模式、静止停录档位、时长兜底档位、语音播报开关。
+/// 落盘的六项：工作模式、静止停录档位、时长兜底档位、语音播报开关，
+/// 以及归档后的本地保留期两份（发货 / 退货，规格 §3.5.2.1）。
 ///
 /// ## 为什么单独一个文件，不并进 `device.json`
 ///
@@ -39,6 +41,8 @@ class RecordingSettings {
     required this.staticStop,
     required this.durationFallback,
     required this.voiceEnabled,
+    required this.retentionOutbound,
+    required this.retentionReturn,
   });
 
   final String path;
@@ -60,6 +64,15 @@ class RecordingSettings {
   /// 他只会以为「这个功能没做」，然后把错的包裹录进去。
   /// **静默关掉一个提示功能，比静默开着吵一点严重得多。**
   bool voiceEnabled;
+
+  /// 归档成功后，**发货**那批本地留多久（规格 §3.5.2.1）。
+  ///
+  /// 两份分开存，不共用 —— 需求方 2026-09-23 裁决的是「各自一个」：
+  /// 退货件争议多、体积小，实践上不会和发货用同一个天数。
+  RetentionSetting retentionOutbound;
+
+  /// 归档成功后，**退货**那批本地留多久。改它不影响 [retentionOutbound]。
+  RetentionSetting retentionReturn;
 
   /// 读设置。**任何读取失败都回落到硬兜底值，绝不抛。**
   static Future<RecordingSettings> load(String path) async {
@@ -87,6 +100,8 @@ class RecordingSettings {
         final bool value => value,
         _ => true,
       },
+      retentionOutbound: RetentionSetting.fromConfig(json['retentionOutbound']),
+      retentionReturn: RetentionSetting.fromConfig(json['retentionReturn']),
     );
   }
 
@@ -109,6 +124,15 @@ class RecordingSettings {
         'durationFallback': durationFallback.minutes,
 
         'voiceEnabled': voiceEnabled,
+
+        // 保留期同样存**天数**，理由与上面两个档位一样。`keepAll` 存的是 null。
+        //
+        // ⚠️ 这里**不能拿 0 去兼职表示「全部保留」** —— `0` 已经是
+        // 「不保留」这个真实档位的天数。合并的话，读回来会把「永远不删」
+        // 变成「归档后最快 24 小时就删」，而且是**静默**的：
+        // 用户看到的下拉还是「全部保留」那一项挑不着毛病。
+        'retentionOutbound': retentionOutbound.days,
+        'retentionReturn': retentionReturn.days,
       }),
     );
   }
