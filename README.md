@@ -130,6 +130,7 @@ git push
 | 缺口 | 实情 |
 |---|---|
 | **上传 / 归档 / 交付** | **整个不存在**。只有 `RecorderGateway`（相机）。`UploadState` / `EvidenceState`（`lib/states.dart`）**零使用者** —— 这是 M5，尚未开工，不是漏了 |
+| **保留期的判定与执行** | **设置做完了，判定与执行没做**（`eeafa0c`）：`retention_setting.dart` + 设置页那张卡片都在。⚠️ 但**选哪个档位都不会删任何文件** —— 判定要拿「归档成功时刻」起算，而 `RecordingEntry` 没这个字段（M5 的产物），`LabelStore` 也还没有读的那一半。**这是有意的，不是漏做**（`docs/实现决策.md` §19.9） |
 | **资源告警（§3.1.1）** | **原来的实现已整体删除**。`StopTrigger.resourceCritical`（`recorder_events.dart:76`）是个**遗留死枚举**：有声明、有一处显示用例，**没有任何地方产生它** |
 | **安卓整条链路** | **完全不通**。`RecorderChannel.kt` 实现的是 `startSession` / `stopSession`，Dart 调的是 `openCamera` / `startRecording` / `stopRecording` / `closeCamera` 等 —— **8 个方法落到 `notImplemented`**；且**不发 `barcodeDetected`**、**没有相机预览**。iOS 侧是对的 |
 
