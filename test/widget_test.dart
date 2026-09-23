@@ -347,7 +347,9 @@ void main() {
 
     await tester.pumpWidget(const VidLogApp());
 
-    await tester.tap(find.byIcon(Icons.tune_outlined));
+    // 图标是齿轮（`Icons.settings_outlined`）不是滑杆 —— 2026-09-23
+    // 照需求方的界面草图换掉了，`Icons.tune_outlined` 在这儿找不到才会红。
+    await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
 
     // 五块都在。验收工具那块缺了 M4 的「时长兜底」验收没法跑；

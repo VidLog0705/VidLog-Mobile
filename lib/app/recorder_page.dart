@@ -1342,8 +1342,11 @@ class _RecorderPageState extends State<RecorderPage> {
             label: '退货',
           ),
           NavigationDestination(
-            icon: Icon(Icons.tune_outlined),
-            selectedIcon: Icon(Icons.tune),
+            // 齿轮，不是滑杆（`Icons.tune`）—— 需求方 2026-09-23 照草图点的。
+            // 四个标签里只有它和草图对不上，另外三个（云上传 / 货车 /
+            // 带返回箭头的剪贴板）本来就是对的。
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
             label: '设置',
           ),
         ],

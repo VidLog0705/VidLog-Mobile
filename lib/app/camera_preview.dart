@@ -61,7 +61,7 @@ class CameraPreview extends StatelessWidget {
             _nativePreview(context),
             // 框画在预览之上，用的是同一份归一化坐标。
             IgnorePointer(
-              child: CustomPaint(painter: _ViewfinderPainter(viewfinder.rect)),
+              child: CustomPaint(painter: ViewfinderPainter(viewfinder.rect)),
             ),
           ],
         ),
@@ -122,15 +122,39 @@ class _PreviewUnavailable extends StatelessWidget {
   }
 }
 
-/// 画取景框：框外压暗、框上一圈亮边。
+/// 画取景框：**只有四个角的括号**。
 ///
-/// 压暗这件事不只是好看 —— 它让「框内 / 框外」在视觉上**一眼可辨**，
-/// 用户不用去猜边界在哪儿。
-class _ViewfinderPainter extends CustomPainter {
-  const _ViewfinderPainter(this.rect);
+/// ## 为什么没有压暗、也没有整圈框线（需求方 2026-09-23 照界面草图裁决）
+///
+/// 这两样以前都有，是需求方照着他自己画的界面草图点的（草图里只画了四个角），
+/// **不是顺手简化**。
+///
+/// 删之前先想清楚一件事，否则这个改动会悄悄毁掉 §3.2.2：
+/// **压暗原本是拿来衬这四角的。** 以前四角是亮绿、周围一片黑，所以看得见；
+/// 压暗一没，四角就直接压在**任意亮度**的实景上 —— 白色面单上画白角等于没画，
+/// 而用户看不见框的后果是「看着放进去了，系统说不算」，正是这一节存在的原因。
+/// 所以四角画**两层**：底下一层深色描边，上面一层白。
+///
+/// 两层这个手法与 §3.2.6 那个钟**完全同一个理由**（见 recorder_page 的钟）：
+/// 底色不可控时，靠描边而不是靠颜色本身。
+///
+/// ⚠️ **别照着旧注释把压暗加回来。** 旧理由（「让框内框外一眼可辨」）写在
+/// 代码里很久，看起来很像被人误删的 —— `test/viewfinder_painter_test.dart`
+/// 专门挡这次「顺手恢复」。
+class ViewfinderPainter extends CustomPainter {
+  const ViewfinderPainter(this.rect);
 
   /// 归一化坐标（0~1，原点左上）。
   final NormalizedRect rect;
+
+  /// 角臂长（逻辑像素）。
+  ///
+  /// **只剩四角之后，整个框的边界全靠这八段线交代** —— 臂短了就看不出框在哪儿，
+  /// 用户会把面单放在角与角中间、以为在框内。所以它比原来那版的 26 略长。
+  static const double armLength = 28;
+
+  /// 白线线宽。描边层要更粗（两边各多出一半），白线才不会从描边边缘溢出来。
+  static const double strokeWidth = 4;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -141,46 +165,32 @@ class _ViewfinderPainter extends CustomPainter {
       rect.height * size.height,
     );
 
-    // 框外压暗：整块画布减去框，用 even-odd 填充规则挖个洞。
-    final scrim = Path()
-      ..addRect(Offset.zero & size)
-      ..addRect(frame)
-      ..fillType = PathFillType.evenOdd;
-
-    canvas.drawPath(
-      scrim,
-      Paint()..color = Colors.black.withValues(alpha: 0.55),
-    );
-
-    // 框线
-    canvas.drawRect(
-      frame,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
-        ..color = Colors.white,
-    );
-
-    // 四角加粗，便于对准
-    const cornerLength = 26.0;
-    final corner = Paint()
+    // 外层深、内层白。顺序不能反 —— 反了白线会被盖掉一半。
+    final halo = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 5
-      ..color = Colors.greenAccent;
+      ..strokeWidth = strokeWidth + 4
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.black.withValues(alpha: 0.6);
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white;
 
-    void line(Offset from, Offset to) => canvas.drawLine(from, to, corner);
+    for (final paint in [halo, stroke]) {
+      void arm(Offset from, Offset to) => canvas.drawLine(from, to, paint);
 
-    line(frame.topLeft, frame.topLeft + const Offset(cornerLength, 0));
-    line(frame.topLeft, frame.topLeft + const Offset(0, cornerLength));
-    line(frame.topRight, frame.topRight + const Offset(-cornerLength, 0));
-    line(frame.topRight, frame.topRight + const Offset(0, cornerLength));
-    line(frame.bottomLeft, frame.bottomLeft + const Offset(cornerLength, 0));
-    line(frame.bottomLeft, frame.bottomLeft + const Offset(0, -cornerLength));
-    line(frame.bottomRight, frame.bottomRight + const Offset(-cornerLength, 0));
-    line(frame.bottomRight, frame.bottomRight + const Offset(0, -cornerLength));
+      arm(frame.topLeft, frame.topLeft + const Offset(armLength, 0));
+      arm(frame.topLeft, frame.topLeft + const Offset(0, armLength));
+      arm(frame.topRight, frame.topRight + const Offset(-armLength, 0));
+      arm(frame.topRight, frame.topRight + const Offset(0, armLength));
+      arm(frame.bottomLeft, frame.bottomLeft + const Offset(armLength, 0));
+      arm(frame.bottomLeft, frame.bottomLeft + const Offset(0, -armLength));
+      arm(frame.bottomRight, frame.bottomRight + const Offset(-armLength, 0));
+      arm(frame.bottomRight, frame.bottomRight + const Offset(0, -armLength));
+    }
   }
 
   @override
-  bool shouldRepaint(_ViewfinderPainter oldDelegate) =>
-      oldDelegate.rect != rect;
+  bool shouldRepaint(ViewfinderPainter oldDelegate) => oldDelegate.rect != rect;
 }
