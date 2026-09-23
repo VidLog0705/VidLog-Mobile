@@ -17,6 +17,68 @@ void main() {
     expect(find.text('备份'), findsWidgets);
   });
 
+  /// 本机名的输入框守门人（需求方 2026-09-23：上限 12 格，汉字算 2 格）。
+  ///
+  /// ⚠️ 这组**不起界面**，直接调那个格式化器。原因是那个弹窗要先加载
+  /// `device.json`，而 widget 测试里没有平台通道 —— 框根本打不开
+  /// （页面自己会降级成错误状态，`_identity` 是 null，`_editDeviceName` 直接返回）。
+  /// 格式化器提成顶层就是为了这个：几何级地便宜，且测的是**同一段代码**。
+  group('★ 本机名输入框：超 12 格就退回', () {
+    TextEditingValue typed(String text) => TextEditingValue(
+          text: text,
+          selection: TextSelection.collapsed(offset: text.length),
+        );
+
+    test('12 个字母打得进去，第 13 个进不来', () {
+      expect(
+        deviceNameInputFormatter
+            .formatEditUpdate(TextEditingValue.empty, typed('abcdefghijkl'))
+            .text,
+        'abcdefghijkl',
+      );
+
+      expect(
+        deviceNameInputFormatter
+            .formatEditUpdate(typed('abcdefghijkl'), typed('abcdefghijklm'))
+            .text,
+        'abcdefghijkl',
+        reason: '超了就整个退回上一次的值',
+      );
+    });
+
+    // ⚠️ 这条正是「为什么不能用 `maxLength`」：`maxLength: 12` 数的是字符数，
+    // 7 个汉字在它眼里只有 7，**会被放行**。它红了就说明上限换回了字符数。
+    test('★ 第 7 个汉字进不来 —— 换成 maxLength 这条就会红', () {
+      expect(
+        deviceNameInputFormatter
+            .formatEditUpdate(TextEditingValue.empty, typed('三号仓打包台'))
+            .text,
+        '三号仓打包台',
+      );
+
+      expect(
+        deviceNameInputFormatter
+            .formatEditUpdate(typed('三号仓打包台'), typed('三号仓打包台东'))
+            .text,
+        '三号仓打包台',
+      );
+    });
+
+    test('在中间插字一样受管（不是只看末尾那几个）', () {
+      // 12 个字母已经满了，光标挪到最前面再插一个 —— 也得退回来。
+      final full = typed('abcdefghijkl');
+      final inserted = TextEditingValue(
+        text: 'Xabcdefghijkl',
+        selection: const TextSelection.collapsed(offset: 1),
+      );
+
+      expect(
+        deviceNameInputFormatter.formatEditUpdate(full, inserted).text,
+        'abcdefghijkl',
+      );
+    });
+  });
+
   testWidgets('底部是需求方定的四栏', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 

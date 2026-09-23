@@ -14,6 +14,65 @@ import 'recording_workspace.dart' show writeFileAtomically;
 /// 所以编号属于 M5 电脑端的设备表。手机端只如实报「我没改过名字」。
 const defaultDeviceName = '未命名机位';
 
+/// 本机名的宽度上限：**12 格，一个汉字算 2 格**。
+///
+/// 需求方 2026-09-23 原话：「机位名只允许12个字符内，一个汉字两个字符，
+/// 一个字母1个字符，可以12个字母或者6个汉字」。
+/// 所以上限是**显示宽度**，不是 `String.length`。
+const maxDeviceNameWidth = 12;
+
+/// [text] 占几格：汉字（含全角标点、假名、韩文、emoji）算 2，其余算 1。
+///
+/// ## 为什么不能直接用 `text.length`
+///
+/// Dart 的 `length` 数的是 UTF-16 code unit：「未命名机位」是 **5** 不是 10
+/// （于是 6 个汉字的名字会被判成 6 —— 全部放行，正好放宽一倍）；
+/// emoji 反过来算 **2**（代理对），一个 emoji 会吃掉两个字母的额度。
+/// 哪个方向和需求方的意思都不一致。
+///
+/// 计数与界面用的是同一个口径，**界面上看着正好、代码说超了**这种
+/// 两边对不上的事就不会发生。
+int deviceNameWidth(String text) {
+  var width = 0;
+  for (final rune in text.runes) {
+    width += _isWideRune(rune) ? 2 : 1;
+  }
+  return width;
+}
+
+/// East Asian Width 的 W/F 类（按常用 `wcwidth` 的区间近似，够用即可）。
+///
+/// 不查 Unicode 数据表是有意的：这里只关心「看着占两格」，而真正会出现的
+/// 就是汉字、全角标点、假名、韩文、emoji 这几类。
+bool _isWideRune(int rune) =>
+    (rune >= 0x1100 && rune <= 0x115F) ||
+    (rune >= 0x2E80 && rune <= 0xA4CF && rune != 0x303F) ||
+    (rune >= 0xAC00 && rune <= 0xD7A3) ||
+    (rune >= 0xF900 && rune <= 0xFAFF) ||
+    (rune >= 0xFE30 && rune <= 0xFE6F) ||
+    (rune >= 0xFF00 && rune <= 0xFF60) ||
+    (rune >= 0xFFE0 && rune <= 0xFFE6) ||
+    (rune >= 0x1F300 && rune <= 0x1FAFF) ||
+    (rune >= 0x20000 && rune <= 0x3FFFD);
+
+/// 把 [name] 截到 [maxDeviceNameWidth] 格以内。
+///
+/// 按 **rune** 走而不是按 code unit，所以**不会把字劈成半个**
+/// （`substring` 砍在代理对中间会留下一个孤零零的半字符）。
+/// 超出部分直接丢掉 —— 界面上打字时是被拦住的（见 `_editDeviceName`），
+/// 这里兜的是「有人手改过 `device.json`」和「旧版本存下的长名字」。
+String clampDeviceName(String name) {
+  var width = 0;
+  final buffer = StringBuffer();
+  for (final rune in name.runes) {
+    final next = width + (_isWideRune(rune) ? 2 : 1);
+    if (next > maxDeviceNameWidth) break;
+    width = next;
+    buffer.writeCharCode(rune);
+  }
+  return buffer.toString();
+}
+
 /// 本机身份与本地配置（`device.json`）。
 ///
 /// ## 为什么「设备标识」与「本机名」是两个字段，不能合一
@@ -106,8 +165,12 @@ class DeviceIdentity {
           return DeviceIdentity(
             path: path,
             deviceId: id,
+            // 截断只在「手改过文件 / 旧版本存下长名字」时才起作用。
+            // 不在这里掐掉的话，一个 30 格的名字会一路带到电脑端的设备表里。
             deviceName: (json['deviceName'] as String?)?.trim().isNotEmpty == true
-                ? (json['deviceName']! as String).trim()
+                ? clampDeviceName(
+                    (json['deviceName']! as String).trim(),
+                  )
                 : defaultDeviceName,
             hostAddress: (json['hostAddress'] as String?)?.trim() ?? '',
             hostName: (json['hostName'] as String?)?.trim() ?? '',
@@ -147,8 +210,13 @@ class DeviceIdentity {
 
   /// 改本机名并落盘。空名退回 [defaultDeviceName] ——
   /// 名字是电脑端用来区分设备的，允许它变空等于允许一台手机在电脑端消失。
+  ///
+  /// 超长按 [maxDeviceNameWidth] 截断（见 [clampDeviceName]）。这里再截一次
+  /// 不是多余：**上限是这个字段的属性，不是那个输入框的属性** ——
+  /// 以后从别处写名字（扫码带入、电脑端下发）也自动受同一个上限管。
   Future<void> rename(String name) async {
-    deviceName = name.trim().isEmpty ? defaultDeviceName : name.trim();
+    final trimmed = clampDeviceName(name.trim());
+    deviceName = trimmed.isEmpty ? defaultDeviceName : trimmed;
     await save();
   }
 

@@ -56,6 +56,24 @@ VoicePrompt? modeAnnouncementFor(int tab, int previousTab) {
   };
 }
 
+/// 本机名输入框的守门人：**超过 [maxDeviceNameWidth] 格就把这次输入整个退回**。
+///
+/// ## ⚠️ 为什么不用 `maxLength`
+///
+/// `maxLength` 数的是**字符数**，而规矩是**显示宽度**（一个汉字算 2 格）。
+/// 拿它当上限，「6 个汉字」会被判成 6、全部放行 —— 上限白白放宽一倍，
+/// 而界面上那行字明明写着 12 格。
+///
+/// 退回（而不是截断）是有意的：用户在中间插字时，截断会**动他已经敲好的后半段**。
+///
+/// 提成顶层是为了**能在测试里直接调** —— 弹窗要先加载 `device.json`，
+/// widget 测试里没有平台通道，那个框根本打不开（放成员里就等于测不了）。
+final TextInputFormatter deviceNameInputFormatter = TextInputFormatter.withFunction(
+  (oldValue, newValue) => deviceNameWidth(newValue.text) <= maxDeviceNameWidth
+      ? newValue
+      : oldValue,
+);
+
 /// 采集页。
 ///
 /// ## 它为什么长这样
@@ -1974,6 +1992,9 @@ class _RecorderPageState extends State<RecorderPage> {
   // ── 两处编辑弹窗 ──────────────────────────────
 
   /// 改本机名。**落盘** —— 只在内存里留着的名字，重连一次就没了。
+  ///
+  /// 上限 [maxDeviceNameWidth] 格（汉字算 2 格）：打字时超了就拦，
+  /// 框下面有实时格数 —— 需求方 2026-09-23 定的规矩。
   Future<void> _editDeviceName() async {
     final identity = _identity;
     if (identity == null) return;
@@ -1983,14 +2004,44 @@ class _RecorderPageState extends State<RecorderPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('本机名'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: '电脑端用这个名字区分机位',
-            hintText: defaultDeviceName,
-          ),
-          onSubmitted: (value) => Navigator.of(context).pop(value),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              // 上限是显示宽度（汉字算 2 格），所以用不了 `maxLength` ——
+              // 理由与「为什么退回而不是截断」见 [deviceNameInputFormatter]。
+              inputFormatters: [deviceNameInputFormatter],
+              decoration: const InputDecoration(
+                labelText: '电脑端用这个名字区分机位',
+                hintText: defaultDeviceName,
+              ),
+              onSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+            // 打字打到头会被拦住，而**拦住了没有任何解释的话，用户只会以为
+            // 输入框坏了**（踩坑 #13）。这一行就是那个解释；
+            // 顺带把「汉字算 2 格」写在这儿，不然「12 格」本身也是个谜。
+            ValueListenableBuilder<TextEditingValue>(
+              valueListenable: controller,
+              builder: (context, value, _) {
+                final width = deviceNameWidth(value.text);
+                final full = width >= maxDeviceNameWidth;
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '$width / $maxDeviceNameWidth 格（汉字算 2 格）${full ? '，已满' : ''}',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: full ? Colors.orange : Colors.black54,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
         ),
         actions: [
           TextButton(
