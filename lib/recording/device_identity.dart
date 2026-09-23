@@ -44,6 +44,7 @@ class DeviceIdentity {
     required this.deviceName,
     this.hostAddress = '',
     this.hostName = '',
+    this.credential = '',
   });
 
   final String path;
@@ -62,6 +63,21 @@ class DeviceIdentity {
 
   /// 手填的电脑端名字。只用来显示 —— 真连没连上由探测决定，不由它决定。
   String hostName;
+
+  /// 入网换来的设备凭据（base64url 的 32 字节）。空 = 还没入网。
+  ///
+  /// ## ⚠️ 它不是「密码」，但它丢失的后果是一样的
+  ///
+  /// 契约 §1.1 步骤 4：**凭据丢失 → 重新走一遍入网，不得降级为免凭据。**
+  /// 所以这里丢了不是灾难（重新配对即可），但**绝不能**因此把上传做成不要凭据 ——
+  /// 那等于把电脑端的设备表变成一张谁都能往里写的名单。
+  ///
+  /// 它同时是回执验签的 HMAC 密钥（文档 §2.7），所以「有没有入网」与
+  /// 「能不能确认回执是电脑端发的」是同一件事。
+  ///
+  /// 与 [deviceId] 一起落在 `device.json` 里 —— 那是 App 私有目录，
+  /// 不进版本库（`IMPLEMENTATION.md` §1.3：密钥绝不入库、客户端不内置 secret）。
+  String credential;
 
   /// 读配置；没有就建一份。
   ///
@@ -95,6 +111,7 @@ class DeviceIdentity {
                 : defaultDeviceName,
             hostAddress: (json['hostAddress'] as String?)?.trim() ?? '',
             hostName: (json['hostName'] as String?)?.trim() ?? '',
+            credential: (json['credential'] as String?)?.trim() ?? '',
           );
         }
       } on Object {
@@ -123,6 +140,7 @@ class DeviceIdentity {
         'deviceName': deviceName,
         'hostAddress': hostAddress,
         'hostName': hostName,
+        'credential': credential,
       }),
     );
   }
@@ -135,9 +153,24 @@ class DeviceIdentity {
   }
 
   /// 记下电脑端地址与名字并落盘。
+  ///
+  /// ⚠️ **换了地址就把凭据丢掉。** 凭据是**某一台电脑端**签发的，换一台
+  /// 它认不出来。留着的话每次上传都会撞 401，而用户看到的是「连不上」——
+  /// 他刚改完地址，最自然的结论是「地址填错了」，于是接着改地址，
+  /// 真正的原因（该重新配对）永远浮现不出来。丢掉它，界面就会明说「请重新配对」。
   Future<void> setHost({required String address, required String name}) async {
-    hostAddress = address.trim();
+    final next = address.trim();
+    if (next != hostAddress) credential = '';
+
+    hostAddress = next;
     hostName = name.trim();
+    await save();
+  }
+
+  /// 入网成功后把凭据记下来。**落盘** —— 只在内存里留着的凭据，
+  /// 重启一次就等于没入过网，每次开 App 都要重新配对。
+  Future<void> setCredential(String value) async {
+    credential = value.trim();
     await save();
   }
 }
