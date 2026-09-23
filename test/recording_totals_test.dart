@@ -63,6 +63,25 @@ void main() {
       expect(sessions.single.bytes, 300);
     });
 
+    test('★ 带上各分段的 evidenceId，按时间排 —— 备份状态要拿它去归并', () {
+      // 界面上那一格备份状态是 `summarizeUploadState(session.evidenceIds, …)`
+      // 算出来的（`archive.jsonl` 以 evidenceId 为键）。这个字段要是空的或者
+      // 少一段，那一格就会把「传了一半」说成「已备份」。
+      final entries = [
+        entry(evidenceId: 'sess-1-002', startedAt: DateTime(2026, 9, 22, 10, 5)),
+        entry(evidenceId: 'sess-1-001', startedAt: DateTime(2026, 9, 22, 10, 0)),
+        entry(evidenceId: 'sess-1-003', startedAt: DateTime(2026, 9, 22, 10, 10)),
+      ];
+
+      final sessions = toSessions(entries, const {});
+
+      // 顺序按**录制时间**，不是索引里或调用方给的那个顺序 ——
+      // 将来要说「第 3 段没传上去」时，说的得是第 3 段。
+      expect(sessions.single.evidenceIds,
+          ['sess-1-001', 'sess-1-002', 'sess-1-003']);
+      expect(sessions.single.evidenceIds, hasLength(sessions.single.segmentCount));
+    });
+
     test('起录时间取最早的那一段 —— 跨零点的那条算开始录的那天', () {
       final entries = [
         entry(

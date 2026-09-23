@@ -32,40 +32,98 @@ void main() {
 
     // 默认就落在备份栏。四个模块都得在（需求方 2026-09-22 定的布局）。
     expect(find.text('未命名机位'), findsOneWidget); // ① 本机身份
-    expect(find.text('电脑备份'), findsOneWidget); // ③ 电脑备份
-    expect(find.text('录像记录（共 0 条）'), findsOneWidget); // ④ 录像记录
 
-    // ② 三个统计。「今日」「全部」同时也是筛选项上的字，所以各出现两次；
-    // 数字本身才是这一块的实质内容。
-    expect(find.text('今日'), findsNWidgets(2));
-    expect(find.text('全部'), findsNWidgets(2));
+    // ② 三个统计。数字本身才是这一块的实质内容。
+    //
+    // ⚠️ 这里不用 `findsNWidgets(2)` 去数「今日 / 全部 各出现两次」——
+    // 它们在下面那张卡的筛选器上还有一个。`ListView` 懒构建，下面那张卡
+    // 此刻还没被 build，数出来只有 1。**筛选器上的那对字在下面单独验。**
+    expect(find.text('今日'), findsWidgets);
+    expect(find.text('全部'), findsWidgets);
     expect(find.text('总占用'), findsOneWidget);
     expect(find.text('0 条'), findsNWidgets(2), reason: '空机上今日和全部都是 0 条');
     expect(find.text('0 B'), findsOneWidget, reason: '空机上总占用是 0 B');
 
-    // 上传功能还不存在，这一页必须**明说**，而不是显示一个看起来正常的
+    // ③ 电脑备份。没配对就必须**明说传不上去**，而不是显示一个看起来正常的
     // 「主机已连接 / 0 条待上传」。
-    expect(find.textContaining('手机端还没有上传功能'), findsOneWidget);
+    expect(find.text('电脑备份'), findsOneWidget);
+    expect(find.text('配对电脑'), findsOneWidget);
+    expect(find.textContaining('录像传不上去'), findsOneWidget);
 
     // 没配对就不该有任何连通状态 —— 显示「离线」会让人以为「配过对、只是没连上」。
-    expect(find.text('配对电脑'), findsOneWidget);
     expect(find.text('离线'), findsNothing);
     expect(find.text('连接'), findsNothing);
     expect(find.text('探测中…'), findsNothing);
+
+    // 没配对就点不动【立即备份】。⚠️ 一个按得下去却什么都不发生的按钮，
+    // 比一个禁用按钮糟得多（踩坑 #13）—— 而**为什么点不动**就写在它下面那行。
+    expect(
+      tester
+          .widget<FilledButton>(find.widgetWithText(FilledButton, '立即备份'))
+          .onPressed,
+      isNull,
+    );
+
+    // ⚠️ 这一页在真机上比一屏长，而 `ListView` 是**懒构建**的：下面那张卡
+    // 不滚下去压根不会被 build，`find.text` 找不到它 —— 不是它不在，
+    // 是它还没建。真机上这块本来也要滑，所以这里滚一下才是如实的。
+    await tester.scrollUntilVisible(
+      find.text('录像记录（共 0 条）'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    expect(find.text('录像记录（共 0 条）'), findsOneWidget); // ④ 录像记录
 
     // 真正的回归守卫是这条：以后谁往这一页塞一个假装连上了的状态，这里会红。
     // 假数字在真机上会被当成真的 —— 这个项目已经吃过一次亏。
     expect(find.textContaining('已连接'), findsNothing);
   });
 
+  testWidgets('★ 空机上每一条录像的小标都说「未备份」，没有一条敢说「已备份」',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.scrollUntilVisible(
+      find.text('录像记录（共 0 条）'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    // 备份状态那一格的字只有这五种可能（`_uploadLook`）。空机、没配对、
+    // 一条归档记录都没有的时候，**一个「已备份」都不许出现** ——
+    // 那是这个项目唯一不能出的那句假话（不变量 I3）。
+    for (final word in ['已备份', '备份中…', '待重试', '备份失败']) {
+      expect(find.text(word), findsNothing, reason: '空机上出现了「$word」');
+    }
+
+    // ⚠️ **小标本身在这里验不了**：它是 `_uploadChip(session)` 画出来的，
+    // 而 `session` 要 `_bootstrap` 先读出 `index.jsonl` —— 那要走
+    // `path_provider` 平台通道，widget 测试里没有实现（见本文件开头那条）。
+    // 所以「六段传到五段要说备份失败」那条规矩钉在它**下游**两个可测的地方：
+    // `archive_summary_test.dart`（归并规则，含 ★ 那条）
+    // 和 `recording_totals_test.dart`（evidenceIds 从哪来）。
+    // 剩下的接线（`_archiveRecords` 有没有赋值、小标读的是不是这个字段）
+    // 是两行赋值，且坏掉的后果是**偏保守**的（一律显示「未备份」），
+    // 真机上按 `真机验收清单.md` §1.17 核。
+  });
+
   testWidgets('★ 录像记录的分页控件在这儿，档位是需求方定的 5/10/15', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
+
+    // 与上一条同一个理由：这一页比一屏长，不滚下去这张卡不会被 build。
+    await tester.scrollUntilVisible(
+      find.text('1/1'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
 
     // 默认筛「全部」（需求方 2026-09-22）。
     final segmented = tester.widget<SegmentedButton<bool>>(
       find.byType(SegmentedButton<bool>),
     );
     expect(segmented.selected, {false}, reason: '默认应该是「全部」');
+    expect(segmented.segments.map((s) => (s.label as Text).data), ['全部', '今日']);
 
     // 每页 5/10/15 是需求方指定的三档，别被后来人改成别的数。
     final dropdown = tester.widget<DropdownButton<int>>(

@@ -21,6 +21,7 @@ class RecordingSession {
     required this.duration,
     required this.bytes,
     required this.segmentCount,
+    required this.evidenceIds,
   });
 
   final String sessionId;
@@ -40,6 +41,16 @@ class RecordingSession {
   final int bytes;
 
   final int segmentCount;
+
+  /// 这条录像各分段在索引里的 `evidenceId`。
+  ///
+  /// ⚠️ **备份状态是按分段记的**（`archive.jsonl` 以 `evidenceId` 为键），
+  /// 而界面上列的是「一次录制」。所以那条备份状态的小标得把各段**归并**
+  /// 出来 —— 见 `upload/archive_store.dart` 的 `summarizeUploadState`。
+  ///
+  /// 归并这件事**必须只有一处**：各写一套的话迟早会出现「列表说已备份、
+  /// 点进去说有条失败」。
+  final List<String> evidenceIds;
 }
 
 /// 把索引里的分段条目归并成「一次录制」。
@@ -79,6 +90,7 @@ List<RecordingSession> toSessions(
       duration: duration,
       bytes: bytes,
       segmentCount: ordered.length,
+      evidenceIds: [for (final entry in ordered) entry.evidenceId],
     ));
   }
 

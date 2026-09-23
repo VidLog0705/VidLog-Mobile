@@ -22,6 +22,10 @@ import '../recording/recording_totals.dart';
 import '../recording/recording_workspace.dart';
 import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
+import '../states.dart';
+import '../upload/archive_store.dart';
+import '../upload/upload_protocol.dart';
+import '../upload/uploader.dart';
 import 'camera_preview.dart';
 import 'zoom_dial.dart';
 
@@ -77,6 +81,11 @@ class _RecorderPageState extends State<RecorderPage> {
   late RecordingIndex _index;
   late PunchLog _punchLog;
   late LabelStore _labels;
+  late ArchiveStore _archive;
+
+  /// 上传器。**建好之后不直接改** —— 凭据是 `UploadClient` 的构造参数，
+  /// 入网成功或地址变了都要整个重建（见 [_buildUploader]）。
+  late Uploader _uploader;
 
   RecordingCoordinator? _coordinator;
   Timer? _heartbeat;
@@ -232,6 +241,28 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 索引归并出来的「一次录制」——需求方口径的「一条」。
   List<RecordingSession> _sessions = const [];
 
+  /// 索引里的全部条目。按分段记的，上一条是按它归并出来的。
+  ///
+  /// 留着它是因为重试要的是**分段**（`Uploader.upload` 收的是索引条目），
+  /// 而列表上列的是「一次录制」—— 中间隔着一层归并。
+  List<RecordingEntry> _entries = const [];
+
+  /// 盘上的归档状态（`archive.jsonl` 读回来，按 `evidenceId`）。
+  Map<String, ArchiveRecord> _archiveRecords = const {};
+
+  /// 正在跑一趟上传。用来禁用按钮、不让两趟叠在一起。
+  bool _uploading = false;
+
+  /// 队列里最早的那个「下次该重试的时刻」，null = 没有在等重试的。
+  DateTime? _nextRetryAt;
+
+  /// 到点自动再跑一趟的闹钟。
+  ///
+  /// ⚠️ **没有它，一条撞上退避期的录像会永远停在退避期** —— 没有任何东西
+  /// 会再来叫一次队列，界面上就是一直写着「待重试」而不动，用户只会以为
+  /// 它坏了（踩坑 #13）。
+  Timer? _retryTimer;
+
   /// 起录时间落在今天的条数。
   int _todayCount = 0;
 
@@ -259,6 +290,7 @@ class _RecorderPageState extends State<RecorderPage> {
   void dispose() {
     _clockTick?.cancel();
     _heartbeat?.cancel();
+    _retryTimer?.cancel();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
     super.dispose();
@@ -319,6 +351,9 @@ class _RecorderPageState extends State<RecorderPage> {
       // 与电脑端同一个位置（`<root>/punches.jsonl`），键名也逐字相同 ——
       // 两端的打点日志是同一份形态。
       _punchLog = PunchLog('${root.path}/punches.jsonl');
+      // 归档状态与索引同构（追加写 JSON Lines）—— 键名是 PascalCase，
+      // 与 `labels.jsonl` / `punches.jsonl` 一致（见 `archive_store.dart`）。
+      _archive = ArchiveStore('${root.path}/archive.jsonl');
 
       // 本机身份要在 `_buildCoordinator` **之前**读出来 ——
       // 编排器建的时候就要把设备标识接进去（它写进每条录像索引的 sourceDeviceId）。
@@ -333,6 +368,8 @@ class _RecorderPageState extends State<RecorderPage> {
       _durationFallback = _settings!.durationFallback;
       _retentionOutbound = _settings!.retentionOutbound;
       _retentionReturn = _settings!.retentionReturn;
+
+      _buildUploader();
 
       await _buildCoordinator();
 
@@ -355,6 +392,10 @@ class _RecorderPageState extends State<RecorderPage> {
       }
 
       await _refreshBackup();
+
+      // 开 App 就跑一趟队列（规格 §3.4.1：队列必须**可恢复**）。
+      // 不等它：上传可能要几十秒，而界面不该在这上面卡着。
+      unawaited(_runUploads());
     } catch (error) {
       if (!mounted) return;
       setState(() => _status = '初始化失败：$error');
@@ -377,7 +418,12 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 探一次电脑端在不在线上。
   ///
-  /// **没配对就不探** —— 没有地址可探，也不该显示一个探测出来的状态。
+  /// **没填地址就不探** —— 没有地址可探，也不该显示一个探测出来的状态。
+  ///
+  /// ⚠️ M5 起判据从「这个端口上有 HTTP 响应」换成了**真的调一次
+  /// `GET /api/v1/health` 并核对 `service`**。理由是这一页现在承诺的是
+  /// 「录像能传上去」：同端口上任何一个别的 HTTP 服务，旧判据都会给一个绿灯，
+  /// 而用户会照着一个假绿灯等一晚上。`lan_probe.dart` 里那段自认的债就是这个。
   Future<void> _probeHost() async {
     final address = _identity?.hostAddress ?? '';
     if (address.isEmpty) {
@@ -387,13 +433,297 @@ class _RecorderPageState extends State<RecorderPage> {
 
     if (mounted) setState(() => _probingHost = true);
 
-    final online = await isHostReachable(address);
+    var online = false;
+    try {
+      // 这一趟**不带凭据**：健康检查是入网之前就要能调的（文档 §2.1），
+      // 而且「在不在」与「认不认我」是两件事 —— 混在一起的话，一台
+      // 把我们忘了的电脑端会显示成「离线」，用户就会去改地址。
+      online = (await UploadClient(address: address).health()).isVidLog;
+    } on Object {
+      // 拒绝连接 / 超时 / 解析不了地址 / 不是我们认得的那台 —— 对界面
+      // 来说都是同一件事：连不上。
+      online = false;
+    }
+
     if (!mounted) return;
 
     setState(() {
       _hostOnline = online;
       _probingHost = false;
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // 上传备份（M5）
+  // ─────────────────────────────────────────────
+
+  /// 建（或重建）上传器。
+  ///
+  /// ⚠️ **凭据与地址是构造参数，所以入网成功、改完地址之后都必须重建一次。**
+  /// 不重建的话上传会一直拿着旧凭据，而表现是「刚配对成功，还是一条都传不上去」
+  /// —— 用户会回头去怀疑地址、怀疑网络，真正的原因（对象是旧的）浮现不出来。
+  void _buildUploader() {
+    final identity = _identity;
+    if (identity == null) return;
+
+    _uploader = Uploader(
+      rootPath: _rootPath,
+      identity: identity,
+      index: _index,
+      punchLog: _punchLog,
+      labels: _labels,
+      archive: _archive,
+      client: UploadClient(
+        address: identity.hostAddress,
+        // 端口用 `UploadClient` 自己的默认值（`defaultHostPort`）——
+        // 手机端不该有第二处写死 8720 的地方。
+        credential: identity.credential,
+      ),
+    );
+  }
+
+  /// 跑一趟上传队列。
+  ///
+  /// [manual] = 用户按了「立即备份」：**不再等退避**，当场都试一遍。
+  /// 用户明确要求的东西不该被一个他自己看不见的倒计时挡住。
+  Future<void> _runUploads({bool manual = false}) async {
+    if (_uploading) return;
+    if ((_identity?.hostAddress ?? '').isEmpty) return;
+
+    setState(() => _uploading = true);
+
+    try {
+      final pass = await _uploader.runOnce(manual: manual);
+      if (!mounted) return;
+
+      await _refreshDiagnostics();
+      if (!mounted) return;
+
+      setState(() => _uploading = false);
+      _armRetry(pass.nextRetryAt);
+
+      // ⚠️ 失败要**说出来**（不变量 I3，规格 §3.4.3 ★ 来自一次真实故障：
+      // 原系统上传失败后进终态、永不重试，用户完全不知道数据没传上去）。
+      // 列表上那个红标是主入口，这句日志是给「正在看事件面板的人」的。
+      final failed =
+          pass.outcomes.where((o) => o.kind == UploadOutcomeKind.failed).toList();
+      if (failed.isNotEmpty) {
+        _log('${failed.length} 条传不上去：${failed.first.message ?? failed.first.record.lastError ?? ''}');
+      }
+    } on Object catch (error) {
+      // `runOnce` 把每一条的失败都收进了状态里，走到这里是它**自己**炸了
+      // （磁盘读不动之类）。同样必须看得见 —— 吞掉的话这一趟就等于没发生，
+      // 而用户以为它传了。
+      if (mounted) {
+        setState(() => _uploading = false);
+        _log('备份出错：$error');
+      }
+    }
+  }
+
+  /// 排下一次自动重试。见 [_retryTimer] 的说明。
+  void _armRetry(DateTime? at) {
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _nextRetryAt = at;
+    if (at == null) return;
+
+    final delay = at.difference(DateTime.now());
+    _retryTimer = Timer(delay.isNegative ? Duration.zero : delay, () {
+      unawaited(_runUploads());
+    });
+  }
+
+  /// 手动重试**一条录像的全部未完成分段**（规格 §3.4.3 的那个入口）。
+  ///
+  /// 没有它，一条耗尽重试的录像就再也救不回来了 —— 而它就在手机里，
+  /// 内容好好的。
+  Future<void> _retrySession(RecordingSession session) async {
+    if (_uploading) return;
+
+    final ids = session.evidenceIds.toSet();
+    final entries = _entries.where((e) => ids.contains(e.evidenceId)).toList();
+    if (entries.isEmpty) return;
+
+    setState(() => _uploading = true);
+
+    try {
+      for (final entry in entries) {
+        await _uploader.upload(entry, manual: true);
+      }
+    } on Object catch (error) {
+      if (mounted) _log('重试出错：$error');
+    }
+
+    if (!mounted) return;
+
+    await _refreshDiagnostics();
+    if (!mounted) return;
+
+    setState(() => _uploading = false);
+    _armRetry(null);
+  }
+
+  /// 入网：让电脑端认下这台手机，换一把凭据回来。
+  ///
+  /// 契约 §1.1 的两步走：先**请求**（电脑端屏幕上出现待批准的请求），
+  /// 再拿**配对码**去换凭据。凭据只发一次（文档 §2.3），所以这一步不能重放 ——
+  /// 失败了就重新请求一次。
+  Future<void> _pairHost() async {
+    final identity = _identity;
+    if (identity == null) return;
+
+    if (identity.hostAddress.trim().isEmpty) {
+      await _editHost();
+      if ((_identity?.hostAddress ?? '').trim().isEmpty) return;
+    }
+
+    final client = UploadClient(address: identity.hostAddress);
+    final controller = TextEditingController();
+
+    try {
+      await client.enrollRequest(
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+      );
+    } on UploadFailure catch (failure) {
+      if (mounted) _snack('请求入网失败：${failure.userHint}');
+      return;
+    } on Object catch (error) {
+      if (mounted) _snack('连不上电脑端：$error');
+      return;
+    }
+
+    if (!mounted) return;
+
+    final code = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('配对电脑端'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '电脑端上现在应该弹出了这台手机的入网请求。'
+              '在电脑上点【允许】，再把它显示的 6 位配对码敲在这里。',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: '6 位配对码',
+                hintText: '123456',
+              ),
+              onSubmitted: (value) => Navigator.of(context).pop(value),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '配对码 5 分钟内有效，连错 5 次就作废，要重新请求一次。',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(controller.text),
+            child: const Text('配对'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+
+    if (code == null || code.trim().isEmpty) return;
+
+    try {
+      final credential = await client.enrollClaim(
+        deviceId: identity.deviceId,
+        code: code.trim(),
+      );
+      // **落盘**：只在内存里留着的凭据，重启一次就等于没入过网。
+      await identity.setCredential(credential);
+    } on UploadFailure catch (failure) {
+      if (mounted) setState(() => _status = '配对失败：${failure.userHint}');
+      return;
+    } on Object catch (error) {
+      if (mounted) setState(() => _status = '配对失败：$error');
+      return;
+    }
+
+    if (!mounted) return;
+
+    // 凭据换了 → 上传器必须重建（见 [_buildUploader]）。
+    _buildUploader();
+    setState(() => _status = '已配对');
+    await _probeHost();
+    unawaited(_runUploads(manual: true));
+  }
+
+  /// 一条录像到底卡在哪 —— 给用户看的话，以及一个能救回来的按钮。
+  Future<void> _showUploadFailure(RecordingSession session) async {
+    final ids = session.evidenceIds.toSet();
+    final problems = [
+      for (final entry in _entries)
+        if (ids.contains(entry.evidenceId))
+          if (_archiveRecords[entry.evidenceId] case final record?
+              when record.state == UploadState.failed)
+            record,
+    ];
+
+    final seen = <String>{};
+    final hints = <String>[];
+    for (final record in problems) {
+      final hint = record.lastErrorDetail ?? record.lastError ?? '上传失败';
+      if (seen.add(hint)) hints.add(hint);
+    }
+
+    if (!mounted) return;
+
+    final retry = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('这一条没传上去'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final hint in hints)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(hint, style: const TextStyle(fontSize: 13)),
+              ),
+            const SizedBox(height: 4),
+            const Text(
+              '手机上的原文件还在，不会因为传不上去就没了。',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('知道了'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('再试一次'),
+          ),
+        ],
+      ),
+    );
+
+    if (retry == true) await _retrySession(session);
+  }
+
+  void _snack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// 重建编排器（换模式、重新开始工作）。
@@ -479,12 +809,21 @@ class _RecorderPageState extends State<RecorderPage> {
   Future<void> _onFinalized(FinalizeOutcome outcome) async {
     if (!mounted) return;
 
+    // 收尾那条日志**照记**。⚠️ 位置在下面那个提前返回**之前** ——
+    // 换段式连续扫时那个 return 会先跳走，而它跳走的正是「上一段收尾回来、
+    // 下一段已经在录」这个**最常见的**路径。原来那句注释写的就是这个意思，
+    // 只是顺序放反了，于是连续扫时这条日志一条都留不下来。
+    _log(outcome.succeeded ? '✓ 已收尾入库' : '✗ 收尾失败：${outcome.failureReason}');
+
+    // 刚入库的这一段立刻进上传队列（规格 §4.1 的状态图：已入库 → 进入上传队列）。
+    // 同样要在这个提前返回之前 —— 连续扫恰恰是最需要「录完就传」的场景，
+    // 那些段要是等到收工才排队，中间断一次电就全卡在手机里了。
+    if (outcome.succeeded) unawaited(_runUploads());
+
     // 换段式连续扫（2026-09-22）：上一段收尾回来时，下一段**可能已经在录了**。
     // 这里要是照旧把状态刷成「已收尾」，画面上会显示「已收尾 · 索引里共 N 条」
-    // —— 而相机正录着，用户看到的是假的。收尾那条日志照记，状态不动。
+    // —— 而相机正录着，用户看到的是假的。状态不动。
     if (_coordinator?.isRecording == true) return;
-
-    _log(outcome.succeeded ? '✓ 已收尾入库' : '✗ 收尾失败：${outcome.failureReason}');
 
     await _refreshDiagnostics();
     if (!mounted) return;
@@ -903,6 +1242,8 @@ class _RecorderPageState extends State<RecorderPage> {
       // 上传后删掉就按删除后的算」。索引只增不减，拿它求和永远降不下来。
       final videoBytes = await videoBytesOnDisk(_rootPath);
 
+      final archiveRecords = await _archive.loadAll();
+
       if (!mounted) return;
       setState(() {
         _sessionCount = sessions;
@@ -910,6 +1251,8 @@ class _RecorderPageState extends State<RecorderPage> {
         _entryCount = entries.length;
         _punchCount = punches;
         _sessions = merged;
+        _entries = entries;
+        _archiveRecords = archiveRecords;
         _todayCount = countToday(merged, DateTime.now());
         _videoBytes = videoBytes;
       });
@@ -1143,6 +1486,9 @@ class _RecorderPageState extends State<RecorderPage> {
     final name = identity?.hostName ?? '';
     final address = identity?.hostAddress ?? '';
     final hasHost = address.isNotEmpty;
+    // 「配对过」与「填了地址」是**两件事**：填了地址只说明知道去哪儿找它，
+    // 配对过才说明它认这台手机的凭据（能把包收下）。
+    final paired = (identity?.credential ?? '').isNotEmpty;
 
     return Card(
       child: Padding(
@@ -1158,9 +1504,18 @@ class _RecorderPageState extends State<RecorderPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                TextButton(
-                  onPressed: identity == null ? null : _editHost,
-                  child: Text(hasHost ? '重新配对' : '配对电脑'),
+                FilledButton.tonalIcon(
+                  // 没配对就点不动，而**为什么点不动**写在下面那行「配对」上 ——
+                  // 一个改了没反应的按钮和一句没头没尾的禁用一样糟（踩坑 #13）。
+                  onPressed: (!paired || _uploading) ? null : () => _runUploads(manual: true),
+                  icon: _uploading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_upload_outlined, size: 18),
+                  label: Text(_uploading ? '备份中…' : '立即备份'),
                 ),
               ],
             ),
@@ -1170,11 +1525,36 @@ class _RecorderPageState extends State<RecorderPage> {
               hasHost ? address : '未填',
               trailing: _hostBadge(hasHost),
             ),
+            _kv(
+              '配对',
+              paired ? '已配对' : (hasHost ? '未配对 —— 点下面【配对电脑】' : '未配对'),
+            ),
+            if (_nextRetryAt != null)
+              _kv('下次自动重试', _stamp(_nextRetryAt!)),
             const SizedBox(height: 8),
-            const Text(
-              '手机端还没有上传功能 —— 下面这些录像现在只在这台手机上，'
-              '手机丢了就没了。',
-              style: TextStyle(fontSize: 12),
+            Text(
+              paired
+                  // I1 的原文口径：**收到回执之前不清理**。这里说的是同一件事，
+                  // 只是用用户的话说。清理本身是 M6 的事，所以末句如实写着。
+                  ? '收尾好的录像会自己传到电脑端。'
+                      '在收到电脑端的回执之前，手机上那份不会删 —— '
+                      '按保留期自动清理还没做（M6）。'
+                  : '还没和电脑端配对，录像传不上去。'
+                      '这些录像现在只在这台手机上，手机丢了就没了。',
+              style: const TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                TextButton(
+                  onPressed: identity == null ? null : _editHost,
+                  child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
+                ),
+                TextButton(
+                  onPressed: identity == null ? null : _pairHost,
+                  child: Text(paired ? '重新配对' : '配对电脑'),
+                ),
+              ],
             ),
           ],
         ),
@@ -1212,6 +1592,44 @@ class _RecorderPageState extends State<RecorderPage> {
       ],
     );
   }
+
+  /// 一条录像的备份状态。
+  ///
+  /// **六段传到五段也是「备份失败」** —— 列表上写「已备份」而实际缺一段，
+  /// 正是这一页要防的那种假话（见 `summarizeUploadState`）。
+  Widget _uploadChip(RecordingSession session) {
+    final state = summarizeUploadState(session.evidenceIds, _archiveRecords);
+    final look = _uploadLook(state);
+
+    // 失败的那一格**可以点**：点开是「为什么没传上去」和一个【再试一次】。
+    // 规格 §3.4.3 ★：失败必须可见，而且必须有个能救回来的入口 ——
+    // 一个只报错、不给出口的界面，故障照旧收不了场。
+    if (state == UploadState.failed) {
+      return ActionChip(
+        visualDensity: VisualDensity.compact,
+        avatar: Icon(Icons.error_outline, size: 16, color: look.color),
+        label: Text(look.text, style: TextStyle(color: look.color)),
+        onPressed: () => _showUploadFailure(session),
+      );
+    }
+
+    return Chip(
+      visualDensity: VisualDensity.compact,
+      label: Text(look.text, style: TextStyle(color: look.color)),
+    );
+  }
+
+  /// 归档状态 → 那一格的字与色。
+  ///
+  /// 用词与 `ArchiveRecord` 的状态名**一一对应**，不另起一套：
+  /// 界面上一套、落盘一套的话，对着日志排查的人会先怀疑自己看错了哪一套。
+  ({String text, Color color}) _uploadLook(UploadState state) => switch (state) {
+        UploadState.archived => (text: '已备份', color: Colors.green),
+        UploadState.uploading => (text: '备份中…', color: Colors.blue),
+        UploadState.backoff => (text: '待重试', color: Colors.orange),
+        UploadState.failed => (text: '备份失败', color: Colors.red),
+        UploadState.pending => (text: '未备份', color: Colors.grey),
+      };
 
   // ── ④ 录像记录 ───────────────────────────────
 
@@ -1296,10 +1714,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   '${_durationLabel(session.duration)} · '
                   '${session.bytes > 0 ? _sizeLabel(session.bytes) : '大小未知'}',
                 ),
-                trailing: const Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text('未备份'),
-                ),
+                trailing: _uploadChip(session),
               ),
             ],
           const Divider(height: 1),
@@ -1452,8 +1867,8 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             const SizedBox(height: 12),
             const Text(
-              '填电脑端那台机器的局域网 IP。手机端还没有上传功能，'
-              '这里只用来试它在不在线上。',
+              '填电脑端那台机器的局域网 IP。填完还要**配对**一次它才会收下'
+              '这台手机的录像。',
               style: TextStyle(fontSize: 12, color: Colors.black54),
             ),
           ],
@@ -1478,11 +1893,20 @@ class _RecorderPageState extends State<RecorderPage> {
 
     if (saved != true) return;
 
+    // ⚠️ `setHost` 在**地址变了**的时候会把凭据清掉（凭据是某一台电脑端签发的，
+    // 换一台它认不出来）。所以这里必须重建上传器 —— 拿着旧地址或旧凭据去传，
+    // 表现是「一直传不上去」，而用户刚改完地址，最自然的结论是「地址填错了」。
     await identity.setHost(address: address, name: hostName);
     if (!mounted) return;
 
+    _buildUploader();
     setState(() {});
     await _probeHost(); // 存完立刻探一次：改了地址却还显示旧状态最误导人
+
+    if (!mounted) return;
+    if (identity.credential.isEmpty) {
+      _snack('地址存好了。还要【配对电脑】一次，它才会收下这台手机的录像。');
+    }
   }
 
   /// 采集页：**取景铺满整页**，状态与操作是压在上面的浮层。

@@ -138,6 +138,41 @@ class ArchiveRecord {
       raw is String ? DateTime.tryParse(raw)?.toLocal() : null;
 }
 
+/// 把**一次录制**的各分段归并成一个备份状态 —— 界面上那一格就是它。
+///
+/// 归档状态是按分段记的，用户心里的「一条」是一次录制（可能 6 段），
+/// 所以列表上那个小标只能归并着说。
+///
+/// ## 归并的顺序是有讲究的
+///
+/// 1. **有失败就是失败。** 6 段传到 5 段、第 6 段失败 —— 这条没备份完整，
+///    说「已备份」是**假话**，而这一页存在的全部理由就是让「没传上去」
+///    看得见（不变量 I3，规格 §3.4.3 ★ 来自一次真实故障）。
+/// 2. 有在传的就说在传。
+/// 3. **全都归档了才算已备份。**
+/// 4. 有撞退避的就说待重试 —— 它还会自己再试，不需要用户做什么。
+/// 5. 剩下的（还没轮到、或者从来没见过这条）是「未备份」。
+///
+/// ⚠️ 认不出记录时**朝「还会再试一次」的那头落**，与 [ArchiveRecord.fromJson]
+/// 同一条规矩：读不到就当成已归档的话，一条其实没传上去的录像会被当成备份好了。
+UploadState summarizeUploadState(
+  List<String> evidenceIds,
+  Map<String, ArchiveRecord> records,
+) {
+  if (evidenceIds.isEmpty) return UploadState.pending;
+
+  final states = [
+    for (final id in evidenceIds) records[id]?.state ?? UploadState.pending,
+  ];
+
+  if (states.any((s) => s == UploadState.failed)) return UploadState.failed;
+  if (states.any((s) => s == UploadState.uploading)) return UploadState.uploading;
+  if (states.every((s) => s == UploadState.archived)) return UploadState.archived;
+  if (states.any((s) => s == UploadState.backoff)) return UploadState.backoff;
+
+  return UploadState.pending;
+}
+
 /// 归档状态表 —— 与索引同构的追加写 JSON Lines，**读取时同 `evidenceId` 后者胜出**。
 ///
 /// 追加写而不是原地改：一条记录的状态会变好几次（待传 → 上传中 → 失败 → 再传 → 已归档），

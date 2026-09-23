@@ -6,43 +6,12 @@ import 'dart:io';
 /// 先改点什么**就能试出「在不在线上」。
 const defaultHostPort = 8720;
 
-/// 探一次电脑端在不在。
-///
-/// **只发一个 GET，不引任何依赖。** 判据刻意放宽到「有没有 HTTP 响应」：
-/// 连上并被应答 → 在线；拒绝连接 / 超时 / DNS 失败 → 离线。
-///
-/// ## ⚠️ 两处已知的弱（都是刻意的，不是漏了）
-///
-/// 1. **同一个端口上任何别的 HTTP 服务都会被判成「在线」。** 要根治得让电脑端
-///    提供一个 `/health` 端点，那属于 M5 做配网时一起做的事。
-/// 2. **电脑端默认只绑 `localhost`。** 要让局域网可达，得在电脑上跑一次
-///    `netsh http add urlacl url=http://+:8720/ user=Everyone`（电脑端文档已写明）。
-///    绑不上时这里就是真「离线」—— 那是**真话，不是故障**，界面上照实显示。
-///
-/// 超时给 2 秒：这一趟是**界面等着的**，不能因为电脑端不在就卡住整个备份页。
-Future<bool> isHostReachable(
-  String address, {
-  int port = defaultHostPort,
-  Duration timeout = const Duration(seconds: 2),
-}) async {
-  if (address.trim().isEmpty) return false;
-
-  final client = HttpClient()..connectionTimeout = timeout;
-
-  try {
-    final request = await client
-        .getUrl(Uri.parse('http://${address.trim()}:$port/'))
-        .timeout(timeout);
-    final response = await request.close().timeout(timeout);
-    await response.drain<void>();
-    return true;
-  } on Object {
-    // 拒绝连接、超时、解析不了地址 —— 对界面来说都是同一件事：连不上。
-    return false;
-  } finally {
-    client.close(force: true);
-  }
-}
+// ⚠️ 这里原来有一个 `isHostReachable`：发一个 GET，判据放宽到「有没有 HTTP
+// 响应」。M5 把它删了，因为那个判据**同端口上任何一个别的 HTTP 服务都会给绿灯**，
+// 而备份页现在拿它承诺的是「录像能传上去」。
+// 现在的判据在 `uploader.dart` 的 `HostHealth.isVidLog`：真的调一次
+// `GET /api/v1/health` 并核对 `service`。它当初就是作为这段注释里那条
+// 「已知的弱」的答复而写的。
 
 /// 本机的局域网 IPv4；没有就返回 null。
 ///
