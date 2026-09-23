@@ -34,20 +34,33 @@ Flutter + 原生相机模块（Kotlin / Swift）。
 lib/                      Dart 侧：可测试的逻辑
   primitives.dart         跨端共享的硬约束值对象
   states.dart             三个显式建模的状态机（规格 §4）
+  main.dart               应用外壳 → RecorderPage
+  app/
+    recorder_page.dart    ★ 采集页（四栏 + 设置页）
+    camera_preview.dart   取景画面
+    zoom_dial.dart        半圆刻度盘（§3.1.2）
   recording/
     work_mode.dart          三种工作模式（§3.3.1）
     recorder_config.dart    阈值与**硬兜底值**（I4）
     recorder_events.dart    喂给状态机的事件 / 它产出的动作
     stop_controller.dart    ★ 停录状态机（错码保护 · 静止封顶 · 时长兜底）
+    package_tracker.dart    跟踪开录那件包裹在不在框里（§3.3.1）
     recorder_gateway.dart   原生录制器的 Dart 侧接口与通道实现
     recording_coordinator.dart ★ 把原生、状态机、工作区接起来
     recording_index.dart    录像索引（JSON Lines）
     recording_workspace.dart 会话落盘与孤儿发现
     session_finalizer.dart  ★ 收尾唯一入口（I9）+ 孤儿恢复
+    recording_settings.dart 设置持久化（业务类型 / 静止档 / 时长兜底 / 语音）
+    business_type.dart      发货 / 退货
+    label_store.dart        收件标签（公司 / 品类 / 备注）
+    punch_log.dart          打点持久化
+    recording_totals.dart   汇总统计
+    device_identity.dart    本机标识与默认机位名
+    lan_probe.dart          探电脑端在不在 + 挑正确的局域网接口
   scanning/
     viewfinder.dart         取景框判定（§3.2.2）
-  main.dart               应用外壳（尚未接编排器）
-android/                  ★ 原生相机（Kotlin）：连续分段录制 + 静止检测 + 变焦
+    scan_gate.dart          持续识码 → 离散扫码事件
+android/                  ★ 原生相机（Kotlin）：⚠️ 通道尚未接上，见下
 ios/                      ★ 原生相机（Swift）：同上，轮转模型不同（见 docs/实现决策.md §6B）
 test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
@@ -105,19 +118,25 @@ git push
   三个状态机枚举（规格 §4）；单号归一化（§3.2.3）
 - **M4 停录**：`StopController` —— 错码保护（§3.3.2）、画面静止含**封顶修正**
   （§3.3.3 / 不变量 I12）、时长兜底（§3.3.4）、三种工作模式（§3.3.1）
-- **M4 取景框**：只有框内的面单被识别（§3.2.2）
+- **M4 取景框**：只有框内的面单被识别（§3.2.2）；`ScanGate` 把持续识码收敛成离散扫码
+- **M4 包裹跟踪**：`PackageTracker` —— 「开录那件还在不在框里」（§3.3.1 扫码静止停录）
 - **M4 会话**：录制会话落盘、**收尾唯一入口**（I9）、孤儿分段恢复（§3.1.1）
-- **M4 资源**：存储将满 / 低电量 / 过热 → 告警 + 主动收尾（§3.1.1），
-  阈值带**硬兜底值**（I4）
+- **界面**：采集页四栏 + 设置页，编排器（`RecordingCoordinator`）**已接进界面**
+- **2026-09-22 需求**：语音播报（系统 TTS + 滴声）、半圆刻度盘缩放、
+  打点持久化、收件标签、设备标识 —— 见 `docs/实现决策.md` §20
+
+### ⚠️ 明确没做的（别以为做了）
+
+| 缺口 | 实情 |
+|---|---|
+| **上传 / 归档 / 交付** | **整个不存在**。只有 `RecorderGateway`（相机）。`UploadState` / `EvidenceState`（`lib/states.dart`）**零使用者** —— 这是 M5，尚未开工，不是漏了 |
+| **资源告警（§3.1.1）** | **原来的实现已整体删除**。`StopTrigger.resourceCritical`（`recorder_events.dart:76`）是个**遗留死枚举**：有声明、有一处显示用例，**没有任何地方产生它** |
+| **安卓整条链路** | **完全不通**。`RecorderChannel.kt` 实现的是 `startSession` / `stopSession`，Dart 调的是 `openCamera` / `startRecording` / `stopRecording` / `closeCamera` 等 —— **8 个方法落到 `notImplemented`**；且**不发 `barcodeDetected`**、**没有相机预览**。iOS 侧是对的 |
 
 ### ⚠️ M4 未完成
 
 两端原生层都已写，但**只验证到「能编译」** —— Android 出 APK、iOS 过 macOS 编译检查。
 本机是 Windows：没有摄像头、没有真机、不跑模拟器，相机时序与轮转行为都没跑过。
-
-其余未做：条码识码、目标跟踪、语音播报（TTS）、半轮盘缩放 UI、打点持久化、
-把编排器接进界面。
-详见 [`docs/实现决策.md`](docs/实现决策.md) §7。
 
 ### ⚠️ 真机验收一条都没做
 
