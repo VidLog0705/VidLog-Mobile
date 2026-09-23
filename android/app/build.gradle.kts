@@ -44,6 +44,16 @@ kotlin {
     }
 }
 
+dependencies {
+    // 条码解码。**Android 平台没有自带的条码 API**（iOS 有系统 Vision），
+    // 所以这里必须带一个第三方库 —— 规格 §10 要求逐个核对许可证。
+    //
+    // ZXing core：Apache-2.0，纯 Java，只做解码、不做相机、不带任何资源文件。
+    // 选它而不是 ML Kit 的理由：后者要拉 Google Play Services，
+    // 多一层运行时依赖与另一份许可证要核。
+    implementation("com.google.zxing:core:3.5.4")
+}
+
 flutter {
     source = "../.."
 }

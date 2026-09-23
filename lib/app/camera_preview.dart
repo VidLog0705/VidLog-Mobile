@@ -1,10 +1,15 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 
 import '../scanning/viewfinder.dart';
 
-/// 原生预览视图的类型名，须与 iOS `RecorderPlugin.previewViewType` 一致。
+/// 原生预览视图的类型名。须与 iOS `RecorderPlugin.previewViewType` **和**
+/// Android `RecorderChannel.PREVIEW_VIEW_TYPE` 一致。
 const _previewViewType = 'vidlog/camera_preview';
 
 /// 录像的画面比例（宽/高）。
@@ -41,9 +46,9 @@ class CameraPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 预览是 iOS 原生视图。Android 那边还没做（没有设备可验），
-    // 所以先如实显示「没预览」，而不是给一块黑屏让人以为坏了。
-    if (!Platform.isIOS) {
+    // 预览是原生视图。两个手机端都实现了；桌面上跑（开发时）没有，
+    // 那时如实显示「没预览」，而不是给一块黑屏让人以为坏了。
+    if (!Platform.isIOS && !Platform.isAndroid) {
       return const _PreviewUnavailable();
     }
 
@@ -53,7 +58,7 @@ class CameraPreview extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            const UiKitView(viewType: _previewViewType),
+            _nativePreview(context),
             // 框画在预览之上，用的是同一份归一化坐标。
             IgnorePointer(
               child: CustomPaint(painter: _ViewfinderPainter(viewfinder.rect)),
@@ -61,6 +66,40 @@ class CameraPreview extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  /// 原生预览。
+  ///
+  /// Android 那边**必须走混合合成**（hybrid composition，也就是
+  /// `initExpensiveAndroidView`）：预览是相机直接写进去的一路 Surface，
+  /// 默认那条虚拟显示（virtual display）渲染不出它。
+  ///
+  /// ⚠️ 走错了的表现是**一块黑屏**，而且不会有任何报错 ——
+  /// 真机上看到黑屏、取景框却画得好好的，先查这里和
+  /// `MainActivity` 里注册工厂时那个 `isHybrid = true`。
+  Widget _nativePreview(BuildContext context) {
+    if (Platform.isIOS) {
+      return const UiKitView(viewType: _previewViewType);
+    }
+
+    return PlatformViewLink(
+      viewType: _previewViewType,
+      surfaceFactory: (context, controller) => AndroidViewSurface(
+        controller: controller as AndroidViewController,
+        // 预览不吃触摸：取景框在上面压着，缩放交给表盘。
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+        hitTestBehavior: PlatformViewHitTestBehavior.translucent,
+      ),
+      onCreatePlatformView: (params) =>
+          PlatformViewsService.initExpensiveAndroidView(
+            id: params.id,
+            viewType: params.viewType,
+            layoutDirection: Directionality.of(context),
+            onFocus: () => params.onFocusChanged(true),
+          )
+            ..addOnPlatformViewCreatedListener(params.onPlatformViewCreated)
+            ..create(),
     );
   }
 }
@@ -75,7 +114,7 @@ class _PreviewUnavailable extends StatelessWidget {
       alignment: Alignment.center,
       padding: const EdgeInsets.all(24),
       child: const Text(
-        '这个平台还没有相机预览。\n（iOS 已实现；Android 尚未编写）',
+        '这个平台还没有相机预览。\n（两个手机端都已实现；桌面端本来就不需要）',
         textAlign: TextAlign.center,
         style: TextStyle(color: Colors.white70, fontSize: 13),
       ),

@@ -60,7 +60,7 @@ lib/                      Dart 侧：可测试的逻辑
   scanning/
     viewfinder.dart         取景框判定（§3.2.2）
     scan_gate.dart          持续识码 → 离散扫码事件
-android/                  ★ 原生相机（Kotlin）：⚠️ 通道尚未接上，见下
+android/                  ★ 原生相机（Kotlin）：相机 / 编码 / 分段 / 识码 / 预览
 ios/                      ★ 原生相机（Swift）：同上，轮转模型不同（见 docs/实现决策.md §6B）
 test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
@@ -124,6 +124,8 @@ git push
 - **界面**：采集页四栏 + 设置页，编排器（`RecordingCoordinator`）**已接进界面**
 - **2026-09-22 需求**：语音播报（系统 TTS + 滴声）、半圆刻度盘缩放、
   打点持久化、收件标签、设备标识 —— 见 `docs/实现决策.md` §20
+- **2026-09-23**：**安卓整条链路接上**（§23）；**保留期设置**（下拉档位，
+  发货 / 退货各一份）—— 见 `docs/实现决策.md` §19
 
 ### ⚠️ 明确没做的（别以为做了）
 
@@ -132,12 +134,17 @@ git push
 | **上传 / 归档 / 交付** | **整个不存在**。只有 `RecorderGateway`（相机）。`UploadState` / `EvidenceState`（`lib/states.dart`）**零使用者** —— 这是 M5，尚未开工，不是漏了 |
 | **保留期的判定与执行** | **设置做完了，判定与执行没做**（`eeafa0c`）：`retention_setting.dart` + 设置页那张卡片都在。⚠️ 但**选哪个档位都不会删任何文件** —— 判定要拿「归档成功时刻」起算，而 `RecordingEntry` 没这个字段（M5 的产物），`LabelStore` 也还没有读的那一半。**这是有意的，不是漏做**（`docs/实现决策.md` §19.9） |
 | **资源告警（§3.1.1）** | **原来的实现已整体删除**。`StopTrigger.resourceCritical`（`recorder_events.dart:76`）是个**遗留死枚举**：有声明、有一处显示用例，**没有任何地方产生它** |
-| **安卓整条链路** | **完全不通**。`RecorderChannel.kt` 实现的是 `startSession` / `stopSession`，Dart 调的是 `openCamera` / `startRecording` / `stopRecording` / `closeCamera` 等 —— **8 个方法落到 `notImplemented`**；且**不发 `barcodeDetected`**、**没有相机预览**。iOS 侧是对的 |
+| **安卓整条链路** | **2026-09-23 已接上**（`实现决策.md` §23）：通道改名、相机预览（混合合成）、条码解码（ZXing 3.5.4）、滴声（`ToneGenerator`）都实现了，`flutter build apk` 编得过。⚠️ **但一行都没在真机上跑过** —— 与 iOS 同样是纸面推导 |
+| **第三方库（1 个）** | `com.google.zxing:core:3.5.4`（Apache-2.0，只做解码）。**安卓没有系统自带的条码 API**（iOS 有 Vision），所以这个依赖躲不掉；选 ZXing 而不是 ML Kit，是因为后者要拉 Google Play Services —— 多一层运行时依赖、多一份许可证要核 |
 
 ### ⚠️ M4 未完成
 
 两端原生层都已写，但**只验证到「能编译」** —— Android 出 APK、iOS 过 macOS 编译检查。
 本机是 Windows：没有摄像头、没有真机、不跑模拟器，相机时序与轮转行为都没跑过。
+
+⚠️ 安卓从「通道根本调不通」变成「调得通但没验过」，**危险的种类换了、没有减少**：
+以前是每次调用都返回 `notImplemented`（一看就知道坏了），现在是编译全绿、
+真机上跑起来才发现画面躺着或者扫不出码。见 `实现决策.md` §23.5。
 
 ### ⚠️ 真机验收一条都没做
 

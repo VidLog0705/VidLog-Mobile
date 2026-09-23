@@ -2,7 +2,14 @@ package com.vidlog.vidlog_mobile
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.SurfaceTexture
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.util.Log
+import android.view.SoundEffectConstants
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -17,61 +24,43 @@ import java.util.Locale
  *
  * ## 契约
  *
- * Dart 侧的对应实现在 `lib/recording/`：本类只负责**投递**，
+ * Dart 侧的对应实现在 `lib/recording/recorder_gateway.dart`：本类只负责**投递**，
  * 停录决策、会话收尾、索引写入全部由 Dart 完成。
  *
  * 这样切分的理由：那些逻辑是最容易写错的部分，放在 Dart 里才测得完整
- * （见 `docs/实现决策.md`）。原生层只做相机、编码、分段轮转。
+ * （见 `docs/实现决策.md`）。原生层只做相机、编码、分段轮转、识码。
  *
  * | 方法 | 方向 | 语义 |
  * |---|---|---|
  * | `hasCameraPermission` | Dart → 原生 | 是否已授权 |
  * | `requestCameraPermission` | Dart → 原生 | 弹授权框（结果由系统回调，Dart 稍后重试） |
- * | `startSession` | Dart → 原生 | 开始录制，参数含工作区目录、单号、单段时长 |
- * | `stopSession` | Dart → 原生 | 停止并封掉当前分段 |
- * | `setZoom` | Dart → 原生 | 变焦 |
- * | `speak` | Dart → 原生 | 语音播报（规格 §3.3.2 / §3.3.4 / §3.3.6） |
+ * | `openCamera` | Dart → 原生 | 开相机送预览，**不录** |
+ * | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长 |
+ * | `stopRecording` | Dart → 原生 | 停止；**相机保持开着** |
+ * | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
+ * | `setZoom` / `maxZoom` / `minZoom` | Dart → 原生 | 变焦与表盘刻度（规格 §3.1.2） |
+ * | `focusNow` / `autoFocusAndZoom` | Dart → 原生 | 对焦；面单进框自动放大两秒 |
+ * | `playDetentSound` | Dart → 原生 | 表盘拨轮声 |
+ * | `speak` | Dart → 原生 | 语音播报，`beep` 为真时先滴一声（规格 §3.3.2 / §3.3.4 / §3.3.6） |
  * | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
  * | `sceneSampled` | 原生 → Dart | 画面是否静止 |
+ * | `barcodeDetected` | 原生 → Dart | 识别到一个条码（**连续**上报，离散化是 Dart 侧的事） |
  * | `failed` | 原生 → Dart | 相机/编码出错 |
  *
- * ## ⚠️ 与 Dart 侧的方法名对不上（已知缺口，未修）
+ * 两端对 Dart 必须长得一样（`RecorderPlugin.swift` 是另一份），
+ * 否则 `recorder_gateway.dart` 就得按平台分叉。
  *
- * Dart 的 `ChannelRecorderGateway` 调的是 `openCamera` / `startRecording` /
- * `stopRecording` / `closeCamera` / `autoFocusAndZoom` / `minZoom` /
- * `focusNow` / `playDetentSound`，而本类实现的是
- * `startSession` / `stopSession` —— 每次调用都会落到 `notImplemented`，
- * **Android 端目前整条链路是通的不了**。iOS 侧（`RecorderPlugin.swift`）是对的。
+ * ## ⚠️ `minZoom` 在 Android 上恒为 1.0（如实说明，不是没做）
  *
- * `minZoom` / `focusNow` / `playDetentSound`（表盘改造，2026-09-22）同样
- * **不在这里补空壳**，理由与下一条相同。其中 `minZoom` 需要说明一句：
- * Android 那侧的变焦模型**下限本来就恒为 1.0**（`setZoom` 里是
- * `coerceIn(1.0f, maxZoomRatio)`，`applyZoom` 同）—— 也就是 Android 根本没有
- * 超广角这条路。所以补一个 `minZoom -> 1.0` 不算撒谎，但也没必要：
- * Dart 侧拿不到就按 1.0 处理，表盘左半圈自然是平的（规格 §3.1.2 的异常条款）。
+ * Android 那侧的变焦模型下限本来就是 1.0（`CameraSegmentRecorder` 里是
+ * `coerceIn(1.0f, maxZoomRatio)`）—— 也就是 Android 根本没有超广角这条路。
+ * 补一个假的 0.5 才算撒谎：Dart 会拿它把表盘左半圈画出来，
+ * 而那一半划下去画面**不会变**。表盘左半圈是平的是对的。
  *
- * `autoFocusAndZoom`（面单进框对焦 + 临时放大两秒，2026-09-22）**故意不在这里
- * 补一个空壳**：补了会让人以为两端都做了。接上 Android 相机链路时，
- * 它要跟 `openCamera` / `startRecording` 一起补 —— 那需要的是
- * `CameraSegmentRecorder` 的生命周期拆分，不是在这里加一个 `result.success(null)`。
- * Dart 侧对它是尽力而为的（调用点吞掉异常），所以现在落到 `notImplemented`
- * 不会影响任何现有行为。
+ * ## ⚠️ 未在真机上验证
  *
- * `speak` 的 `beep` 参数（规格 §3.3.6 的「滴一声再播报」）在 Android 侧
- * **被忽略**：本类的 `speak` 只读 `text`。这不算新缺口 —— 它跟上面那条一样，
- * 反正整条链路都没接上。接 Android 时要一起补，且滴声同样**不许引入音频素材**：
- * 用 `ToneGenerator`（系统内置、零资源），不要往 `res/raw/` 里塞 wav。
- *
- * 不能只把名字改过来完事：规格 §3.2.2 要的是「点开始工作 → 出现取景框（**不录**）
- * → 扫到面单才开录」，而 [CameraSegmentRecorder.start] 是**开相机与开录一起做**的，
- * `stop` 又把相机一起关掉。照现在的名字硬接，`openCamera` 会变成「一点按钮就在录」
- * —— 那正是 iOS 那边注释里记着的、已经犯过一次的错。
- *
- * 所以修它要先拆 [CameraSegmentRecorder] 的生命周期（相机常开、只换编码器与封装器），
- * 那是 Android 原生层的一件独立工作，不在 M4 的四项之内。
- * 见 `docs/实现决策.md`。
- *
- * ⚠️ **未在真机上验证。** 见 `docs/实现决策.md`。
+ * 见 `docs/实现决策.md`。本机是 Windows：没有摄像头、没有真机、不跑模拟器，
+ * 相机时序、轮转、预览方向、识码都只验证到「能编译」。
  */
 class RecorderChannel(private val activity: FlutterActivity) :
     MethodChannel.MethodCallHandler,
@@ -81,11 +70,51 @@ class RecorderChannel(private val activity: FlutterActivity) :
         const val METHOD_CHANNEL = "vidlog/recorder"
         const val EVENT_CHANNEL = "vidlog/recorder/events"
 
+        /** 预览视图的类型名，须与 Dart 侧 `camera_preview.dart` 一致。 */
+        const val PREVIEW_VIEW_TYPE = "vidlog/camera_preview"
+
+        private const val TAG = "VidLogRecorder"
+
         private const val REQUEST_CAMERA = 7301
+
+        /** 滴声的音量（0~100）。与语音的音量不挂钩，取一个「听得清但不吵」的值。 */
+        private const val BEEP_VOLUME = 80
+
+        private const val BEEP_DURATION_MS = 150
+
+        /**
+         * 滴完之后隔多久开口。
+         *
+         * 系统提示音是**异步**播的，紧接着念的话两个音会叠在一起，
+         * 听起来像「滴」被咬了半口。让出一小段，用户听到的才是
+         * 规格 §3.3.6 要的顺序：先滴、再播。（与 iOS 的 `beepLeadIn` 同值。）
+         */
+        private const val BEEP_LEAD_IN_MS = 300L
     }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var recorder: CameraSegmentRecorder? = null
     private var events: EventChannel.EventSink? = null
+
+    /**
+     * 预览视图挂上来的 SurfaceTexture。
+     *
+     * **可能比相机先到**：Flutter 建视图与 Dart 调 `openCamera` 的先后没有保证。
+     * 所以存在这里，等相机开起来再交给它 —— 丢了的话预览会一直是黑的。
+     */
+    private var previewTexture: SurfaceTexture? = null
+
+    /**
+     * 相机几何（画面尺寸 / 传感器方向）变了，通知预览视图重算。
+     *
+     * 同样是因为那个先后没有保证：视图先建好时它拿到的还是默认值，
+     * 得等相机开好后再算一次，否则画面是躺着的。
+     */
+    var onPreviewGeometryChanged: (() -> Unit)? = null
+
+    /** 预览视图要用它。 */
+    val currentRecorder: CameraSegmentRecorder? get() = recorder
 
     /** 等待授权结果的 Dart 回调。授权框是异步的，只能存下来等系统回调。 */
     private var pendingPermissionResult: MethodChannel.Result? = null
@@ -93,19 +122,33 @@ class RecorderChannel(private val activity: FlutterActivity) :
     /** 语音播报。规格 §3.3.2 / §3.3.4 的两句提示。 */
     private var tts: TextToSpeech? = null
 
+    /** 滴声。**系统内置音**，零音频素材（洁净室 + 规格 §10）。 */
+    private var tone: ToneGenerator? = null
+
+    /** 排着队还没开口的那一次播报。新提示要能把它顶掉。 */
+    private var pendingSpeech: Runnable? = null
+
     fun attach(messenger: io.flutter.plugin.common.BinaryMessenger) {
         MethodChannel(messenger, METHOD_CHANNEL).setMethodCallHandler(this)
         EventChannel(messenger, EVENT_CHANNEL).setStreamHandler(this)
     }
 
     fun dispose() {
-        recorder?.stop()
+        recorder?.closeCamera()
         recorder = null
         events = null
+        previewTexture = null
+        onPreviewGeometryChanged = null
 
-        // TTS 持有系统服务，不关会漏一路音频。
+        pendingSpeech?.let { mainHandler.removeCallbacks(it) }
+        pendingSpeech = null
+
+        // TTS 与滴声都持有系统服务，不关会漏一路音频。
         tts?.shutdown()
         tts = null
+
+        tone?.release()
+        tone = null
     }
 
     // ─────────────────────────────────────────────
@@ -142,27 +185,22 @@ class RecorderChannel(private val activity: FlutterActivity) :
                 }
             }
 
-            "startSession" -> startSession(call, result)
+            // ── 相机与录制是**两件事**（规格 §3.2.2）──
+            // 点「开始工作」→ 出现可见的取景框（开相机，不录）；
+            // 扫到面单 → 开录。合成一个「startSession」是之前的错，
+            // 表现是「点了按钮屏幕上什么都没有，但其实在录」。
 
-            // 在**主线程**上停，并在同一线程回 result。
-            //
-            // 理由：stop() 会封闭当前分段并通过 runOnUiThread 投递 segmentClosed。
-            // 如果在别的线程调用 stop() 再立刻 result.success，那一事件还在队列里，
-            // Dart 拿到「已停止」就去做收尾 —— **最后一段会被漏掉**。
-            // 都在主线程执行就能保证「先投递事件，再回结果」这个顺序。
-            "stopSession" -> {
-                activity.runOnUiThread {
-                    recorder?.stop()
-                    recorder = null
-                    result.success(null)
-                }
-            }
+            "openCamera" -> openCamera(result)
+            "startRecording" -> startRecording(call, result)
+            "stopRecording" -> stopRecording(result)
+            "closeCamera" -> closeCamera(result)
 
             "setZoom" -> {
                 val ratio = call.argument<Double>("ratio")?.toFloat()
                 if (ratio == null) {
                     result.error("bad_args", "缺少 ratio", null)
                 } else {
+                    // 尽力而为：相机没开时是空操作，不是错误（与 iOS 一致）。
                     recorder?.setZoom(ratio)
                     result.success(null)
                 }
@@ -171,27 +209,234 @@ class RecorderChannel(private val activity: FlutterActivity) :
             // 相机没开时回 null（与 iOS 一致）—— Dart 侧据此用保守的默认值。
             "maxZoom" -> result.success(recorder?.maxZoomRatio?.toDouble())
 
-            "speak" -> {
-                val text = call.argument<String>("text")
-                if (text.isNullOrBlank()) {
-                    result.error("bad_args", "缺少 text", null)
-                } else {
-                    // QUEUE_FLUSH：新提示顶掉旧的那句。
-                    // 两句提示本来就不会同时出现，而「面单错误，请扫描正确面单」
-                    // 连着报两次时叠着念比只念一遍更糟 —— 用户要先听完才知道是同一句。
-                    //
-                    // ⚠️ 这里**没有读 `beep`**（规格 §3.3.6 要的「先滴一声」）。
-                    // 补法见类注释：`ToneGenerator`，不是音频文件。
-                    //
-                    // 引擎还没就绪时这次调用会静默失败，**这是可接受的**：
-                    // 播报是尽力而为，Dart 侧也按成功处理（见 RecorderGateway.speak）。
-                    tts().speak(text, TextToSpeech.QUEUE_FLUSH, null, "vidlog-prompt")
-                    result.success(null)
-                }
+            // Android 的变焦下限恒为 1.0（见类注释），相机没开时同样是 null。
+            "minZoom" -> result.success(recorder?.minZoomRatio?.toDouble())
+
+            "focusNow" -> {
+                // 表盘滑动时重新对焦（规格 §3.1.2）。
+                // 刻意**不给 FlutterError 分支**：相机没开、设备不支持对焦
+                // 都不是错误，是尽力而为。
+                recorder?.focusNow()
+                result.success(null)
             }
+
+            "playDetentSound" -> {
+                // 拨轮声。同样尽力而为 —— 用户关掉系统「触感/提示音」时就该没声，
+                // 那不是失败，是用户自己的选择。
+                playDetentSound()
+                result.success(null)
+            }
+
+            "autoFocusAndZoom" -> {
+                // 面单进框：对焦 + 临时放大两秒（需求方 2026-09-22）。
+                // 两秒后自动回弹的那笔账**由 recorder 自己记**，这里只管递进去。
+                recorder?.autoFocusAndZoom()
+                result.success(null)
+            }
+
+            "speak" -> speak(call, result)
 
             else -> result.notImplemented()
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // 相机
+    // ─────────────────────────────────────────────
+
+    /**
+     * 开相机、开始送预览。**不录。**
+     *
+     * 规格 §3.2.2：点「开始工作」→ 出现可见的取景框。那时还没扫码。
+     */
+    private fun openCamera(result: MethodChannel.Result) {
+        if (!hasCameraPermission()) {
+            result.error("permission_denied", "没有相机权限", null)
+            return
+        }
+
+        // 已经开着（相机 + 预览都在跑）就直接回成功，与 iOS 一致。
+        recorder?.let { existing ->
+            if (existing.cameraOpen) {
+                result.success(null)
+                return
+            }
+        }
+
+        val created = CameraSegmentRecorder(
+            context = activity,
+            onEvent = ::emit,
+        )
+
+        if (!created.openCamera()) {
+            result.error("camera_failed", "相机未能打开", null)
+            return
+        }
+
+        // 预览可能比相机先到 —— 这时候才交得出去。
+        created.setPreviewTexture(previewTexture)
+
+        recorder = created
+
+        // 画面尺寸 / 传感器方向刚刚才知道，让预览视图重算一次。
+        onPreviewGeometryChanged?.invoke()
+
+        result.success(null)
+    }
+
+    /** 开始录一段。[directory] 是这一段（= 一个会话）的落盘位置。 */
+    private fun startRecording(call: MethodCall, result: MethodChannel.Result) {
+        val current = recorder
+        if (current == null) {
+            result.error("no_camera", "相机还没打开", null)
+            return
+        }
+
+        val directory = call.argument<String>("directory")
+        if (directory.isNullOrBlank()) {
+            result.error("bad_args", "缺少 directory", null)
+            return
+        }
+
+        val segmentDurationMs =
+            call.argument<Number>("segmentDurationMs")?.toLong()
+                ?: CameraSegmentRecorder.DEFAULT_SEGMENT_DURATION_MS
+
+        val started = current.startRecording(File(directory), segmentDurationMs)
+        if (started) {
+            result.success(null)
+        } else {
+            result.error("record_failed", "未能开始录制", null)
+        }
+    }
+
+    /**
+     * 停止录制。**相机保持开着**，取景框还在，下件包裹接着扫。
+     *
+     * 在**主线程**上停，并在同一线程回 result。
+     *
+     * 理由：`stopRecording` 会封闭当前分段并投递 `segmentClosed`，
+     * 而投递走的是 `runOnUiThread`。都在主线程执行就能保证
+     * 「先投递事件，再回结果」这个顺序 —— 反过来的话 Dart 会以为录完了
+     * 而立刻收尾，**最后一段会被漏掉**。
+     */
+    private fun stopRecording(result: MethodChannel.Result) {
+        activity.runOnUiThread {
+            recorder?.stopRecording()
+            result.success(null)
+        }
+    }
+
+    /** 关闭相机（结束工作）。 */
+    private fun closeCamera(result: MethodChannel.Result) {
+        activity.runOnUiThread {
+            recorder?.closeCamera()
+            recorder = null
+            result.success(null)
+        }
+    }
+
+    /** 预览视图挂上 / 摘掉时调用（见 [setPreviewTexture] 的说明）。 */
+    fun setPreviewTexture(texture: SurfaceTexture?) {
+        previewTexture = texture
+        recorder?.setPreviewTexture(texture)
+    }
+
+    // ─────────────────────────────────────────────
+    // 提示音
+    // ─────────────────────────────────────────────
+
+    /**
+     * 拨一下齿轮的模拟声（表盘滑过一个刻度）。规格 §3.1.2。
+     *
+     * 用系统的**按键音**（`View.playSoundEffect`）：不带任何音频资源 ——
+     * 洁净室与许可证（规格 §10）的账上就少一笔，与 TTS 走系统是同一个理由。
+     *
+     * 音量与开关**跟随系统**的「触感与提示音」：用户把它关掉时不响是**正常的**，
+     * 不是 bug。（iOS 那边对应的是 `UIDevice.playInputClick()`。）
+     *
+     * **尽力而为，什么都不抛。**
+     */
+    private fun playDetentSound() {
+        try {
+            activity.window.decorView.playSoundEffect(SoundEffectConstants.CLICK)
+        } catch (error: Exception) {
+            Log.w(TAG, "拨轮声失败", error)
+        }
+    }
+
+    /**
+     * 「滴」一声（规格 §3.3.6）。
+     *
+     * 用 `ToneGenerator` 生成的**系统内置音**：零音频素材，理由是上面那条。
+     *
+     * ⚠️ 与拨轮声**刻意走两条路**：拨轮声跟着系统的按键音开关走是对的
+     * （它本来就该跟着用户的选择），但这一声「滴」是操作员判断
+     * 「系统认了这一下」的反馈 —— 用户关掉按键音时它会一起消失，
+     * 那个消失会被当成 bug。`ToneGenerator` 不受那个开关影响。
+     *
+     * ⚠️ 音色**本机不可验**（开发机是 Windows、没有真机）。要换就改
+     * `TONE_PROP_BEEP` 这一个常量。
+     */
+    private fun beep() {
+        try {
+            val generator = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, BEEP_VOLUME)
+                .also { tone = it }
+            generator.startTone(ToneGenerator.TONE_PROP_BEEP, BEEP_DURATION_MS)
+        } catch (error: Exception) {
+            Log.w(TAG, "滴声失败", error)
+        }
+    }
+
+    /**
+     * 读出一句提示。`beep` 为真时**先滴一声再开口**（规格 §3.3.6）。
+     *
+     * 引擎没装中文语音时**不能因此判定失败**：那时系统会退化成默认语音，
+     * 用户至少还听得见有提示。播报是尽力而为的，Dart 侧也按成功处理
+     * （见 `RecorderGateway.speak`）。
+     *
+     * **不等念完就回结果**：TTS 是异步的，等它等于让 Dart 侧那条事件链
+     * 干等一两秒。Dart 只关心「递出去了没有」。
+     */
+    private fun speak(call: MethodCall, result: MethodChannel.Result) {
+        val text = call.argument<String>("text")
+        if (text.isNullOrBlank()) {
+            result.error("bad_args", "缺少 text", null)
+            return
+        }
+
+        // 新提示顶掉旧的那句。两句提示本来就不会同时出现，
+        // 而「面单错误，请扫描正确面单」连着报两次时，叠着念比只念一遍更糟 ——
+        // 用户要先听完才知道是同一句。
+        //
+        // ⚠️ 排队等着开口的那一次也要顶掉（连续扫时两句提示可能只隔几百毫秒，
+        // 三百毫秒前那句此刻还没出声）。少了这一步，后面那句会跟着一起念出来。
+        pendingSpeech?.let { mainHandler.removeCallbacks(it) }
+        pendingSpeech = null
+
+        // 已经在念的那句也要掐掉。QUEUE_FLUSH 管得到「还没开始的」，
+        // 但连报两次同一句时，用户听到的是前一句被打断 —— 那是想要的。
+        ttsEngine()?.stop()
+
+        val speakNow = Runnable {
+            pendingSpeech = null
+            // 引擎还没就绪时这次调用会静默失败，**这是可接受的**：
+            // 播报是尽力而为的。
+            ttsEngine()?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "vidlog-prompt")
+        }
+
+        if (call.argument<Boolean>("beep") != true) {
+            speakNow.run()
+            result.success(null)
+            return
+        }
+
+        // 顺序是规格 §3.3.6 的原话：「滴一声**然后**播报」。
+        beep()
+        pendingSpeech = speakNow
+        mainHandler.postDelayed(speakNow, BEEP_LEAD_IN_MS)
+
+        result.success(null)
     }
 
     /**
@@ -200,7 +445,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
      * 第一次调用时才建：用户可能整场都没扫错过一次码，那就一次都不用播报。
      * 引擎初始化是异步的，`onInit` 回调时 [tts] 已经赋好值。
      */
-    private fun tts(): TextToSpeech {
+    private fun ttsEngine(): TextToSpeech? {
         tts?.let { return it }
 
         val created = TextToSpeech(activity) { status ->
@@ -216,42 +461,9 @@ class RecorderChannel(private val activity: FlutterActivity) :
         return created
     }
 
-    private fun startSession(call: MethodCall, result: MethodChannel.Result) {
-        if (!hasCameraPermission()) {
-            result.error("permission_denied", "没有相机权限", null)
-            return
-        }
-
-        val directory = call.argument<String>("directory")
-        if (directory.isNullOrBlank()) {
-            result.error("bad_args", "缺少 directory", null)
-            return
-        }
-
-        val segmentDurationMs =
-            call.argument<Number>("segmentDurationMs")?.toLong()
-                ?: CameraSegmentRecorder.DEFAULT_SEGMENT_DURATION_MS
-
-        recorder?.stop()
-
-        val sessionDirectory = File(directory)
-        sessionDirectory.mkdirs()
-
-        val created = CameraSegmentRecorder(
-            context = activity,
-            outputDirectory = sessionDirectory,
-            segmentDurationMs = segmentDurationMs,
-            onEvent = ::emit,
-        )
-
-        if (!created.start()) {
-            result.error("start_failed", "相机未能启动", null)
-            return
-        }
-
-        recorder = created
-        result.success(null)
-    }
+    // ─────────────────────────────────────────────
+    // 事件投递
+    // ─────────────────────────────────────────────
 
     private fun emit(event: RecorderEvent) {
         // 事件回调来自相机线程 / 编码线程，而 EventSink **必须在主线程**用。
@@ -273,6 +485,16 @@ class RecorderChannel(private val activity: FlutterActivity) :
                     mapOf(
                         "type" to "sceneSampled",
                         "isStatic" to event.isStatic,
+                    ),
+                )
+
+                is RecorderEvent.BarcodeDetected -> sink.success(
+                    mapOf(
+                        "type" to "barcodeDetected",
+                        "text" to event.text,
+                        "centerX" to event.centerX,
+                        "centerY" to event.centerY,
+                        "confidence" to event.confidence,
                     ),
                 )
 
