@@ -942,14 +942,32 @@ void main() {
       nowMs = 1000;
       await begin(coordinator);
 
-      // 每 10 秒见到一次 = 包裹一直摆在画面里，累计 5 分钟。
-      for (var i = 0; i < 30; i++) {
-        nowMs += 10 * 1000;
+      // ⚠️ **喂识码的间隔必须小于 2 秒**，否则这条用例验的不是它自己说的事。
+      // 相机是连续识码的（同一张面单每秒会被认好几次），所以照那个节奏喂：
+      // 每 500 ms 一次，累计 5 分钟。
+      //
+      // 原先写的是「每 10 秒见到一次」，那与「包裹一直摆在画面里」是**矛盾**的：
+      // 判离场的阈值就是 2 秒（`PackageTracker.absenceThreshold`），10 秒没见到
+      // **本来就算离场**；而 `ScanGate` 的复扫阈值也是 2 秒，于是每一下识码都被
+      // 当成一次**复扫**，撞上 2026-09-22 那条「复扫同码 → 直接停录」
+      // ⇒ 每喂一次就停一段、下一次又当首次识码开一段……
+      //
+      // 那条用例当时是**绿的，但绿在一个巧合上**：停了又开、转了偶数圈、
+      // 最后一下正好停在「录着」，于是最后那个 `isRecording` 断言过得去。
+      // CI 上偶发变红就是它（进程调度的不同会让某一圈的停/开错位）。
+      // ⇒ 所以这里除了看最后那个标志，还要断言**整段过程中一次收尾都没发生过** ——
+      // 后者才是这条用例真正要说的事，也不再看圈数的奇偶。
+      final stops = <StopRecording>[];
+      for (var i = 0; i < 600; i++) {
+        nowMs += 500;
         sighting(waybill);
         await coordinator.handleHeartbeat();
         await coordinator.waitForPendingEvents();
+        stops.addAll(actions.whereType<StopRecording>());
+        actions.clear();
       }
 
+      expect(stops, isEmpty, reason: '没离场过就不该有任何一次收尾（复扫同码也会停）');
       expect(coordinator.isRecording, isTrue, reason: '没离场过就不该被静止停掉');
       await coordinator.dispose();
     });
