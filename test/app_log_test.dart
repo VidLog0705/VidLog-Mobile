@@ -151,8 +151,14 @@ void main() {
     test('建不出目录也不抛_只是不落盘', () async {
       final log = AppLog.instance;
 
-      // Windows 上路径里的非法字符 —— 建不出来。
-      log.init(directory: 'Z:\\不存在的盘\\logs');
+      // ⚠️ 造一个**任何操作系统上都建不出来**的路径：在一个**文件**下面建目录。
+      //
+      // 第一版用的是 `Z:\\不存在的盘\\logs` —— 那在 Windows 上非法，
+      // 而在 Linux 上「Z:\不存在的盘\logs」是一个**完全合法的目录名**，
+      // 于是 `createSync` 成功、`isReady` 是 true，**本机全绿、CI 红**。
+      // 一条只在这台机器上成立的测试，比没有测试更坏。
+      final blocker = File('${temp.path}/这是一个文件')..writeAsStringSync('x');
+      log.init(directory: '${blocker.path}/logs');
 
       expect(log.isReady, isFalse);
       log.info('录制', '这条落不了盘，但不该抛');
