@@ -190,7 +190,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
             // 扫到面单 → 开录。合成一个「startSession」是之前的错，
             // 表现是「点了按钮屏幕上什么都没有，但其实在录」。
 
-            "openCamera" -> openCamera(result)
+            "openCamera" -> openCamera(call, result)
             "startRecording" -> startRecording(call, result)
             "stopRecording" -> stopRecording(result)
             "closeCamera" -> closeCamera(result)
@@ -249,15 +249,23 @@ class RecorderChannel(private val activity: FlutterActivity) :
      *
      * 规格 §3.2.2：点「开始工作」→ 出现可见的取景框。那时还没扫码。
      */
-    private fun openCamera(result: MethodChannel.Result) {
+    private fun openCamera(call: MethodCall, result: MethodChannel.Result) {
         if (!hasCameraPermission()) {
             result.error("permission_denied", "没有相机权限", null)
             return
         }
 
+        // 只认二维码 —— 只有「扫码连接」那个界面会打开它（规格 §3.4.5 ④）。
+        // 缺参数 = false：老版本 Dart 不带这个参数时行为一个字都不变。
+        val qrOnly = call.argument<Boolean>("qrOnly") ?: false
+
         // 已经开着（相机 + 预览都在跑）就直接回成功，与 iOS 一致。
+        // ⚠️ 但**识码范围要顺手换掉**：就这么返回的话，录制页把相机开着、
+        // 用户切到扫码连接那一下，屏幕上是一维码的白名单在扫一张二维码 ——
+        // 表现是**扫了没反应**。
         recorder?.let { existing ->
             if (existing.cameraOpen) {
+                existing.qrOnly = qrOnly
                 result.success(null)
                 return
             }
@@ -267,6 +275,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
             context = activity,
             onEvent = ::emit,
         )
+        created.qrOnly = qrOnly
 
         if (!created.openCamera()) {
             result.error("camera_failed", "相机未能打开", null)

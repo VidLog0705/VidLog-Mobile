@@ -410,6 +410,20 @@ void main() {
       await coordinator.dispose();
     });
 
+    test('★ 录制这条路上开相机**从不**要二维码识别', () async {
+      // 规格 §3.4.5 ④：二维码**只在「扫码连接」那个专用界面里**开。
+      // 面单上或环境里的二维码不该被当成单号 —— 那是这块范围开大的代价，
+      // 而它的表现是「偶尔扫出一条 URL 当单号」（写进索引，事后很难查）。
+      final coordinator = make();
+      nowMs = 1000;
+
+      await coordinator.openCamera();
+
+      expect(gateway.cameraQrOnly, isFalse);
+
+      await coordinator.dispose();
+    });
+
     test('closeCamera() 关掉相机；已经关了就不再关', () async {
       final coordinator = make();
       nowMs = 1000;
@@ -1718,9 +1732,16 @@ class FakeGateway implements RecorderGateway {
   Future<bool> requestCameraPermission() async => true;
 
   @override
-  Future<void> openCamera() async => cameraOpened = true;
+  Future<void> openCamera({bool qrOnly = false}) async {
+    cameraOpened = true;
+    cameraQrOnly = qrOnly;
+  }
 
   bool cameraOpened = false;
+
+  /// 最近一次开相机是不是「只认二维码」。录制这条路上**必须一直是 false**
+  /// （规格 §3.4.5 ④：二维码只在扫码连接那个专用界面里开）。
+  bool cameraQrOnly = false;
 
   /// 原生层**开始录的那一刻**的回调。
   ///

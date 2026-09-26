@@ -203,7 +203,7 @@ class CameraSegmentRecorder(
         private const val RAMP_MIN_DISTANCE = 0.005f
 
         /**
-         * 支持的条码类型。**与 iOS 的 `barcodeSymbologies` 逐项对齐。**
+         * 识码范围（录制页 / 取景框那一半）。**与 iOS 的 `waybillSymbologies` 逐项对齐。**
          *
          * 只开了**一维码**：这类条码里装的就是单号本身。
          *
@@ -212,7 +212,7 @@ class CameraSegmentRecorder(
          * 一整条 URL。要用得先知道各家承运商的载荷格式、从里面抽出单号 ——
          * 那是另一件事，别在这里猜。
          */
-        private val BARCODE_FORMATS = listOf(
+        private val WAYBILL_FORMATS = listOf(
             BarcodeFormat.CODE_128, // 快递面单上最常见
             BarcodeFormat.CODE_39,
             BarcodeFormat.CODE_93,
@@ -222,10 +222,25 @@ class CameraSegmentRecorder(
             BarcodeFormat.UPC_E,
         )
 
-        private val DECODE_HINTS = mapOf(
-            DecodeHintType.POSSIBLE_FORMATS to BARCODE_FORMATS,
-            // TRY_HARDER：手持画面里的条码常常是斜的、有点糊。
-            // 分析那一路本来就只有几百像素，贵得起。
+        /**
+         * 识码范围（**扫码连接**那一半）：只有二维码。
+         *
+         * 规格 §3.4.5 ④：二维码**只在那个专用界面里**开，录制页仍然只认一维码。
+         * 反过来说，扫码连接界面里认出一维码也没有任何用处（那张码里装的是
+         * `vidlog://…`，一维码装不下），放进来只是多一次没用的判定。
+         */
+        private val QR_FORMATS = listOf(BarcodeFormat.QR_CODE)
+
+        /**
+         * ZXing 的解码提示。
+         *
+         * @param qrOnly 只认二维码 —— 由「扫码连接」那个界面打开。
+         *
+         * TRY_HARDER：手持画面里的条码常常是斜的、有点糊。
+         * 分析那一路本来就只有几百像素，贵得起。
+         */
+        private fun decodeHints(qrOnly: Boolean) = mapOf(
+            DecodeHintType.POSSIBLE_FORMATS to if (qrOnly) QR_FORMATS else WAYBILL_FORMATS,
             DecodeHintType.TRY_HARDER to true,
         )
     }
@@ -323,6 +338,15 @@ class CameraSegmentRecorder(
     @Volatile
     var cameraOpen = false
         private set
+
+    /**
+     * 只认二维码。由「扫码连接」那个界面打开，**录制页永远不打开**
+     * （规格 §3.4.5 ④）。
+     *
+     * `@Volatile`：识码在相机线程上跑，这个开关从**主线程**（方法通道）改。
+     */
+    @Volatile
+    var qrOnly = false
 
     @Volatile
     private var running = false
@@ -1066,7 +1090,7 @@ class CameraSegmentRecorder(
         val bitmap = BinaryBitmap(HybridBinarizer(source))
 
         val result = try {
-            barcodeReader.decode(bitmap, DECODE_HINTS)
+            barcodeReader.decode(bitmap, decodeHints(qrOnly))
         } catch (notFound: NotFoundException) {
             // 绝大多数帧都是这个结果 —— 画面里本来就没码。不是错误。
             return

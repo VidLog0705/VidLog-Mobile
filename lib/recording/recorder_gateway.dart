@@ -84,7 +84,16 @@ abstract interface class RecorderGateway {
   // 这正是之前那版的问题。
 
   /// 打开相机并开始送预览。**不录。**
-  Future<void> openCamera();
+  ///
+  /// [qrOnly] 为真时**只认二维码**（规格 §3.4.5 ④）：那是「扫码连接」
+  /// 那个专用界面用的。
+  ///
+  /// ⚠️ **默认仍然是只认一维码，一个字都没放松** —— 面单上或环境里的二维码
+  /// 不该被当成单号。所以这个开关由调用方显式打开，而**录制页永远不打开它**。
+  ///
+  /// 相机已经开着时调用它：只换识码范围，不重开相机（换范围要重开的话，
+  /// 从录入界面返回录制页会闪一下黑屏）。
+  Future<void> openCamera({bool qrOnly = false});
 
   /// 开始录一段。
   ///
@@ -197,7 +206,8 @@ class ChannelRecorderGateway implements RecorderGateway {
       await _methods.invokeMethod<bool>('requestCameraPermission') ?? false;
 
   @override
-  Future<void> openCamera() => _methods.invokeMethod<void>('openCamera');
+  Future<void> openCamera({bool qrOnly = false}) =>
+      _methods.invokeMethod<void>('openCamera', {'qrOnly': qrOnly});
 
   @override
   Future<void> startRecording({

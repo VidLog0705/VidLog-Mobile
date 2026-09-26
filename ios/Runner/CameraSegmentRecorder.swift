@@ -81,15 +81,13 @@ final class CameraSegmentRecorder: NSObject {
     /// 而包裹摆在那儿几秒内扫到就够了。
     private static let barcodeScanInterval: TimeInterval = 0.3
 
-    /// 支持的条码类型。
-    ///
-    /// 只开了**一维码**：这类条码里装的就是单号本身。
+    /// 识码范围（录制页 / 取景框那一半）：**只有一维码**，这类条码里装的就是单号本身。
     ///
     /// **刻意没开二维码（QR / DataMatrix / PDF417）**：电子面单上的二维码里
     /// 装的往往是 URL 或一段结构化文本，直接当单号用会往单号字段里灌进
     /// 一整条 URL。要用得先知道各家承运商的载荷格式、从里面抽出单号 ——
     /// 那是另一件事，别在这里猜。
-    private static let barcodeSymbologies: [VNBarcodeSymbology] = [
+    private static let waybillSymbologies: [VNBarcodeSymbology] = [
         .code128,  // 快递面单上最常见
         .code39,
         .code93,
@@ -98,6 +96,13 @@ final class CameraSegmentRecorder: NSObject {
         .ean8,
         .upce,
     ]
+
+    /// 识码范围（**扫码连接**那一半）：只有二维码。
+    ///
+    /// 规格 §3.4.5 ④：二维码**只在那个专用界面里**开，录制页仍然只认一维码 ——
+    /// 反过来也一样：在扫码连接界面里认出一维码没有任何用处（那张码里
+    /// 装的是 `vidlog://…`，一维码装不下），放进来只会多一次没用的判定。
+    private static let qrSymbologies: [VNBarcodeSymbology] = [.qr]
 
     // MARK: - 状态
 
@@ -108,6 +113,19 @@ final class CameraSegmentRecorder: NSObject {
     private var videoOutput: AVCaptureVideoDataOutput?
     private var analysisOutput: AVCaptureVideoDataOutput?
     private var captureDevice: AVCaptureDevice?
+
+    /// 只认二维码。由「扫码连接」那个界面打开，**录制页永远不打开**
+    /// （规格 §3.4.5 ④）。
+    ///
+    /// 读写都走 `sessionQueue`：识码在 `videoQueue` 上跑，而这个开关从
+    /// **主线程**（方法通道）改 —— 不加锁就是一个 Bool 的数据竞争。
+    /// 每 0.3 秒 sync 一次的开销可以忽略。
+    private var qrOnlyStorage = false
+
+    var qrOnly: Bool {
+        get { sessionQueue.sync { qrOnlyStorage } }
+        set { sessionQueue.sync { qrOnlyStorage = newValue } }
+    }
 
     /// 当前录制段的落盘位置。**只在录制期间有效** —— 相机可以开着而不录。
     private var outputDirectory: URL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -956,7 +974,7 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         lastBarcodeScanAt = now
 
         let request = VNDetectBarcodesRequest()
-        request.symbologies = Self.barcodeSymbologies
+        request.symbologies = qrOnly ? Self.qrSymbologies : Self.waybillSymbologies
 
         let handler = VNImageRequestHandler(
             cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
