@@ -29,6 +29,7 @@ library;
 import '../upload/archive_store.dart';
 import 'business_type.dart';
 import 'recording_index.dart';
+import 'recording_spec.dart';
 import 'retention_setting.dart';
 
 /// 最近这段时间内录的，一律不清（规格 §3.5.3③）。
@@ -76,15 +77,23 @@ class CleanupPlan {
 
 /// 这条录像的成品大约占多大。
 ///
-/// 码率按 640x480@30 的 H.264 实测约 160 KB/s 估（= 163 840 B/s）——
-/// 与电脑端 `CleanupPlanner.EstimateBytes` 同一个系数，两端的预告数字才对得上。
-/// 5 分钟一段约 49 MB，可以拿它当量级对照。
+/// ⚠️ **系数按这条录像自己的录制规格算**（2026-09-27 改，规格 §3.5.5 的连带项）。
+/// 原先两端都写死一个 160 KB/s（H.264 640×480 时代的数），4K 下错得离谱 ——
+/// 而电脑端「按空间清理」**正是用它决定删到够为止**，估错就是「删了还不够」。
+/// 现在两端读的是**同一张表**（`RecordingSpec.bytesPerSecondOf`）。
+///
+/// 老索引行没有编码 / 分辨率两个字段（2026-09-27 才加），它们走默认档那一格
+/// （H.264 1080P = 1100 KB/s）—— 比原来的 160 KB/s 大 6 倍多，但那才是真相：
+/// 这台手机本来就在录 720P/1080P，而不是 640×480。
 ///
 /// 时长为负时返回 0 而不是负数：那个值只喂给「将腾出多少」这句预告，
 /// 而负的容量是句废话。电脑端那边也是这么钳的。
 int estimateBytes(RecordingEntry entry) => entry.duration.isNegative
     ? 0
-    : entry.duration.inMilliseconds * 160 * 1024 ~/ 1000;
+    : (entry.duration.inMilliseconds *
+            RecordingSpec.bytesPerSecondOf(entry.codec, entry.resolution) /
+            1000)
+        .round();
 
 /// 算一次清理计划（规格 §3.5.2.1 / §3.5.3 / §3.5.4）。
 ///

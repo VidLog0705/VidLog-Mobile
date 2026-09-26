@@ -57,6 +57,154 @@ enum RecorderEvent {
 /// 见 `docs/实现决策.md`：本机是 Windows，连 Xcode 都没有，
 /// 只验证到「CI 的 macOS 编译能过」。相机时序、轮转、掉电收尾
 /// **必须**走一遍真机回归才能算数。
+/// 录制规格（规格 §3.1.7）—— 与 Dart 的 `RecordingSpec` **逐字对应**。
+///
+/// 名字用的是 Dart 那边的枚举名（`h264` / `uhd4K` / `landscapeLeft`），
+/// 而 `fromConfig` 那种宽容解析在这里**刻意不做**：Dart 已经归一过了，
+/// 原生再猜一遍只是给同一件事留两个说法。认不出来一律回默认档 ——
+/// 与设置层「越界回落默认值」同一条规矩（I4）。
+///
+/// ⚠️ **放在这个文件里，没有单独开一个 Swift 文件**：本工程的
+/// `project.pbxproj` 还是老式的文件引用（不是 Xcode 16 的目录同步），
+/// 新加一个文件要手改 pbxproj —— 而那份工程文件是本项目里**最容易改坏**
+/// 的东西（改坏了 CI 才看得见）。一个小结构体不值得冒这个险。
+struct RecorderSpec {
+    enum Codec: String {
+        case h264
+        case h265
+    }
+
+    enum Resolution: String {
+        case uhd4K
+        case p1080
+        case p720
+    }
+
+    enum Orientation: String {
+        case landscapeLeft
+        case portrait
+        case landscapeRight
+    }
+
+    var codec: Codec = .h264
+    var resolution: Resolution = .p1080
+    var orientation: Orientation = .portrait
+
+    /// 默认档：H.264 + 1080P + 竖屏（与 Dart 的 `RecordingSpec.standard` 同一档）。
+    static let standard = RecorderSpec()
+
+    static func parse(_ raw: Any?) -> RecorderSpec {
+        guard let map = raw as? [String: Any] else { return .standard }
+
+        var spec = RecorderSpec.standard
+        if let name = map["codec"] as? String, let value = Codec(rawValue: name) {
+            spec.codec = value
+        }
+        if let name = map["resolution"] as? String, let value = Resolution(rawValue: name) {
+            spec.resolution = value
+        }
+        if let name = map["orientation"] as? String, let value = Orientation(rawValue: name) {
+            spec.orientation = value
+        }
+        return spec
+    }
+
+    static func parseList(_ raw: Any?) -> [RecorderSpec] {
+        guard let list = raw as? [Any] else { return [] }
+        return list.map { parse($0) }
+    }
+
+    /// **编码尺寸**（恒为横向的那一组）：会话 preset 与 writer 都用它。
+    ///
+    /// ⚠️ 竖屏时成片是它的宽高对调 —— 那件事**不在这里做**：
+    /// 它由 connection 的旋转完成，收到的帧本身就是转好的
+    /// （所以 `dimensions(of:)` 读出来的已经是竖的，writer 跟着走）。
+    var landscapeSize: (width: Int, height: Int) {
+        switch resolution {
+        case .uhd4K: return (3840, 2160)
+        case .p1080: return (1920, 1080)
+        case .p720: return (1280, 720)
+        }
+    }
+
+    var preset: AVCaptureSession.Preset {
+        switch resolution {
+        case .uhd4K: return .hd4K3840x2160
+        case .p1080: return .hd1920x1080
+        case .p720: return .hd1280x720
+        }
+    }
+
+    /// 编码器。**界面上写「H.265」，代码里可以写 `.hevc`** ——
+    /// 那是 Apple 的 API 名字，用户看不到（规格禁的是**界面文案**里混用两个名字）。
+    var codecType: AVVideoCodecType {
+        codec == .h265 ? .hevc : .h264
+    }
+
+    /// 录制码率。以原来那个写死的 8 Mbps 为 720P 的基准按像素数放大，
+    /// H.265 再打六折（同画质下它本来就省）。
+    ///
+    /// ⚠️ 不按像素等比的话，**4K 会按 720P 的码率编** ——
+    /// 选项做得出来、画面却糊得没法当证据。
+    var bitRate: Int {
+        let (width, height) = landscapeSize
+        let baselinePixels = 1280 * 720
+        let scaled = 8_000_000.0 * Double(width * height) / Double(baselinePixels)
+        return Int(codec == .h265 ? scaled * 0.6 : scaled)
+    }
+
+    /// 旋转角（iOS 17 起 `videoOrientation` 废弃，改用这个）。
+    ///
+    /// ⚠️ **0 对应 Apple 所谓的 `.landscapeRight`**（Apple 的定义是
+    /// 「Home 键在右手侧」）—— 那个握姿的**听筒朝左**，正是我们的「横左」。
+    /// 两边名字是反的，这里按**角度**写，别照着名字改。
+    ///
+    /// ⚠️ 三个数**都没在真机上验过**（开发机是 Windows、没有 iPhone）。
+    /// 真机上若发现两个横屏方向反了，对调的就是这里的 0 与 180。
+    var rotationAngle: CGFloat {
+        switch orientation {
+        case .portrait: return 90
+        case .landscapeLeft: return 0
+        case .landscapeRight: return 180
+        }
+    }
+
+    /// 老系统那条路（iOS 17 之前）。
+    ///
+    /// ⚠️ **这里是对调着写的，不是笔误** —— Apple 的 `.landscapeRight`
+    /// 指「Home 键在右手侧」（= 我们的横左），见 [rotationAngle]。
+    var videoOrientation: AVCaptureVideoOrientation {
+        switch orientation {
+        case .portrait: return .portrait
+        case .landscapeLeft: return .landscapeRight
+        case .landscapeRight: return .landscapeLeft
+        }
+    }
+
+    /// 这台设备真的跑得通这一档吗（规格 §3.1.7 的可用性检查）。
+    ///
+    /// 两件事都要成立：
+    /// 1. 编码器有（`availableVideoCodecTypes` 里有没有 HEVC）
+    /// 2. 有一个**正好这个尺寸**的设备格式（不是「能缩放到」——
+    ///    会话 preset 走的是「按这个模式打开设备」，列不出来就是打开不了）
+    func isUsable(on device: AVCaptureDevice) -> Bool {
+        guard AVCaptureVideoDataOutput.availableVideoCodecTypes.contains(codecType) else {
+            return false
+        }
+
+        let (width, height) = landscapeSize
+
+        return device.formats.contains { format in
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let w = Int(dimensions.width)
+            let h = Int(dimensions.height)
+
+            // 有些设备把格式按传感器方向登记（宽高对调），两边都认。
+            return (w == width && h == height) || (w == height && h == width)
+        }
+    }
+}
+
 final class CameraSegmentRecorder: NSObject {
 
     // MARK: - 配置
@@ -71,7 +219,6 @@ final class CameraSegmentRecorder: NSObject {
     /// 相邻两次采样之间，亮度平均绝对差低于这个值就算「没动」。
     private static let staticDiffThreshold = 3.0
 
-    private static let bitRate = 8_000_000
     private static let frameRate: Int32 = 30
 
     /// 关键帧间隔（秒）。它决定「单独播放某一段时，开头要等多久才出画面」。
@@ -132,6 +279,10 @@ final class CameraSegmentRecorder: NSObject {
     private var segmentDuration: TimeInterval = CameraSegmentRecorder.defaultSegmentDuration
     private let onEvent: (RecorderEvent) -> Void
 
+    /// 本次会话用的录制规格。**只在 [openCamera] 里定一次** ——
+    /// 改了它要重开会话（Dart 那边就是这么做的：规格变了先关相机再开）。
+    private var spec: RecorderSpec = .standard
+
     /// 相机是否已打开（**不等于正在录**）。
     ///
     /// 这两件事必须分开：规格 §3.2.2 要求点了「开始工作」就**出现可见的取景框**，
@@ -172,6 +323,29 @@ final class CameraSegmentRecorder: NSObject {
     /// 分成两个会话会抢相机，而且用户看到的画面与录下来的画面可能不一致。
     var captureSession: AVCaptureSession { session }
 
+    // MARK: - 可用性检查
+
+    /// 录制前那次**真实的可用性检查**（规格 §3.1.7）。
+    ///
+    /// 返回候选表里**第一个真能跑**的下标；一个都跑不通返回 nil。
+    ///
+    /// ⚠️ **候选表的顺序不是这里决定的** —— Dart 那边排好了送进来
+    /// （`RecordingSpec.fallbacksFrom`，有测试）。这里只回答设备能力，
+    /// 因为「先保编码还是先保分辨率」是产品决定，不是设备事实。
+    ///
+    /// 相机没开时也能调：它只是读设备格式，不动会话。
+    static func firstUsableIndex(_ candidates: [RecorderSpec]) -> Int? {
+        guard let device = pickBackCamera() else { return nil }
+
+        for (index, candidate) in candidates.enumerated() {
+            if candidate.isUsable(on: device) {
+                return index
+            }
+        }
+
+        return nil
+    }
+
     // MARK: - 权限
 
     static var hasCameraPermission: Bool {
@@ -190,7 +364,7 @@ final class CameraSegmentRecorder: NSObject {
     /// 那时还没扫码，不该录。所以相机开着送预览、等扫到面单才开始录。
     ///
     /// 返回 false 表示相机打不开。
-    func openCamera() -> Bool {
+    func openCamera(spec: RecorderSpec = .standard) -> Bool {
         guard !cameraOpen else { return true }
 
         guard let device = Self.pickBackCamera() else {
@@ -198,9 +372,18 @@ final class CameraSegmentRecorder: NSObject {
             return false
         }
         captureDevice = device
+        self.spec = spec
 
         session.beginConfiguration()
-        session.sessionPreset = .hd1280x720
+
+        // 分辨率走会话 preset。设不上时**不静默降级**：把设备实际给的档说出来 ——
+        // 规格 §3.1.7「不得静默回落」，而 Dart 那边已经做过一次可用性检查，
+        // 走到这里还设不上说明设备在探测之后变了（切换镜头、被别的 App 占了）。
+        if session.canSetSessionPreset(spec.preset) {
+            session.sessionPreset = spec.preset
+        } else {
+            onEvent(.failed("这台设备设不上 \(spec.preset.rawValue)，仍按默认档录制"))
+        }
 
         do {
             let input = try AVCaptureDeviceInput(device: device)
@@ -231,7 +414,7 @@ final class CameraSegmentRecorder: NSObject {
         // 两边方向不一致的话，录出来的画面和识码看到的画面会差 90°。
         for output in [videoOutput, analysisOutput].compactMap({ $0 }) {
             if let connection = output.connection(with: .video) {
-                applyOrientation(to: connection)
+                applyOrientation(to: connection, spec: spec)
             }
         }
 
@@ -638,7 +821,7 @@ final class CameraSegmentRecorder: NSObject {
 
     /// 静止检测用的第二路输出。
     ///
-    /// ⚠️ **它拿到的仍然是会话分辨率**（1280×720）——
+    /// ⚠️ **它拿到的仍然是会话分辨率**（由规格决定，720P 时是 1280×720）——
     /// `videoSettings` 只能改像素格式，改不了尺寸。
     /// 所以真正的降采样在 [handleAnalysisFrame] 里按网格抽样做，
     /// 这里只是把这一路跟录制那一路分开，免得分析影响编码。
@@ -662,18 +845,22 @@ final class CameraSegmentRecorder: NSObject {
         analysisOutput = output
     }
 
-    /// 让画面跟上设备方向。
+    /// 让画面按**用户选的方向**摆（规格 §3.1.7）。
     ///
     /// iOS 17 起 `videoOrientation` 废弃，改用 `videoRotationAngle`；两套都写。
-    private func applyOrientation(to connection: AVCaptureConnection) {
-        let angle: CGFloat = 90 // 竖屏持机
-
+    ///
+    /// ⚠️ 与旧版的区别：以前这里写死 90（竖屏）。方向变成选项之后，
+    /// **成片的宽高比也跟着它变** —— 所以这不是「转一下画面」，
+    /// 而是「录出来的是横的还是竖的」。Dart 那边的取景框与预览比例
+    /// 读的是同一个规格（§3.2.2 的连带项），两边才不会各歪各的。
+    private func applyOrientation(to connection: AVCaptureConnection, spec: RecorderSpec) {
         if #available(iOS 17.0, *) {
+            let angle = spec.rotationAngle
             if connection.isVideoRotationAngleSupported(angle) {
                 connection.videoRotationAngle = angle
             }
         } else if connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
+            connection.videoOrientation = spec.videoOrientation
         }
     }
 
@@ -727,11 +914,13 @@ final class CameraSegmentRecorder: NSObject {
         }
 
         let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            // 编码与码率都按**这一段实际用的那一档**走（规格 §3.1.7）。
+            // `spec` 在 openCamera 时定下，改了规格 Dart 会重开会话。
+            AVVideoCodecKey: spec.codecType,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: Self.bitRate,
+                AVVideoAverageBitRateKey: spec.bitRate,
                 AVVideoExpectedSourceFrameRateKey: Int(Self.frameRate),
                 AVVideoMaxKeyFrameIntervalKey: Int(Self.frameRate) * Self.keyFrameIntervalSeconds,
             ],

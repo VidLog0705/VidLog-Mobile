@@ -8,6 +8,7 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 import 'package:vidlog_mobile/recording/label_store.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart' show StopTrigger;
 import 'package:vidlog_mobile/recording/recording_index.dart';
+import 'package:vidlog_mobile/recording/recording_spec.dart';
 import 'package:vidlog_mobile/recording/recording_workspace.dart';
 import 'package:vidlog_mobile/recording/session_finalizer.dart';
 import 'package:vidlog_mobile/states.dart';
@@ -297,6 +298,55 @@ void main() {
       expect(entry.evidenceId, 's1-000');
       expect(entry.duration, const Duration(seconds: 30));
       expect(entry.sourceDeviceId, 'device-1');
+    });
+
+    test('★ 录制规格写进索引（规格 §3.1.7 的连带项）', () async {
+      // 记它有两个用处：容量估算按它算（§3.5.5），以及「这条是 4K 还是 720P」
+      // 这件事以后还能回答 —— 索引一旦漏记，事后只能靠文件大小猜。
+      final (finalizer, index) = makeFinalizer();
+
+      await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [makeSegment('s1', 0)],
+        reason: StopTrigger.manual,
+        spec: const RecordingSpec(
+          codec: VideoCodec.h265,
+          resolution: VideoResolution.uhd4K,
+          orientation: RecordingOrientation.landscapeLeft,
+        ),
+      );
+
+      final entry = (await index.loadAll()).single;
+      expect(entry.codec, 'h265');
+      expect(entry.resolution, 'uhd4K');
+      expect(entry.orientation, 'landscapeLeft');
+    });
+
+    test('⚠️ 没有规格时**不写这三个键** —— 与老行长得一样', () async {
+      // 索引是追加写的，2026-09-27 之前的行里没有这三个字段。
+      // 写 `"codec": null` 与不写是两回事：读端只认「有没有这个键」，
+      // 而我们要的是那些老行看起来毫无变化。
+      final (finalizer, index) = makeFinalizer();
+
+      await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [makeSegment('s1', 0)],
+        reason: StopTrigger.manual,
+      );
+
+      final raw = File(index.path).readAsLinesSync().single;
+      final json = jsonDecode(raw) as Map<String, Object?>;
+
+      expect(json.containsKey('codec'), isFalse);
+      expect(json.containsKey('resolution'), isFalse);
+      expect(json.containsKey('orientation'), isFalse);
+
+      final entry = (await index.loadAll()).single;
+      expect(entry.codec, isNull);
     });
 
     test('索引里只有相对路径', () async {

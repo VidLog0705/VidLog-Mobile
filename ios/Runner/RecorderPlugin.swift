@@ -19,7 +19,8 @@ import Foundation
 /// |---|---|---|
 /// | `hasCameraPermission` | Dart → 原生 | 是否已授权 |
 /// | `requestCameraPermission` | Dart → 原生 | 弹授权框 |
-/// | `openCamera` | Dart → 原生 | 开相机送预览，**不录** |
+/// | `openCamera` | Dart → 原生 | 开相机送预览，**不录**；参数含录制规格（§3.1.7） |
+/// | `firstUsableSpec` | Dart → 原生 | 候选表里第一个真能跑的**下标**（§3.1.7 的可用性检查） |
 /// | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长 |
 /// | `stopRecording` | Dart → 原生 | 停止；**等最后一段封完才返回** |
 /// | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
@@ -134,6 +135,20 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
         case "openCamera":
             openCamera(call, result: result)
+
+        case "firstUsableSpec":
+            // 录制前那次**真实的可用性检查**（规格 §3.1.7）。
+            //
+            // **不需要相机权限、也不开会话** —— 它只是读设备格式。
+            // 所以它可以在 Dart 决定要不要开相机之前被调用。
+            //
+            // 一个都跑不通 / 根本没有相机时给 nil：那是「问不出来」，
+            // 与「都不行」在 Dart 那边走同一条路（照用户选的走，见
+            // `recording_spec_probe.dart`）—— 那里刻意不把 nil 当成
+            // 「降到底档」，否则一次问不出来就会静默改掉用户的画质。
+            let candidates = RecorderSpec.parseList(
+                (call.arguments as? [String: Any])?["candidates"])
+            result(CameraSegmentRecorder.firstUsableIndex(candidates))
 
         case "startRecording":
             startRecording(call, result: result)
@@ -260,10 +275,18 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         // 缺参数 = false：老版本 Dart 不带这个参数时行为一个字都不变。
         let qrOnly = (call.arguments as? [String: Any])?["qrOnly"] as? Bool ?? false
 
+        // 录制规格。**缺参数 = 默认档**：老版本 Dart 不带它时行为与从前一致。
+        let spec = RecorderSpec.parse((call.arguments as? [String: Any])?["spec"])
+
         if let recorder, recorder.captureSession.isRunning {
             // ⚠️ 相机已经开着时**只能换识码范围**，不能就这么返回：
             // 录制页把相机开着、用户切到扫码连接那一下，返回早退的话
             // 屏幕上是一维码的白名单在扫一张二维码 —— 表现是**扫了没反应**。
+            //
+            // ⚠️ **规格换不了**（分辨率与编码是开会话时定死的）。Dart 那边
+            // 知道这件事：规格一变它会先 `closeCamera` 再开（见
+            // `RecordingCoordinator.openCamera`），所以走到这里还带着不同的
+            // 规格，说明那是「顺手带上的默认值」，不是真想改档。
             recorder.qrOnly = qrOnly
             result(nil)
             return
@@ -274,7 +297,7 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         })
         created.qrOnly = qrOnly
 
-        guard created.openCamera() else {
+        guard created.openCamera(spec: spec) else {
             result(FlutterError(code: "camera_failed", message: "相机未能打开", details: nil))
             return
         }

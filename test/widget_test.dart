@@ -6,6 +6,7 @@ import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart';
+import 'package:vidlog_mobile/recording/recording_spec.dart';
 import 'package:vidlog_mobile/recording/retention_setting.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
@@ -496,9 +497,9 @@ void main() {
       (WidgetTester tester) async {
     // ⚠️ 先把视口拉高。设置页是 `ListView`，**屏幕外的卡片根本没建** ——
     // 默认的 800×600 下第三、四块不在树里，`find` 会找不到它们。
-    // 2400 是 2026-09-23 加上「归档后的本地保留期」那块之后的高度 ——
+    // 3600 是 2026-09-27 加上「录制规格」那块（三行横排单选）之后的高度 ——
     // 再加卡片就要跟着往上调，否则红的是 `find` 而不是真正想验的那条守卫。
-    tester.view.physicalSize = const Size(400, 2400);
+    tester.view.physicalSize = const Size(400, 3600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -513,6 +514,7 @@ void main() {
     // 生效时机那块缺了，用户改完没反应只会以为开关坏了。
     // 语音播报是需求方 2026-09-22 点名要的。
     expect(find.text('工作模式'), findsOneWidget);
+    expect(find.text('录制规格'), findsOneWidget);
     expect(find.text('防忘停录'), findsOneWidget);
     expect(find.text('语音播报'), findsOneWidget);
     expect(find.textContaining('时长兜底加速'), findsOneWidget);
@@ -543,6 +545,31 @@ void main() {
       tester
           .widget<SegmentedButton<DurationFallbackSetting>>(
               find.byType(SegmentedButton<DurationFallbackSetting>))
+          .onSelectionChanged,
+      isNull,
+    );
+
+    // 录制规格那三行单选同理（规格 §3.1.7）。三行**都要**验 ——
+    // 少套一行的 `_settingsReady`，那一项在真机上就是「改了没反应」，
+    // 而且是静默的：控件看起来能点。
+    expect(
+      tester
+          .widget<SegmentedButton<VideoCodec>>(
+              find.byKey(const Key('settings-codec')))
+          .onSelectionChanged,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<SegmentedButton<VideoResolution>>(
+              find.byKey(const Key('settings-resolution')))
+          .onSelectionChanged,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<SegmentedButton<RecordingOrientation>>(
+              find.byKey(const Key('settings-orientation')))
           .onSelectionChanged,
       isNull,
     );
@@ -584,6 +611,16 @@ void main() {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
+    await tester.pumpAndSettle();
+
+    // ⚠️ **屏矮了之后必须先滚过去。** `ListView` 只建屏幕内的孩子，
+    // 2026-09-27 在上面加了「录制规格」那块（三行单选）之后，
+    // 静止档位选择器就落到 640 之外了 —— 不滚的话红的是 `find`，不是溢出。
+    await tester.scrollUntilVisible(
+      find.byType(SegmentedButton<StaticStopSetting>),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
 
     final staticStop = find.byType(SegmentedButton<StaticStopSetting>);

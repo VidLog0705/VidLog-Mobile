@@ -12,14 +12,6 @@ import '../scanning/viewfinder.dart';
 /// Android `RecorderChannel.PREVIEW_VIEW_TYPE` 一致。
 const _previewViewType = 'vidlog/camera_preview';
 
-/// 录像的画面比例（宽/高）。
-///
-/// 竖屏持机、会话 preset 是 1280×720、connection 转了 90°，
-/// 所以实际录像是 720×1280。
-///
-/// **这个值必须与 [ScanGate] 用的那个一致** —— 见 [CameraPreview] 的说明。
-const kVideoAspectRatio = 720 / 1280;
-
 /// 相机预览 + **可见的取景框**。
 ///
 /// 规格 §3.2.2：
@@ -30,19 +22,29 @@ const kVideoAspectRatio = 720 / 1280;
 ///
 /// ## 怎么保证一致
 ///
-/// 1. 预览视图**按录像的画面比例**摆放（[kVideoAspectRatio]），
+/// 1. 预览视图**按录像的画面比例**摆放（[aspectRatio]），
 ///    所以视频正好填满它、没有黑边也没有裁剪 ——
 ///    归一化坐标可以直接当控件坐标用
 /// 2. 框的位置来自**同一个** [Viewfinder]（由调用方传进来，
 ///    也就是 [ScanGate] 正在用的那个）
+/// 3. 画面比例与那个框**都来自同一份录制规格**（`RecordingSpec.aspectRatio`）
 ///
-/// 任何一边改了（视频比例、取景框档位），另一边会自动跟上，
-/// 因为它们读的是同一份数据。
+/// ⚠️ **画面比例在 2026-09-27 之前是个常量 `720 / 1280`**（那时只有竖屏 720P
+/// 一档）。现在规格可选 4K/1080P/720P × 横左/竖屏/横右，它必须跟着变 ——
+/// 规格 §3.2.2 的连带项点了名。常量留在代码里的话，用户选了横屏之后
+/// 画面会被拉扁、框也会跟着歪，而**两者歪得一模一样**，所以没人看得出来。
 class CameraPreview extends StatelessWidget {
-  const CameraPreview({super.key, required this.viewfinder});
+  const CameraPreview({
+    super.key,
+    required this.viewfinder,
+    required this.aspectRatio,
+  });
 
   /// 正在生效的取景框。**必须与 `ScanGate` 用的是同一个对象。**
   final Viewfinder viewfinder;
+
+  /// 画面宽 / 画面高。取自生效的录制规格。
+  final double aspectRatio;
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +56,7 @@ class CameraPreview extends StatelessWidget {
 
     return Center(
       child: AspectRatio(
-        aspectRatio: kVideoAspectRatio,
+        aspectRatio: aspectRatio,
         child: Stack(
           fit: StackFit.expand,
           children: [

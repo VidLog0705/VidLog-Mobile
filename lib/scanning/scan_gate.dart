@@ -1,4 +1,5 @@
 import '../primitives.dart';
+import '../recording/recording_spec.dart';
 import 'viewfinder.dart';
 
 /// 原生层报来的一次识码。
@@ -51,17 +52,42 @@ class BarcodeSighting {
 class ScanGate {
   ScanGate({
     Viewfinder? viewfinder,
+    ViewfinderPreset preset = ViewfinderPreset.medium,
+    double? aspectRatio,
     this.absenceThreshold = const Duration(seconds: 2),
-  }) : viewfinder = viewfinder ?? Viewfinder.forPreset(
-          ViewfinderPreset.medium,
-          // 竖屏持机：录像是 720×1280，宽/高 = 0.5625。
-          // 这个值必须与**实际的视频尺寸**一致 —— 不一致的话，
-          // 界面上画的框和实际判定的范围就对不上。
-          aspectRatio: 720 / 1280,
-        );
+  })  : _preset = preset,
+        _viewfinder = viewfinder ??
+            Viewfinder.forPreset(
+              preset,
+              // 默认档是竖屏 1080P（画面 1080×1920）。这个值必须与**实际的
+              // 视频尺寸**一致 —— 不一致的话，界面上画的框和实际判定的范围
+              // 就对不上。真正的值由编排器在开始工作时喂进来（[useAspectRatio]）。
+              aspectRatio: aspectRatio ?? RecordingSpec.standard.aspectRatio,
+            );
+
+  ViewfinderPreset _preset;
+  Viewfinder _viewfinder;
 
   /// 取景框：只有中心点在它里面的识码才会被采纳。
-  final Viewfinder viewfinder;
+  ///
+  /// ⚠️ **它会变**（见 [useAspectRatio]）—— 调用方每次要读**当前**那个，
+  /// 别把它存进自己的字段里。
+  Viewfinder get viewfinder => _viewfinder;
+
+  /// 画面比例（或框的档位）变了，重算取景框。
+  ///
+  /// 规格 §3.2.2 的连带项：录制规格一改（分辨率或方向），画面的宽高比就变了，
+  /// 而框的归一化坐标**必须跟着重算** —— 不然同一个框在竖屏下是正方形、
+  /// 在横屏下会被拉成一长条，而系统的判定范围跟着一起歪。
+  ///
+  /// 契约是「画出来的框」与「实际判定的范围」严格一致：这个方法一改，
+  /// 两边读的都是新对象，因为它们读的是同一份数据。
+  void useAspectRatio(double aspectRatio, {ViewfinderPreset? preset}) {
+    if (preset != null) _preset = preset;
+
+    final next = Viewfinder.forPreset(_preset, aspectRatio: aspectRatio);
+    _viewfinder = next;
+  }
 
   /// 同一单号要「消失」多久，才把下一次看见算作新的扫码。
   ///

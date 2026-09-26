@@ -9,6 +9,8 @@ import 'business_type.dart';
 import 'package_tracker.dart';
 import 'punch_log.dart';
 import 'recorder_config.dart';
+import 'recording_spec.dart';
+import 'recording_spec_probe.dart';
 import 'recorder_events.dart';
 import 'recorder_gateway.dart';
 import 'recording_workspace.dart';
@@ -48,6 +50,7 @@ class RecordingCoordinator {
     ScanGate? scanGate,
     PackageTracker? packageTracker,
     ScanErrorLog? scanErrors,
+    RecordingSpec? spec,
     this.onAction,
     bool cameraAlreadyOpen = false,
   })  : _gateway = gateway,
@@ -58,7 +61,11 @@ class RecordingCoordinator {
         _stopController = StopController(mode: mode, config: config),
         _clock = clock ?? _defaultClock(),
         _scanGate = scanGate ?? ScanGate(),
-        _packageTracker = packageTracker ?? PackageTracker() {
+        _packageTracker = packageTracker ?? PackageTracker(),
+        // 用户选的那一档。**它不等于是实际用的那一档** —— 后者要等
+        // [resolveRecordingSpec] 问过设备才知道（规格 §3.1.7 的回落）。
+        _requestedSpec = spec ?? RecordingSpec.standard,
+        _effectiveSpec = spec ?? RecordingSpec.standard {
     // 相机是**进程级的同一个原生会话**，跟 Dart 换不换编排器无关 ——
     // 重建编排器时要把「它已经开着」这个事实继承过来，否则按下【开始】
     // 那一瞬间界面会以为相机没了，把取景画面换回「相机还没开」那块提示。
@@ -327,8 +334,20 @@ class RecordingCoordinator {
   /// 对已经在跑的会话直接早退；而会话被系统中断（来电、后台）之后再调一次，
   /// 是唯一的恢复机会 —— 去重反而会把恢复的路堵死。
   Future<void> openCamera() async {
-    await _gateway.openCamera();
+    // ⚠️ **规格变了就把相机关掉重开。**
+    //
+    // 编码与分辨率是开会话时就定死的（iOS 的 session preset / 安卓选出来的
+    // 输出尺寸），原生那边看到「会话已经开着」就直接早退 —— 不重开的话，
+    // 用户改了规格、回来按【开始工作】，实际录的仍是上一次那一档：
+    // 一个**改了没反应的开关**（踩坑 #13），而且它骗的是画质。
+    if (_cameraOpen && _appliedSpec != null && _appliedSpec != _effectiveSpec) {
+      await _gateway.closeCamera();
+      _cameraOpen = false;
+    }
+
+    await _gateway.openCamera(spec: _effectiveSpec);
     _cameraOpen = true; // 上面失败会抛；抛了就不记成开着
+    _appliedSpec = _effectiveSpec;
     _scanGate.reset();
     _packageTracker.reset();
   }
@@ -352,15 +371,65 @@ class RecordingCoordinator {
   Future<void> startWorking({
     required String sourceDeviceId,
     Duration? segmentDuration,
+    RecordingSpec? spec,
   }) async {
     _sourceDeviceId = sourceDeviceId;
     _segmentDuration = segmentDuration ?? defaultSegmentDuration;
+
+    // 录制规格：**先做可用性检查，再开相机**。
+    //
+    // 顺序不能反：相机会话是按分辨率开的（iOS 的 preset / 安卓选出来的尺寸），
+    // 先开了再探等于这一段的画面跟规格对不上。
+    await resolveRecordingSpec(spec ?? _requestedSpec);
 
     // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**。
     // 到这一步为止**不录** —— 那时还没扫码。
     await openCamera();
 
     _armed = true;
+  }
+
+  /// 用户选的那一档（**不一定是实际用的那一档**）。
+  RecordingSpec _requestedSpec;
+
+  /// **实际**在用的那一档 —— 界面显示它、索引记它、容量按它估。
+  ///
+  /// ⚠️ 与 [_requestedSpec] 可能不一样：跑不通就回落（规格 §3.1.7），
+  /// 而**回落必须可见**。所以这两个值都要留得住，不能只留一个。
+  RecordingSpec _effectiveSpec;
+
+  /// 相机**实际开着**用的那一档。用来判断「规格改了要不要重开相机」。
+  RecordingSpec? _appliedSpec;
+
+  RecordingSpec get requestedSpec => _requestedSpec;
+
+  /// 实际在用的规格。界面「实际按 X 录制」那一行读的就是它。
+  RecordingSpec get effectiveSpec => _effectiveSpec;
+
+  /// 回落的原因；没回落过时为 null。
+  String? _specFallbackReason;
+
+  String? get specFallbackReason => _specFallbackReason;
+
+  /// 有没有回落过。
+  bool get specFellBack => _specFallbackReason != null;
+
+  /// 用 [_requestedSpec] 之外的一档重新解析（设置页改完、下次开始工作时调）。
+  ///
+  /// **问不出来时照用户选的走** —— 理由见 `recording_spec_probe.dart`。
+  Future<void> resolveRecordingSpec(RecordingSpec wanted) async {
+    _requestedSpec = wanted;
+
+    final selection =
+        await selectRecordingSpec(wanted, _gateway.firstUsableSpec);
+
+    _effectiveSpec = selection.spec;
+    _specFallbackReason = selection.reason;
+
+    // 取景框要跟着规格走（规格 §3.2.2 的连带项）：画面比例变了，
+    // 框的归一化坐标就得重算 —— 否则「画出来的框」和「实际判定的范围」
+    // 会差 90°，用户看着框把面单放进去、系统说不算。
+    _scanGate.useAspectRatio(_effectiveSpec.aspectRatio);
   }
 
   /// 停止工作：停录（如果在录）并退出工作状态。
@@ -621,6 +690,10 @@ class RecordingCoordinator {
         segments: List.of(_segments),
         reason: trigger,
         businessType: businessType,
+        // ⚠️ 记的是**实际**那一档，不是用户选的那一档。记错了会让这条录像的
+        // 容量估算按另一档算（规格 §3.5.5 的连带项），而那个数正被
+        // 「清理到够为止」用着。
+        spec: _effectiveSpec,
       );
 
       if (outcome.succeeded) {

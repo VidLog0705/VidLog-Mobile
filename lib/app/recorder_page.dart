@@ -21,6 +21,7 @@ import '../recording/recorder_gateway.dart';
 import '../recording/recording_coordinator.dart';
 import '../recording/recording_index.dart';
 import '../recording/recording_settings.dart';
+import '../recording/recording_spec.dart';
 import '../recording/retention_setting.dart';
 import '../recording/recording_totals.dart';
 import '../recording/recording_workspace.dart';
@@ -155,6 +156,12 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 归档后的本地保留期，退货一份。**与发货那份互相独立** —— 改一个不动另一个。
   RetentionSetting _retentionReturn = RetentionSetting.fallback;
+
+  /// 录制规格三项（规格 §3.1.7）。**用户选的**那一档 ——
+  /// 实际生效的可能是回落之后的另一档（见 `_coordinator.effectiveSpec`）。
+  VideoCodec _codec = VideoCodec.fallback;
+  VideoResolution _resolution = VideoResolution.fallback;
+  RecordingOrientation _orientation = RecordingOrientation.fallback;
 
   /// 把时长兜底的首次询问时机缩短，好让验收不必真的等 4 分钟。
   /// **只压首次询问时机**，不动档位本身，也不碰静止档位。
@@ -419,6 +426,9 @@ class _RecorderPageState extends State<RecorderPage> {
       _durationFallback = _settings!.durationFallback;
       _retentionOutbound = _settings!.retentionOutbound;
       _retentionReturn = _settings!.retentionReturn;
+      _codec = _settings!.codec;
+      _resolution = _settings!.resolution;
+      _orientation = _settings!.orientation;
 
       _buildUploader();
 
@@ -640,6 +650,9 @@ class _RecorderPageState extends State<RecorderPage> {
       // 相机在这个页面之前就开着的话**不能关** —— 那可能是录制中，
       // 或者发货栏的取景框还开着。关了就是掐掉别人的会话。
       closeCameraWhenDone: _coordinator?.isCameraOpen != true,
+      // 那一页要按同一套规格摆画面、并且在**新开**相机时按它开 ——
+      // 否则扫完码回来，留在会话上的是另一个分辨率。
+      spec: _coordinator?.effectiveSpec ?? _requestedSpec(),
     );
 
     if (payload == null || !mounted) return; // 用户返回了，没扫
@@ -939,8 +952,18 @@ class _RecorderPageState extends State<RecorderPage> {
       mode: _mode,
       config: _config,
       cameraAlreadyOpen: cameraWasOpen,
+      // 录制规格也在这里交给编排器 —— **必须在它开相机之前**：
+      // 相机会话的分辨率是开会话时定死的（iOS 的 preset / 安卓选出来的
+      // 输出尺寸），开着的时候改不了。进栏就自动开的那台相机也要按这一档开，
+      // 否则「用户选了 4K、屏幕上却是 720P 的画面」要等下一个人按下【开始】
+      // 才会对上。
+      spec: _requestedSpec(),
       onAction: _onAction,
     )..onBarcodeAccepted = _onBarcodeAccepted;
+
+    // 可用性检查是异步的（要问原生），所以构造之后单独走一步 ——
+    // 它同时把取景框的画面比例按生效的那一档算好（规格 §3.2.2 的连带项）。
+    await _coordinator!.resolveRecordingSpec(_requestedSpec());
     _coordinator!.onFinalized = _onFinalized;
     _coordinator!.onSceneChanged = _onSceneChanged;
     _coordinator!.onPackageTrackingChanged = (left) =>
@@ -1208,7 +1231,14 @@ class _RecorderPageState extends State<RecorderPage> {
       // 标识用来认设备，名字用来给人看）。以前这里写死 `'this-device'` ——
       // 结果**所有手机在电脑端都叫同一个名字**，根本分不开是哪台录的。
       // 标识是不变的，所以改名不会篡改历史录像的来源。
-      await _coordinator!.startWorking(sourceDeviceId: _identity!.deviceId);
+      // 录制规格也在这里交给编排器（规格 §3.1.7：**录制前可选、录制中不可改**）。
+      // 它会先做一次真实的可用性检查，跑不通就回落到真能跑的那一档 ——
+      // 结论落在 `_coordinator.effectiveSpec` / `specFallbackReason` 上，
+      // 界面照它显示，**不静默回落**。
+      await _coordinator!.startWorking(
+        sourceDeviceId: _identity!.deviceId,
+        spec: _requestedSpec(),
+      );
 
       // 规格 §3.3.6：点【开始】→ 播「开始工作」，**不滴**（需求方 2026-09-22 裁决）。
       //
@@ -2329,8 +2359,8 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// ## ⚠️ 黑边是**故意留的**，不是没铺满
   ///
-  /// 录像是 720×1280（9:16）。`CameraPreview` 按这个比例摆，用的是
-  /// `Center` + `AspectRatio`，**不是 `BoxFit.cover`** ——
+  /// 录像按生效的录制规格摆（竖屏 9:16、横屏 16:9）。
+  /// `CameraPreview` 用的是 `Center` + `AspectRatio`，**不是 `BoxFit.cover`** ——
   /// 因为框的判定范围与画出来的框**共用同一份归一化坐标**（见 `camera_preview.dart`）。
   /// 裁掉两边会让「框内 / 框外」的口径跟着变，而用户看到的框会**骗人**。
   /// 需求方 2026-09-22 选了「保留黑边，不动判定」。
@@ -2355,7 +2385,12 @@ class _RecorderPageState extends State<RecorderPage> {
           ColoredBox(
             color: Colors.black,
             child: showPreview
-                ? CameraPreview(viewfinder: gate.viewfinder)
+                ? CameraPreview(
+                    viewfinder: gate.viewfinder,
+                    // 画面比例取自**实际**那一档（编排器探测之后的结论）——
+                    // 与取景框同一份来源，两者才不会各自歪一点。
+                    aspectRatio: _coordinator!.effectiveSpec.aspectRatio,
+                  )
                 : _idleScreen(),
           ),
 
@@ -2986,6 +3021,9 @@ class _RecorderPageState extends State<RecorderPage> {
     bool? voiceEnabled,
     RetentionSetting? retentionOutbound,
     RetentionSetting? retentionReturn,
+    VideoCodec? codec,
+    VideoResolution? resolution,
+    RecordingOrientation? orientation,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -2997,12 +3035,18 @@ class _RecorderPageState extends State<RecorderPage> {
       if (voiceEnabled != null) settings.voiceEnabled = voiceEnabled;
       if (retentionOutbound != null) _retentionOutbound = retentionOutbound;
       if (retentionReturn != null) _retentionReturn = retentionReturn;
+      if (codec != null) _codec = codec;
+      if (resolution != null) _resolution = resolution;
+      if (orientation != null) _orientation = orientation;
 
       settings.mode = _mode;
       settings.staticStop = _staticStop;
       settings.durationFallback = _durationFallback;
       settings.retentionOutbound = _retentionOutbound;
       settings.retentionReturn = _retentionReturn;
+      settings.codec = _codec;
+      settings.resolution = _resolution;
+      settings.orientation = _orientation;
     });
 
     // ⚠️ **播报是唯一立刻生效的一项。** 它不参与任何判定（只出声），
@@ -3022,6 +3066,13 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 理由见 `RecordingSettings.voiceEnabled` 的注释。
   bool get _voiceOn => _settings?.voiceEnabled ?? true;
 
+  /// **用户选的**录制规格（设置还没读出来时用默认档）。
+  ///
+  /// ⚠️ 与「实际用的那一档」不是一回事 —— 后者由编排器探测之后给出
+  /// （[_coordinator]`.effectiveSpec`）。界面显示、索引记录都用后者。
+  RecordingSpec _requestedSpec() =>
+      _settings?.requestedSpec ?? RecordingSpec.standard;
+
   /// 设置页：工作模式 → 两个兜底档位 → 验收工具。
   ///
   /// ## 这一页的两条规矩
@@ -3038,6 +3089,8 @@ class _RecorderPageState extends State<RecorderPage> {
       padding: const EdgeInsets.all(16),
       children: [
         _modeCard(),
+        const SizedBox(height: 12),
+        _specCard(),
         const SizedBox(height: 12),
         _fallbackCard(),
         const SizedBox(height: 12),
@@ -3174,6 +3227,129 @@ class _RecorderPageState extends State<RecorderPage> {
               '注意：这个模式下复扫同码不停，只认静止 —— '
               '这就是它和「同码停」的区别。',
       };
+
+  // ── ①b 录制规格（规格 §3.1.7）─────────────────
+
+  /// 编码 / 分辨率 / 方向。**三项都横排单选**（规格点名不要下拉）。
+  ///
+  /// ## 三条界面规矩
+  ///
+  /// ① 编码名**只写「H.265」**，不许出现 HEVC —— 名字由
+  ///    `RecordingSpec.codecLabel` 一处产出（规格原话：两个名字混用会让用户
+  ///    以为是两种不同的编码）。
+  /// ② 帧率**没有选项**：规格是「上限 30、不提供选择」，所以界面上只是一句话。
+  ///    摆一个只有一个选项的下拉是骗人的。
+  /// ③ **实际用哪一档必须说出来**（规格：**回落必须可见**、**不得静默回落**）。
+  ///    那一行读的是编排器探测之后的结论 —— 用户选的那一档跑不通时，
+  ///    这里要**连原因一起**说清楚，否则用户会以为自己选错了。
+  Widget _specCard() {
+    final scheme = Theme.of(context).colorScheme;
+    final effective = _coordinator?.effectiveSpec;
+    final reason = _coordinator?.specFallbackReason;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('录制规格', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text(
+              '录制前可选，**录制中不可改**（改了要等下次「开始工作」）。帧率固定 30 帧 —— '
+              '它是上限，不提供选择。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+
+            _settingTitle('编码', 'H.265 同画质下体积小一半左右。'),
+            const SizedBox(height: 8),
+            SegmentedButton<VideoCodec>(
+              key: const Key('settings-codec'),
+              segments: const [
+                ButtonSegment(value: VideoCodec.h264, label: Text('H.264')),
+                ButtonSegment(value: VideoCodec.h265, label: Text('H.265')),
+              ],
+              selected: {_codec},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(codec: value.first)
+                  : null,
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '⚠️ 电脑端的**网页回放**对 H.265 的支持不一致，可能播不了 —— '
+              '那时用系统播放器打开就行，录像本身没问题。所以这里不砍掉 H.265。',
+              style: TextStyle(fontSize: 12),
+            ),
+
+            const Divider(height: 28),
+
+            _settingTitle('分辨率', '越大越清楚、也越占地方。清理时的容量预告按这一档算。'),
+            const SizedBox(height: 8),
+            SegmentedButton<VideoResolution>(
+              key: const Key('settings-resolution'),
+              segments: const [
+                ButtonSegment(value: VideoResolution.uhd4K, label: Text('4K')),
+                ButtonSegment(value: VideoResolution.p1080, label: Text('1080P')),
+                ButtonSegment(value: VideoResolution.p720, label: Text('720P')),
+              ],
+              selected: {_resolution},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(resolution: value.first)
+                  : null,
+            ),
+
+            const Divider(height: 28),
+
+            _settingTitle('方向', '手机怎么拿就选哪个 —— 取景框和画面比例都跟着它走。'),
+            const SizedBox(height: 8),
+            SegmentedButton<RecordingOrientation>(
+              key: const Key('settings-orientation'),
+              segments: const [
+                ButtonSegment(
+                    value: RecordingOrientation.landscapeLeft, label: Text('横左')),
+                ButtonSegment(
+                    value: RecordingOrientation.portrait, label: Text('竖屏')),
+                ButtonSegment(
+                    value: RecordingOrientation.landscapeRight, label: Text('横右')),
+              ],
+              selected: {_orientation},
+              onSelectionChanged: _settingsReady
+                  ? (value) => _updateSettings(orientation: value.first)
+                  : null,
+            ),
+
+            const SizedBox(height: 16),
+
+            // 「实际按 X 录制」—— 规格那句「不得静默回落」的落点。
+            Container(
+              key: const Key('settings-effective-spec'),
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: reason == null
+                    ? scheme.surfaceContainerHighest
+                    : Colors.orange.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                effective == null
+                    ? '实际用哪一档还没检查过。点【开始工作】时会真开一次相机试。'
+                    : reason == null
+                        ? '实际按 ${effective.label} 录制。'
+                        : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
+                            '$reason',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: reason == null ? null : Colors.deepOrange.shade900,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   // ── ② 两个兜底档位 ───────────────────────────
 
@@ -3405,10 +3581,10 @@ class _RecorderPageState extends State<RecorderPage> {
         padding: const EdgeInsets.all(16),
         child: Text(
           working
-              ? '⚠️ 正在工作中。上面【工作模式】与【防忘停录】改了这一段不生效 —— '
+              ? '⚠️ 正在工作中。上面【工作模式】【防忘停录】【录制规格】改了这一段不生效 —— '
                   '等下次「开始工作」重建编排器时才按新设置走。'
                   '【语音播报】不受这条限制，它立刻生效。'
-              : '【工作模式】与【防忘停录】在点「开始工作」时生效。'
+              : '【工作模式】【防忘停录】【录制规格】在点「开始工作」时生效。'
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
                   '【语音播报】是立刻生效的。\n'
                   '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'

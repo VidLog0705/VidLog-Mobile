@@ -18,6 +18,9 @@ class RecordingEntry {
     required this.location,
     required this.contentHash,
     required this.sourceDeviceId,
+    this.codec,
+    this.resolution,
+    this.orientation,
   });
 
   final String evidenceId;
@@ -42,6 +45,20 @@ class RecordingEntry {
   final ContentHash contentHash;
   final String sourceDeviceId;
 
+  /// 这条录像的录制规格（规格 §3.1.7 的连带项）。
+  ///
+  /// **可空**，而且是刻意的：2026-09-27 之前录的那些行里没有这三个字段，
+  /// 而索引是追加写的 —— 老行永远长这样。所以：
+  ///
+  /// - 容量估算对它们走默认档那一格（见 `lifecycle.estimateBytes`）；
+  /// - 电脑端那半边的同名字段也是可空的（`RecordingEntry.Codec`）。
+  ///
+  /// ⚠️ **方向只有手机端写得出来** —— 电脑端写的是 `null`。这不是缺字段，
+  /// 是「电脑端没有方向这一项」（规格 §3.1.7 ② 原话「仅手机端」）。
+  final String? codec;
+  final String? resolution;
+  final String? orientation;
+
   Map<String, Object?> toJson() => {
         'evidenceId': evidenceId,
         'sessionId': sessionId,
@@ -52,6 +69,11 @@ class RecordingEntry {
         'location': location.value,
         'contentHash': contentHash.value,
         'sourceDeviceId': sourceDeviceId,
+        // 值为 null 时**不写这个键**：写 `"codec": null` 与不写是两回事，
+        // 而不写的那个才与老行长得一样（读端只认「有没有这个键」）。
+        if (codec != null) 'codec': codec,
+        if (resolution != null) 'resolution': resolution,
+        if (orientation != null) 'orientation': orientation,
       };
 
   /// 宽容地读一行 —— **字段名按候选表逐个试，大小写不敏感**。
@@ -93,6 +115,12 @@ class RecordingEntry {
         location: RelativePath.parse(location),
         contentHash: ContentHash.parse(_text(json, ['contentHash']) ?? ''),
         sourceDeviceId: _text(json, ['sourceDeviceId']) ?? '',
+        // 三个都**允许缺**（老行就没有）。取到原样存，**不在这里归一成枚举名** ——
+        // 索引是「录的时候是什么就记什么」，把读端变成写端会让同一份文件在不同
+        // 版本里读出不同的值。归一留给用它的人（`RecordingSpec.fromConfig` 认得动）。
+        codec: _text(json, ['codec']),
+        resolution: _text(json, ['resolution']),
+        orientation: _text(json, ['orientation']),
       );
     } on Object {
       // 字段在、内容不合法（单号格式、时间格式、哈希长度…）——

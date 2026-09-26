@@ -15,6 +15,7 @@ import 'package:vidlog_mobile/recording/recorder_events.dart';
 import 'package:vidlog_mobile/recording/recorder_gateway.dart';
 import 'package:vidlog_mobile/recording/recording_coordinator.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
+import 'package:vidlog_mobile/recording/recording_spec.dart';
 import 'package:vidlog_mobile/recording/recording_workspace.dart';
 import 'package:vidlog_mobile/recording/scan_error_log.dart';
 import 'package:vidlog_mobile/recording/session_finalizer.dart';
@@ -133,6 +134,121 @@ void main() {
     // 事件处理里有**真实文件 I/O**，必须等编排器把在途事件处理完。
     await coordinator.waitForPendingEvents();
   }
+
+  // ─────────────────────────────────────────────
+  // 录制规格（规格 §3.1.7）
+  // ─────────────────────────────────────────────
+
+  group('录制规格', () {
+    test('★ 开工前先做可用性检查，跑不通就用回落那一档', () async {
+      final coordinator = make();
+
+      // 这台「手机」只跑得通 720P + H.264。
+      gateway.usableSpecs = [const RecordingSpec(resolution: VideoResolution.p720)];
+
+      await coordinator.startWorking(
+        sourceDeviceId: 'device-1',
+        spec: const RecordingSpec(
+            codec: VideoCodec.h265, resolution: VideoResolution.uhd4K),
+      );
+
+      expect(coordinator.effectiveSpec.resolution, VideoResolution.p720);
+      expect(coordinator.effectiveSpec.codec, VideoCodec.h264);
+      expect(coordinator.specFellBack, isTrue);
+      expect(coordinator.specFallbackReason, isNotNull,
+          reason: '规格：「不得静默回落」—— 回落了就必须有话说给用户听');
+
+      // 相机是按**生效**那一档开的，不是按用户选的那一档。
+      expect(gateway.openedSpec, coordinator.effectiveSpec);
+    });
+
+    test('★ 规格改了要重开相机 —— 不然是「改了没反应的开关」', () async {
+      // 编码与分辨率是开会话时定死的（原生看到会话已开就早退），
+      // 所以「用户改了规格 → 下次开始工作」必须真的换一档，
+      // 否则它骗的是画质，而且看不出来。
+      final coordinator = make();
+
+      await coordinator.startWorking(
+        sourceDeviceId: 'device-1',
+        spec: const RecordingSpec(resolution: VideoResolution.p720),
+      );
+      expect(gateway.cameraCloseCount, 0);
+
+      await coordinator.startWorking(
+        sourceDeviceId: 'device-1',
+        spec: const RecordingSpec(resolution: VideoResolution.uhd4K),
+      );
+
+      expect(gateway.cameraCloseCount, 1, reason: '规格变了要把旧会话关掉重开');
+      expect(gateway.openedSpec?.resolution, VideoResolution.uhd4K);
+    });
+
+    test('规格没变就不重开相机（重复调开工也不重开）', () async {
+      final coordinator = make();
+      const spec = RecordingSpec(resolution: VideoResolution.p1080);
+
+      await coordinator.startWorking(sourceDeviceId: 'device-1', spec: spec);
+      await coordinator.startWorking(sourceDeviceId: 'device-1', spec: spec);
+
+      expect(gateway.cameraCloseCount, 0);
+    });
+
+    test('★ 索引进的是**实际**那一档，不是用户选的那一档', () async {
+      // 记错了会让这条录像的容量估算按另一档算（§3.5.5 的连带项），
+      // 而那个数正被「清理到够为止」用着。
+      final coordinator = make();
+      nowMs = 1000;
+      gateway.usableSpecs = [const RecordingSpec(resolution: VideoResolution.p720)];
+
+      // 用户选 4K + H.265，但这台手机只跑得通 720P + H.264。
+      await coordinator.startWorking(
+        sourceDeviceId: 'device-1',
+        spec: const RecordingSpec(
+            codec: VideoCodec.h265, resolution: VideoResolution.uhd4K),
+      );
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 1000);
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+
+      final entries = await index.loadAll();
+
+      expect(entries, isNotEmpty);
+      expect(entries.last.codec, 'h264');
+      expect(entries.last.resolution, 'p720');
+      expect(entries.last.orientation, 'portrait');
+    });
+
+    test('取景框跟着规格走 —— 横屏的框与竖屏的框不是一个形状', () async {
+      // 规格 §3.2.2 的连带项：框按画面比例算归一化坐标，
+      // 比例变了不重算，「画出来的框」与「实际判定的范围」就会差 90°。
+      final portrait = make();
+      await portrait.startWorking(
+          sourceDeviceId: 'device-1', spec: RecordingSpec.standard);
+      final portraitRect = portrait.scanGate.viewfinder.rect;
+
+      final landscape = make();
+      await landscape.startWorking(
+        sourceDeviceId: 'device-1',
+        spec: const RecordingSpec(orientation: RecordingOrientation.landscapeLeft),
+      );
+      final landscapeRect = landscape.scanGate.viewfinder.rect;
+
+      expect(portraitRect.width, isNot(closeTo(landscapeRect.width, 1e-9)));
+
+      // ⚠️ 归一化坐标里「正方形」**不等于**宽高相等：那个框在像素上是方的，
+      // 所以竖屏（画面高）时**归一化宽 > 归一化高**，横屏反过来
+      // （见 `ViewfinderPreset.rectOn`）。这一条正是「比例变了必须重算」的
+      // 意义所在 —— 不重算的话两个方向会画出同一个归一化矩形，
+      // 其中一个方向上的框就会被拉成一长条。
+      expect(portraitRect.width, greaterThan(portraitRect.height));
+      expect(landscapeRect.width, lessThan(landscapeRect.height));
+    });
+  });
 
   // ─────────────────────────────────────────────
   // 开录
@@ -1810,10 +1926,33 @@ class FakeGateway implements RecorderGateway {
   Future<bool> requestCameraPermission() async => true;
 
   @override
-  Future<void> openCamera({bool qrOnly = false}) async {
+  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec}) async {
     cameraOpened = true;
     cameraQrOnly = qrOnly;
+    openedSpec = spec;
   }
+
+  /// 最近一次开相机带着的规格。**「规格改了要重开相机」那条要靠它验** ——
+  /// 不重开的话，用户改了规格、回来按开始，录的仍是上一档（改了没反应）。
+  RecordingSpec? openedSpec;
+
+  /// 假的能力探测：返回候选表里第一个「可用的」下标。
+  ///
+  /// 默认**第一个就可用**（= 不回落），与真实设备上的常态一致；
+  /// 要验回落就在测试里改它。
+  List<RecordingSpec>? usableSpecs;
+
+  @override
+  Future<int?> firstUsableSpec(List<RecordingSpec> candidates) async {
+    probedCandidates = candidates;
+    if (usableSpecs == null) return 0;
+
+    final index = candidates.indexWhere(usableSpecs!.contains);
+    return index < 0 ? null : index;
+  }
+
+  /// 最近一次交给原生探测的候选表。
+  List<RecordingSpec>? probedCandidates;
 
   bool cameraOpened = false;
 

@@ -15,6 +15,7 @@ import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Build
@@ -142,6 +143,135 @@ sealed interface RecorderEvent {
  * 所以下面这些代码只验证到「能编译」。真机行为（尤其是轮转与掉电收尾）
  * **必须**走一遍回归才能算数。
  */
+/**
+ * 录制规格（规格 §3.1.7）—— 与 Dart 的 `RecordingSpec` **逐字对应**。
+ *
+ * 名字用的是 Dart 那边的枚举名（`h264` / `uhd4K` / `landscapeLeft`）；
+ * 认不出来一律回默认档（I4：配置坏掉不得导致录制失败）。
+ *
+ * 与 iOS 的 `RecorderSpec` 同一个形状 —— 两端对 Dart 必须长得一样，
+ * 否则 `recorder_gateway.dart` 就得按平台分叉。
+ */
+data class RecorderSpec(
+    val codec: Codec = Codec.H264,
+    val resolution: Resolution = Resolution.P1080,
+    val orientation: Orientation = Orientation.PORTRAIT,
+) {
+    enum class Codec { H264, H265 }
+
+    enum class Resolution { UHD4K, P1080, P720 }
+
+    enum class Orientation { LANDSCAPE_LEFT, PORTRAIT, LANDSCAPE_RIGHT }
+
+    /**
+     * **编码尺寸**（恒为横向的那一组）。
+     *
+     * ⚠️ 竖屏时成片是它的宽高对调 —— 那件事由 `setOrientationHint` 交给播放器，
+     * 相机这边的输出尺寸始终是传感器方向的那一个。
+     */
+    val size: Pair<Int, Int>
+        get() = when (resolution) {
+            Resolution.UHD4K -> 3840 to 2160
+            Resolution.P1080 -> 1920 to 1080
+            Resolution.P720 -> 1280 to 720
+        }
+
+    val mime: String
+        get() = if (codec == Codec.H265) CameraSegmentRecorder.MIME_HEVC
+        else CameraSegmentRecorder.MIME_AVC
+
+    /**
+     * 录制码率。以原来那个写死的 8 Mbps 为 720P 的基准按像素数放大，
+     * H.265 再打六折（同画质下它本来就省）。
+     *
+     * ⚠️ 不按像素等比的话，**4K 会按 720P 的码率编** ——
+     * 选项做得出来、画面却糊得没法当证据。
+     */
+    val bitRate: Int
+        get() {
+            val (width, height) = size
+            val scaled = 8_000_000.0 * (width.toLong() * height) / (1280.0 * 720.0)
+            return if (codec == Codec.H265) (scaled * 0.6).toInt() else scaled.toInt()
+        }
+
+    /**
+     * 写进成片的旋转角（`MediaMuxer.setOrientationHint`）。
+     *
+     * 播放器会**顺时针**转这么多度才是正的。传感器方向 [sensorOrientation]
+     * 是「竖着拿时要转多少」，所以：
+     *
+     *  - 竖屏 = 原样（`sensorOrientation`）
+     *  - 横左（听筒朝左）= 比竖屏少 90°
+     *  - 横右（听筒朝右）= 比竖屏多 90°
+     *
+     * ⚠️ **这两个横屏的名字与角度的对应关系没在真机上验过**
+     * （开发机没有摄像头、不跑模拟器）。真机上若发现两个方向反了，
+     * 对调的就是这里的 `- 90` 与 `+ 90`，别去动 Dart 那边。
+     */
+    fun orientationHint(sensorOrientation: Int): Int = when (orientation) {
+        Orientation.PORTRAIT -> sensorOrientation
+        Orientation.LANDSCAPE_LEFT -> (sensorOrientation - 90 + 360) % 360
+        Orientation.LANDSCAPE_RIGHT -> (sensorOrientation + 90) % 360
+    }
+
+    /**
+     * 这台设备真的跑得通这一档吗（规格 §3.1.7 的可用性检查）。
+     *
+     * 两件事都要成立：
+     * 1. 有对应 MIME 的**编码器**
+     * 2. 相机支持**正好这个尺寸**的输出（不是「能缩放到」——
+     *    会话的一个目标尺寸不在能力表里会让整个 `createCaptureSession` 失败）
+     */
+    fun isUsable(context: Context, characteristics: CameraCharacteristics): Boolean {
+        if (!CameraSegmentRecorder.hasEncoder(mime)) return false
+
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return false
+
+        val (width, height) = size
+        val supported = map.getOutputSizes(MediaCodecInfo.CodecCapabilities::class.java)
+            ?: map.getOutputSizes(SurfaceTexture::class.java)
+
+        return supported?.any { info ->
+            (info.width == width && info.height == height) ||
+                // 有些设备把尺寸按传感器方向登记（宽高对调），两边都认。
+                (info.width == height && info.height == width)
+        } == true
+    }
+
+    companion object {
+        val STANDARD = RecorderSpec()
+
+        /** 从 Dart 送来的 map 解析。**缺字段 / 认不出 = 默认档**。 */
+        fun parse(raw: Any?): RecorderSpec {
+            val map = raw as? Map<*, *> ?: return STANDARD
+
+            return RecorderSpec(
+                codec = when (map["codec"]) {
+                    "h265" -> Codec.H265
+                    "h264" -> Codec.H264
+                    else -> STANDARD.codec
+                },
+                resolution = when (map["resolution"]) {
+                    "uhd4K" -> Resolution.UHD4K
+                    "p1080" -> Resolution.P1080
+                    "p720" -> Resolution.P720
+                    else -> STANDARD.resolution
+                },
+                orientation = when (map["orientation"]) {
+                    "landscapeLeft" -> Orientation.LANDSCAPE_LEFT
+                    "portrait" -> Orientation.PORTRAIT
+                    "landscapeRight" -> Orientation.LANDSCAPE_RIGHT
+                    else -> STANDARD.orientation
+                },
+            )
+        }
+
+        fun parseList(raw: Any?): List<RecorderSpec> =
+            (raw as? List<*>)?.map { parse(it) } ?: emptyList()
+    }
+}
+
 class CameraSegmentRecorder(
     private val context: Context,
     private val onEvent: (RecorderEvent) -> Unit,
@@ -149,16 +279,69 @@ class CameraSegmentRecorder(
     companion object {
         private const val TAG = "VidLogRecorder"
 
-        const val MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC
+        /** H.264 / H.265 两种编码的 MIME 名。 */
+        const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
+        const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
 
         /** 单段时长。掉电最多丢这么多 —— 太短会让分段碎，太长会让丢失变大。 */
         const val DEFAULT_SEGMENT_DURATION_MS = 5 * 60 * 1000L
 
         private const val FRAME_RATE = 30
         private const val I_FRAME_INTERVAL_SECONDS = 1
-        private const val BIT_RATE = 8_000_000
-        private const val MAX_WIDTH = 1920
-        private const val MAX_HEIGHT = 1080
+
+        /**
+         * 录制前那次**真实的可用性检查**（规格 §3.1.7）。
+         *
+         * 返回候选表里**第一个真能跑**的下标；一个都跑不通返回 null。
+         *
+         * ⚠️ **候选表的顺序不是这里决定的** —— Dart 那边排好了送进来
+         * （`RecordingSpec.fallbacksFrom`，有测试）。这里只回答设备能力：
+         * 「先保编码还是先保分辨率」是产品决定，不是设备事实。
+         *
+         * 相机没开也能调（只读 `CameraCharacteristics`，不开会话）。
+         */
+        fun firstUsableIndex(context: Context, candidates: List<RecorderSpec>): Int? {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+                ?: return null
+            val cameraId = pickBackCameraId(manager) ?: return null
+            val characteristics = manager.getCameraCharacteristics(cameraId)
+
+            for ((index, candidate) in candidates.withIndex()) {
+                if (candidate.isUsable(context, characteristics)) return index
+            }
+
+            return null
+        }
+
+        /**
+         * 挑一台后置摄像头。挑不到就返回第一台（与旧的 `pickBackCamera` 同一套规则）。
+         *
+         * ⚠️ **放在 companion 里**是因为 `firstUsableIndex` 要在**没开相机**时也能调 ——
+         * 那时还没有 `CameraSegmentRecorder` 实例。
+         */
+        fun pickBackCameraId(manager: CameraManager): String? {
+            val ids = manager.cameraIdList
+            for (id in ids) {
+                val facing = manager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_FACING)
+                if (facing == CameraCharacteristics.LENS_FACING_BACK) return id
+            }
+            return ids.firstOrNull()
+        }
+
+        /**
+         * 这台设备有没有这个 MIME 的**编码器**。
+         *
+         * 只看「有没有」，不看它支持哪些尺寸 —— 尺寸那一半由
+         * [RecorderSpec.isUsable] 用相机的能力表回答。
+         */
+        fun hasEncoder(mime: String): Boolean {
+            val list = MediaCodecList(MediaCodecList.ALL_CODECS)
+
+            return list.codecInfos.any { info ->
+                info.isEncoder && info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+            }
+        }
 
         /**
          * 静止检测的抽样网格大小。
@@ -288,6 +471,20 @@ class CameraSegmentRecorder(
     private var sensorOrientation = 0
     private var zoomRatio = 1.0f
 
+    /**
+     * 本次会话用的录制规格。**只在 [openCamera] 里定一次** ——
+     * 改了它要重开会话（Dart 那边就是这么做的：规格变了先关相机再开）。
+     */
+    private var spec: RecorderSpec = RecorderSpec.STANDARD
+
+    /**
+     * 成片要顺时针转多少度才是正的（= `setOrientationHint` 那个值）。
+     *
+     * ⚠️ **它同时是「录像帧 → 显示画面」的换算量**（见 [analysisToDisplay]）——
+     * 取景框的坐标靠它才对得上，所以只能有一个来源。
+     */
+    private var displayRotation = 0
+
     /** 录像那一路的长宽比。识码坐标换算要用（见 [analysisToDisplay]）。 */
     private var videoAspect = 16.0 / 9.0
 
@@ -365,7 +562,7 @@ class CameraSegmentRecorder(
      * 规格 §3.2.2：用户点「开始工作」→ 画面出现**可见的取景框**；
      * 那时还没扫码，不该录。所以相机开着送预览、等扫到面单才开始录。
      */
-    fun openCamera(): Boolean {
+    fun openCamera(spec: RecorderSpec = RecorderSpec.STANDARD): Boolean {
         if (cameraOpen) return true
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
@@ -383,7 +580,11 @@ class CameraSegmentRecorder(
         }
 
         val characteristics = manager.getCameraCharacteristics(cameraId)
+        this.spec = spec
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        // 成片的旋转角按**规格**算，而它同时是「录像帧 → 显示画面」的换算量
+        // （见 analysisToDisplay）—— 两处必须用同一个数，取景框才不会歪。
+        displayRotation = spec.orientationHint(sensorOrientation)
         cropRegion = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
         cropRegion?.let { region ->
             if (region.width() > 0 && region.height() > 0) {
@@ -395,7 +596,7 @@ class CameraSegmentRecorder(
         } else {
             characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1.0f
         }
-        videoSize = pickVideoSize(characteristics) ?: Size(1280, 720)
+        videoSize = pickVideoSize(characteristics, spec) ?: Size(1280, 720)
         videoAspect = videoSize.width.toDouble() / videoSize.height
 
         startCameraThread()
@@ -642,15 +843,7 @@ class CameraSegmentRecorder(
         cameraHandler = Handler(cameraThread!!.looper)
     }
 
-    private fun pickBackCamera(manager: CameraManager): String? {
-        val ids = manager.cameraIdList
-        for (id in ids) {
-            val facing = manager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.LENS_FACING)
-            if (facing == CameraCharacteristics.LENS_FACING_BACK) return id
-        }
-        return ids.firstOrNull()
-    }
+    private fun pickBackCamera(manager: CameraManager): String? = pickBackCameraId(manager)
 
     /**
      * 静止检测与识码用的尺寸。
@@ -673,17 +866,46 @@ class CameraSegmentRecorder(
         return sizes.minByOrNull { it.width.toLong() * it.height } ?: Size(320, 240)
     }
 
-    private fun pickVideoSize(characteristics: CameraCharacteristics): Size? {
+    /**
+     * 录制那一路的输出尺寸：**按规格挑**（2026-09-27 改，规格 §3.1.7）。
+     *
+     * 原来的做法是「取不超过 1920×1080 里最大的那个」——那是**没有选项**时的
+     * 权宜：它把 4K 那一档直接封死了（上限写死 1080P），而且和用户选的档位
+     * 毫无关系。
+     *
+     * 现在的规则按优先级来：
+     * 1. **正好等于**目标尺寸（`isUsable` 已经证明它在能力表里）
+     * 2. 否则取**不小于**目标里最小的那个（宁可大一点、不要糊）
+     * 3. 再不行取最大的（设备比目标小，只能将就）
+     *
+     * ⚠️ 走到 2、3 说明 Dart 那边那次可用性检查与这里看到的能力表不一致
+     * （设备在探测之后换了镜头、或者被别的 App 占了）—— 那属于**回落**，
+     * 而规格要求回落可见：这里把实际选中的尺寸报给 Dart（`RecorderEvent.Failed`
+     * 那条路不适合报平安的事，所以只记日志；用户看到的仍是探测结论）。
+     */
+    private fun pickVideoSize(characteristics: CameraCharacteristics, spec: RecorderSpec): Size? {
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return null
 
-        return map.getOutputSizes(MediaCodecInfo.CodecCapabilities::class.java)
-            ?.filter { it.width <= MAX_WIDTH && it.height <= MAX_HEIGHT }
-            // 取不超过上限里最大的那个 —— 越大越清楚，但不越过上面那两道线。
-            ?.maxByOrNull { it.width.toLong() * it.height }
+        val (targetWidth, targetHeight) = spec.size
+
+        val sizes = map.getOutputSizes(MediaCodecInfo.CodecCapabilities::class.java)
             ?: map.getOutputSizes(ImageFormat.YUV_420_888)
-                ?.filter { it.width <= MAX_WIDTH && it.height <= MAX_HEIGHT }
-                ?.maxByOrNull { it.width.toLong() * it.height }
+            ?: return null
+
+        // 宽高对调着登记的设备也认（与 RecorderSpec.isUsable 同一条规矩）。
+        val matches = { size: Size ->
+            (size.width == targetWidth && size.height == targetHeight) ||
+                (size.width == targetHeight && size.height == targetWidth)
+        }
+
+        sizes.firstOrNull(matches)?.let { return it }
+
+        val targetPixels = targetWidth.toLong() * targetHeight
+
+        return sizes.filter { it.width.toLong() * it.height >= targetPixels }
+            .minByOrNull { it.width.toLong() * it.height }
+            ?: sizes.maxByOrNull { it.width.toLong() * it.height }
     }
 
     private fun openDevice(
@@ -692,14 +914,15 @@ class CameraSegmentRecorder(
         characteristics: CameraCharacteristics,
     ) {
         // 先建编码器，拿到 input surface，再把它作为相机的输出目标。
-        val codec = MediaCodec.createEncoderByType(MIME_TYPE)
+        // 编码器与码率都按**这一段实际用的那一档**走（规格 §3.1.7）。
+        val codec = MediaCodec.createEncoderByType(spec.mime)
 
-        val format = MediaFormat.createVideoFormat(MIME_TYPE, videoSize.width, videoSize.height)
+        val format = MediaFormat.createVideoFormat(spec.mime, videoSize.width, videoSize.height)
         format.setInteger(
             MediaFormat.KEY_COLOR_FORMAT,
             MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface,
         )
-        format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, spec.bitRate)
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE)
         // 1 秒一个关键帧：轮转只能落在关键帧上，所以这个值直接决定分段边界的精度。
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_SECONDS)
@@ -1185,7 +1408,11 @@ class CameraSegmentRecorder(
         val sensor = frameToSensor(u, v, analysisAspect)
         val video = sensorToFrame(sensor.first, sensor.second, videoAspect)
 
-        return when (sensorOrientation) {
+        // ⚠️ **用的是 [displayRotation]，不是裸的 sensorOrientation。**
+        // 它俩在竖屏那一档下相等；用户选了横屏时，录像与显示**一起**转了 90°，
+        // 所以换算量跟着同一个人走 —— 各算各的会让框歪 90°，
+        // 而那种歪法看起来「像那么回事」（画面确实是横的），最难发现。
+        return when (displayRotation) {
             // 顺时针转 90°：左边缘转到上边缘
             90 -> (1 - video.second) to video.first
             180 -> (1 - video.first) to (1 - video.second)
@@ -1334,7 +1561,9 @@ class CameraSegmentRecorder(
                 file.absolutePath,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
             )
-            newMuxer.setOrientationHint(sensorOrientation)
+            // 按**规格**算出来的旋转角，不是裸的 sensorOrientation ——
+            // 它是竖屏那一档的值。
+            newMuxer.setOrientationHint(displayRotation)
             trackIndex = newMuxer.addTrack(format)
             newMuxer.start()
             muxer = newMuxer

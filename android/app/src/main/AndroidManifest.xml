@@ -9,15 +9,17 @@
         android:label="vidlog_mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-        <!-- 竖屏锁定。相机那边的旋转都是按「竖着持机」写死的
-             （`sensorOrientation` 直接进封装器方向提示、进预览矩阵、
-             进识码坐标换算），横过来之后这三处会一起错。iOS 侧同样是竖屏。 -->
+        <!-- ⚠️ **2026-09-27 起不再锁竖屏**（规格 §3.1.7 的方向选项要它）。
+             原来锁着是因为「相机那边的旋转都按竖着持机写死」——那三处
+             （封装器方向提示、预览矩阵、识码坐标换算）现在都跟着用户选的
+             **录制规格**走：`displayRotation` 一个值同时喂给封装器与坐标换算
+             （见 `CameraSegmentRecorder`），而画面比例由 Dart 按同一个规格摆。
+             锁着的话用户选了「横左」屏幕却转不过来，那个选项就是假的。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""
-            android:screenOrientation="portrait"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"

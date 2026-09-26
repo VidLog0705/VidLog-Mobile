@@ -18,7 +18,13 @@ void main() {
   // 固定一个「现在」。用真实时钟的话，跨零点那一刻用例会自己变红。
   final now = DateTime(2026, 9, 23, 12);
 
-  RecordingEntry entry(String id, {required Duration ago}) =>
+  /// 一条索引记录。[codec] / [resolution] 不传就当**老行**（没有这两个字段）。
+  RecordingEntry entryWith(
+    String id, {
+    Duration ago = const Duration(days: 400),
+    String? codec,
+    String? resolution,
+  }) =>
       RecordingEntry(
         evidenceId: id,
         sessionId: 'sess-$id',
@@ -29,7 +35,12 @@ void main() {
         location: RelativePath.parse('2026/09/23/$id.mp4'),
         contentHash: ContentHash.parse('a' * 64),
         sourceDeviceId: 'dev-1',
+        codec: codec,
+        resolution: resolution,
       );
+
+  RecordingEntry entry(String id, {required Duration ago}) =>
+      entryWith(id, ago: ago);
 
   /// 归档状态：默认「九天前备份成功的」—— 已经出了 3 天保留期，
   /// 所以默认的结论是**该清**，要验豁免的用例自己把时间调近。
@@ -263,16 +274,29 @@ void main() {
       }
     });
 
-    test('预告的容量按时长推算 —— 与电脑端同一个系数', () {
-      // 640x480@30 的 H.264 实测约 160 KB/s（= 163 840 B/s）。两端的预告数字
-      // 要对得上，所以系数不能各写各的。
+    test('预告的容量按**这条录像自己的规格**推算 —— 与电脑端同一张表', () {
+      // 2026-09-27 改：原先两端都写死一个 160 KB/s（H.264 640×480 时代的数），
+      // 4K 下错得离谱 —— 而电脑端「按空间清理」正是用它决定删到够为止。
+      // 现在系数按编码 + 分辨率查表（`RecordingSpec.bytesPerSecondOf`），
+      // 那张表与电脑端 `CleanupPlanner.BytesPerSecond` **逐字相同**。
       final e = entry('a', ago: const Duration(days: 400));
 
       final result = plan([e]);
 
-      // 5 分钟 = 300 秒 → 300 × 163 840 = 49 152 000 字节（约 49 MB）
-      expect(estimateBytes(e), 49152000);
-      expect(result.totalBytes, 49152000);
+      // 老行没有 codec/resolution 两个字段 → 走默认档 H.264 1080P = 1100 KB/s。
+      // 5 分钟 = 300 秒 → 300 × 1100 × 1024 = 337 920 000 字节（约 322 MB）。
+      expect(estimateBytes(e), 337920000);
+      expect(result.totalBytes, 337920000);
+    });
+
+    test('★ 4K 的预告必须明显大于 1080P —— 写死一个系数时它俩是一样的', () {
+      // 这一条是那个「写死的 160 KB/s」的正面反例：4K 与 720P 的估算相差
+      // 七倍多，而老系数给它们算出同一个数。结果就是「按空间清理」在 4K 机器上
+      // **删了还不够**。
+      final fourK = entryWith('4k', codec: 'h264', resolution: 'uhd4K');
+      final hd = entryWith('hd', codec: 'h264', resolution: 'p720');
+
+      expect(estimateBytes(fourK), greaterThan(4 * estimateBytes(hd)));
     });
 
     test('时长为负时预告 0，不给负数', () {

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../diagnostics/app_log.dart';
+import 'recording_spec.dart';
 
 /// 原生层上报的事件。
 sealed class NativeRecorderEvent {
@@ -94,9 +95,24 @@ abstract interface class RecorderGateway {
   /// ⚠️ **默认仍然是只认一维码，一个字都没放松** —— 面单上或环境里的二维码
   /// 不该被当成单号。所以这个开关由调用方显式打开，而**录制页永远不打开它**。
   ///
-  /// 相机已经开着时调用它：只换识码范围，不重开相机（换范围要重开的话，
-  /// 从录入界面返回录制页会闪一下黑屏）。
-  Future<void> openCamera({bool qrOnly = false});
+  /// [spec] 是这一段要用的录制规格（编码 / 分辨率 / 方向）。
+  /// 传 `null` 表示**不改** —— 相机已经开着时这是常态（换识码范围、从别的页面
+  /// 回来），那时按原生当前那套走，重开一次会闪黑屏。
+  ///
+  /// 相机已经开着时调用它：只换识码范围，不重开相机。
+  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec});
+
+  /// 录制前那次**真实的可用性检查**（规格 §3.1.7）。
+  ///
+  /// 把候选表（按回落顺序排好）交给原生，原生回答「第一个真能跑的是第几个」；
+  /// 一个都跑不通返回 `null`。
+  ///
+  /// ⚠️ **原生不认识回落顺序** —— 那是产品决定。它只回答设备能力，
+  /// 顺序由 [selectRecordingSpec] 那一层（有测试）说了算。
+  ///
+  /// **实现可以抛**（老包没有这个方法）：调用方按「问不出来」处理，
+  /// 照用户选的走。见 `recording_spec_probe.dart`。
+  Future<int?> firstUsableSpec(List<RecordingSpec> candidates);
 
   /// 开始录一段。
   ///
@@ -209,8 +225,17 @@ class ChannelRecorderGateway implements RecorderGateway {
       await _methods.invokeMethod<bool>('requestCameraPermission') ?? false;
 
   @override
-  Future<void> openCamera({bool qrOnly = false}) =>
-      _methods.invokeMethod<void>('openCamera', {'qrOnly': qrOnly});
+  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec}) =>
+      _methods.invokeMethod<void>('openCamera', {
+        'qrOnly': qrOnly,
+        if (spec != null) 'spec': spec.toWire(),
+      });
+
+  @override
+  Future<int?> firstUsableSpec(List<RecordingSpec> candidates) =>
+      _methods.invokeMethod<int>('firstUsableSpec', {
+        'candidates': [for (final spec in candidates) spec.toWire()],
+      });
 
   @override
   Future<void> startRecording({

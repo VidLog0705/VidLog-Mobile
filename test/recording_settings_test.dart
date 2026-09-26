@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recording_settings.dart';
+import 'package:vidlog_mobile/recording/recording_spec.dart';
 import 'package:vidlog_mobile/recording/retention_setting.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
@@ -221,6 +222,76 @@ void main() {
         RetentionSetting.values.map((s) => s.label).toList(),
         ['全部保留', '不保留', '3 天', '5 天', '7 天', '10 天', '15 天', '30 天'],
       );
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // 录制规格（规格 §3.1.7）
+  // ─────────────────────────────────────────────
+
+  group('录制规格三项', () {
+    test('★ 改了要落盘，重开还在（否则每次开 App 都抹回默认档）', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.codec = VideoCodec.h265;
+      settings.resolution = VideoResolution.uhd4K;
+      settings.orientation = RecordingOrientation.landscapeRight;
+      await settings.save();
+
+      final reloaded = await RecordingSettings.load(path());
+
+      expect(reloaded.codec, VideoCodec.h265);
+      expect(reloaded.resolution, VideoResolution.uhd4K);
+      expect(reloaded.orientation, RecordingOrientation.landscapeRight);
+    });
+
+    test('⚠️ 存的是**名字**不是序号', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.codec = VideoCodec.h265;
+      settings.resolution = VideoResolution.p720;
+      settings.orientation = RecordingOrientation.landscapeLeft;
+      await settings.save();
+
+      final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
+
+      expect(raw['codec'], 'h265');
+      expect(raw['resolution'], 'p720');
+      expect(raw['orientation'], 'landscapeLeft');
+    });
+
+    test('没有这几项（老设置文件）→ 回默认档，不抛', () async {
+      File(path()).writeAsStringSync(jsonEncode({'mode': 'sameWaybillStop'}));
+
+      final settings = await RecordingSettings.load(path());
+
+      expect(settings.codec, VideoCodec.fallback);
+      expect(settings.resolution, VideoResolution.fallback);
+      expect(settings.orientation, RecordingOrientation.fallback);
+    });
+
+    test('垃圾值一律回默认档（I4：坏配置不许导致录制失败）', () async {
+      for (final garbage in <Object?>['4K', 4, '', <int>[], true, -1]) {
+        File(path()).writeAsStringSync(jsonEncode({
+          'codec': garbage,
+          'resolution': garbage,
+          'orientation': garbage,
+        }));
+
+        final settings = await RecordingSettings.load(path());
+
+        expect(settings.codec, VideoCodec.h264, reason: '「$garbage」不该被当成一档编码');
+        expect(settings.resolution, VideoResolution.p1080);
+        expect(settings.orientation, RecordingOrientation.portrait);
+      }
+    });
+
+    test('requestedSpec 把三项拼成一档', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.codec = VideoCodec.h265;
+      settings.resolution = VideoResolution.uhd4K;
+      settings.orientation = RecordingOrientation.portrait;
+
+      expect(settings.requestedSpec.label, 'H.265 4K 竖屏');
+      expect(settings.requestedSpec.aspectRatio, closeTo(2160 / 3840, 1e-9));
     });
   });
 

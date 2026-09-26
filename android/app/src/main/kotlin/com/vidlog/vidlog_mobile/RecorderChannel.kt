@@ -191,6 +191,19 @@ class RecorderChannel(private val activity: FlutterActivity) :
             // 表现是「点了按钮屏幕上什么都没有，但其实在录」。
 
             "openCamera" -> openCamera(call, result)
+
+            // 录制前那次**真实的可用性检查**（规格 §3.1.7）。
+            //
+            // **不需要相机权限、也不开会话** —— 只读 `CameraCharacteristics`。
+            // 一个都跑不通 / 没有相机时给 null：那是「问不出来」，与「都不行」
+            // 在 Dart 那边走同一条路（照用户选的走）—— 那里刻意不把 null 当成
+            // 「降到底档」，否则一次问不出来就会静默改掉用户的画质。
+            "firstUsableSpec" -> {
+                val candidates = RecorderSpec.parseList(call.argument<Any>("candidates"))
+                result.success(
+                    CameraSegmentRecorder.firstUsableIndex(activity, candidates),
+                )
+            }
             "startRecording" -> startRecording(call, result)
             "stopRecording" -> stopRecording(result)
             "closeCamera" -> closeCamera(result)
@@ -259,10 +272,17 @@ class RecorderChannel(private val activity: FlutterActivity) :
         // 缺参数 = false：老版本 Dart 不带这个参数时行为一个字都不变。
         val qrOnly = call.argument<Boolean>("qrOnly") ?: false
 
+        // 录制规格。**缺参数 = 默认档**：老版本 Dart 不带它时行为与从前一致。
+        val spec = RecorderSpec.parse(call.argument<Any>("spec"))
+
         // 已经开着（相机 + 预览都在跑）就直接回成功，与 iOS 一致。
         // ⚠️ 但**识码范围要顺手换掉**：就这么返回的话，录制页把相机开着、
         // 用户切到扫码连接那一下，屏幕上是一维码的白名单在扫一张二维码 ——
         // 表现是**扫了没反应**。
+        // ⚠️ **规格换不了**（分辨率与编码是开会话时定死的）。Dart 那边知道
+        // 这件事：规格一变它会先 `closeCamera` 再开（见
+        // `RecordingCoordinator.openCamera`），所以走到这里还带着不同的规格，
+        // 说明那是「顺手带上的默认值」，不是真想改档。
         recorder?.let { existing ->
             if (existing.cameraOpen) {
                 existing.qrOnly = qrOnly
@@ -277,7 +297,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
         )
         created.qrOnly = qrOnly
 
-        if (!created.openCamera()) {
+        if (!created.openCamera(spec)) {
             result.error("camera_failed", "相机未能打开", null)
             return
         }

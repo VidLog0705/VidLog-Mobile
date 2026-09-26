@@ -8,6 +8,7 @@ import 'business_type.dart';
 import 'label_store.dart';
 import 'recorder_events.dart' show StopTrigger;
 import 'recording_index.dart';
+import 'recording_spec.dart';
 import 'recording_workspace.dart';
 
 /// 单个分段的收尾结果。
@@ -99,6 +100,7 @@ class SessionFinalizer {
     required List<SegmentProduct> segments,
     required StopTrigger reason,
     BusinessType? businessType,
+    RecordingSpec? spec,
   }) async {
     if (segments.isEmpty) {
       return FinalizeOutcome(
@@ -121,6 +123,7 @@ class SessionFinalizer {
         sourceDeviceId: sourceDeviceId,
         segment: segment,
         businessType: businessType,
+        spec: spec,
       );
 
       firstFailure ??= result.isPublished ? null : (result.failureReason ?? '收尾失败（未给出原因）');
@@ -146,6 +149,7 @@ class SessionFinalizer {
     required String sourceDeviceId,
     required SegmentProduct segment,
     BusinessType? businessType,
+    RecordingSpec? spec,
   }) async {
     final file = File(segment.filePath);
     if (!await file.exists()) {
@@ -174,6 +178,11 @@ class SessionFinalizer {
         location: location,
         contentHash: contentHash,
         sourceDeviceId: sourceDeviceId,
+        // 录制规格（规格 §3.1.7 的连带项）。**没给就不写那两个键** ——
+        // 与老行长得一样，读端不会看出差别（它本来就允许缺）。
+        codec: spec?.codec.name,
+        resolution: spec?.resolution.name,
+        orientation: spec?.orientation.name,
       ));
     } on Object catch (error) {
       // 文件在盘上、哈希也对，但检索不到 —— 不算收尾成功。

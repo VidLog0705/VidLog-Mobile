@@ -2,13 +2,15 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'recorder_config.dart';
+import 'recording_spec.dart';
 import 'recording_workspace.dart' show writeFileAtomically;
 import 'retention_setting.dart';
 import 'work_mode.dart';
 
 /// 用户选的录制设置（`<root>/settings.json`）。
 ///
-/// 落盘的六项：工作模式、静止停录档位、时长兜底档位、语音播报开关，
+/// 落盘的九项：工作模式、静止停录档位、时长兜底档位、语音播报开关、
+/// 录制规格三项（编码 / 分辨率 / 方向，规格 §3.1.7），
 /// 以及归档后的本地保留期两份（发货 / 退货，规格 §3.5.2.1）。
 ///
 /// ## 为什么单独一个文件，不并进 `device.json`
@@ -43,6 +45,9 @@ class RecordingSettings {
     required this.voiceEnabled,
     required this.retentionOutbound,
     required this.retentionReturn,
+    this.codec = VideoCodec.h264,
+    this.resolution = VideoResolution.p1080,
+    this.orientation = RecordingOrientation.portrait,
   });
 
   final String path;
@@ -74,6 +79,23 @@ class RecordingSettings {
   /// 归档成功后，**退货**那批本地留多久。改它不影响 [retentionOutbound]。
   RetentionSetting retentionReturn;
 
+  /// 编码格式（规格 §3.1.7）。**录制前可选、录制中不可改**。
+  VideoCodec codec;
+
+  /// 分辨率档位。
+  VideoResolution resolution;
+
+  /// 成片方向。**只有手机端有这一项**（电脑端的摄像头方向由设备与安装决定）。
+  RecordingOrientation orientation;
+
+  /// 用户选的那一档 —— 落盘与界面都按它走。
+  ///
+  /// ⚠️ 它与**实际启用**的那一档可能不一样：规格 §3.1.7 要求录制前做
+  /// 真实的可用性检查，跑不通就回落，**而且回落必须可见**。
+  /// 实际那一档由原生探测给出（见 `RecordingSpecProbe`），不是这个。
+  RecordingSpec get requestedSpec =>
+      RecordingSpec(codec: codec, resolution: resolution, orientation: orientation);
+
   /// 读设置。**任何读取失败都回落到硬兜底值，绝不抛。**
   static Future<RecordingSettings> load(String path) async {
     var json = const <String, Object?>{};
@@ -102,6 +124,9 @@ class RecordingSettings {
       },
       retentionOutbound: RetentionSetting.fromConfig(json['retentionOutbound']),
       retentionReturn: RetentionSetting.fromConfig(json['retentionReturn']),
+      codec: VideoCodec.fromConfig(json['codec']),
+      resolution: VideoResolution.fromConfig(json['resolution']),
+      orientation: RecordingOrientation.fromConfig(json['orientation']),
     );
   }
 
@@ -133,6 +158,13 @@ class RecordingSettings {
         // 用户看到的下拉还是「全部保留」那一项挑不着毛病。
         'retentionOutbound': retentionOutbound.days,
         'retentionReturn': retentionReturn.days,
+
+        // 录制规格三项：与工作模式同一个理由，**存名字不存序号** ——
+        // 序号一旦被当格式，枚举重排会把老文件静默解析成另一档，
+        // 而这里的「静默」具体是：用户以为在录 4K，其实在录 720P。
+        'codec': codec.name,
+        'resolution': resolution.name,
+        'orientation': orientation.name,
       }),
     );
   }

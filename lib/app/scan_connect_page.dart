@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../recording/recorder_gateway.dart';
+import '../recording/recording_spec.dart';
 import '../scanning/viewfinder.dart';
 import '../upload/enroll_qr.dart';
 import 'camera_preview.dart';
@@ -26,9 +27,21 @@ class ScanConnectPage extends StatefulWidget {
     super.key,
     required this.gateway,
     required this.closeCameraWhenDone,
+    required this.spec,
   });
 
   final RecorderGateway gateway;
+
+  /// **生效的**录制规格 —— 由调用方给（录制页手上就有）。
+  ///
+  /// 相机是**进程级的同一个会话**：这一页打开时它可能正开着（录制中、
+  /// 或发货栏的取景框），那个会话的分辨率取决于用户选的规格。
+  /// 这里按 9:16 硬摆的话，选了横屏的用户会看到一张被拉扁的画面，
+  /// 而框画在上面跟着一起扁 —— 看起来「像那么回事」，实际判定范围是歪的。
+  ///
+  /// 相机这次若是**新开**的，也要按它开：不然扫完码回到录制页，
+  /// 这一页留下的是另一个分辨率的会话，画面比例当场变。
+  final RecordingSpec spec;
 
   /// 离开时要不要把相机关掉。
   ///
@@ -41,12 +54,14 @@ class ScanConnectPage extends StatefulWidget {
     BuildContext context, {
     required RecorderGateway gateway,
     required bool closeCameraWhenDone,
+    required RecordingSpec spec,
   }) =>
       Navigator.of(context).push<EnrollQrPayload>(
         MaterialPageRoute(
           builder: (_) => ScanConnectPage(
             gateway: gateway,
             closeCameraWhenDone: closeCameraWhenDone,
+            spec: spec,
           ),
         ),
       );
@@ -61,8 +76,13 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
   /// （规格 §3.2.2 要防的正是这个）。
   ///
   /// 用最大档：扫二维码时手机离屏幕多远都不好说，框小了用户得反复凑。
-  final Viewfinder _viewfinder =
-      Viewfinder.forPreset(ViewfinderPreset.large, aspectRatio: kVideoAspectRatio);
+  ///
+  /// 画面比例按**生效的规格**算 —— 与预览视图用的是同一个数，
+  /// 所以画出来的框与判定的范围仍然严格一致（§3.2.2）。
+  late final Viewfinder _viewfinder = Viewfinder.forPreset(
+    ViewfinderPreset.large,
+    aspectRatio: widget.spec.aspectRatio,
+  );
 
   StreamSubscription<NativeRecorderEvent>? _events;
 
@@ -159,7 +179,8 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
     );
   }
 
-  Widget _preview() => CameraPreview(viewfinder: _viewfinder);
+  Widget _preview() =>
+      CameraPreview(viewfinder: _viewfinder, aspectRatio: widget.spec.aspectRatio);
 
   Widget _problemView() => Container(
         color: Colors.black87,
