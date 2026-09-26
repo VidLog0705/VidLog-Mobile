@@ -160,16 +160,61 @@ void main() {
   group('索引里新加的 sessionId 字段', () {
     test('★ 存下来再读回去，值不变', () {
       final original = entry(evidenceId: 'sess-1-001', sessionId: 'sess-1');
-      final restored = RecordingEntry.fromJson(original.toJson());
+      final restored = RecordingEntry.tryFromJson(original.toJson());
 
-      expect(restored.sessionId, 'sess-1');
+      expect(restored?.sessionId, 'sess-1');
     });
 
     test('老条目（没有这个字段）靠 evidenceId 兜底', () {
       final json = entry(evidenceId: 'sess-1-002', sessionId: 'sess-1').toJson()
         ..remove('sessionId');
 
-      expect(RecordingEntry.fromJson(json).sessionId, 'sess-1');
+      expect(RecordingEntry.tryFromJson(json)?.sessionId, 'sess-1');
+    });
+  });
+
+  group('★ 宽容地读 —— 两端写的字段名不一样', () {
+    test('电脑端写的 PascalCase 也读得回来', () {
+      // 电脑端的 DTO 是 `Waybill` / `StartedAt` / `DurationSeconds`…（见
+      // `VidLog.Desktop.Core/Index/RecordingIndex.cs` 的 `RecordingEntryDto`）。
+      // 它对不上本仓的 camelCase，**也对不上母仓数据模型那张表**
+      // （那张写的是 `WaybillNumber` / `RecordingStartedAt`）—— 三套名字。
+      //
+      // 两端的文件都已经在盘上了，所以读端必须宽容；写端维持原样。
+      final json = <String, Object?>{
+        'EvidenceId': 'sess-9-001',
+        'SessionId': 'sess-9',
+        'Waybill': 'SF1000000001',
+        'StartedAt': '2026-09-27T02:00:00.0000000+00:00',
+        'EndedAt': '2026-09-27T02:05:00.0000000+00:00',
+        'DurationSeconds': 300,
+        'Location': '2026/09/27/SF1000000001/sess-9_000.mp4',
+        'ContentHash': 'a' * 64,
+        'SourceDeviceId': 'desktop-1',
+      };
+
+      final restored = RecordingEntry.tryFromJson(json);
+
+      expect(restored, isNotNull);
+      expect(restored!.evidenceId, 'sess-9-001');
+      expect(restored.waybill.value, 'SF1000000001');
+      expect(restored.duration, const Duration(minutes: 5));
+      expect(restored.sourceDeviceId, 'desktop-1');
+    });
+
+    test('★ 缺关键字段就丢掉这一条，不编一条出来', () {
+      // 「读得宽容」指的是**字段名**，不是**内容**。少东西的记录宁可不要 ——
+      // 编一条出来的话，一条不存在的录像会进检索、进清理判定。
+      final json = entry(evidenceId: 'sess-1-003').toJson()..remove('waybill');
+
+      expect(RecordingEntry.tryFromJson(json), isNull);
+    });
+
+    test('字段在但内容不合法，同样丢掉', () {
+      final json = entry(evidenceId: 'sess-1-004').toJson()
+        ..['startedAt'] = '不是时间';
+
+      expect(RecordingEntry.tryFromJson(json), isNull);
     });
   });
 

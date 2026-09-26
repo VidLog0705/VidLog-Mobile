@@ -54,24 +54,79 @@ class RecordingEntry {
         'sourceDeviceId': sourceDeviceId,
       };
 
-  static RecordingEntry fromJson(Map<String, Object?> json) {
-    final evidenceId = json['evidenceId']! as String;
+  /// 宽容地读一行 —— **字段名按候选表逐个试，大小写不敏感**。
+  ///
+  /// ⚠️ 为什么不能直接 `json['evidenceId']`：两端写的**字段名不一样**
+  /// （2026-09-27 核过）—— 本仓写 camelCase（`waybill`/`startedAt`…），
+  /// 电脑端写它自己 DTO 的名字（`Waybill`/`StartedAt`…，PascalCase），
+  /// 而母仓 `docs/02-数据模型.md` §1.1 那张表用的又是第三套
+  /// （`WaybillNumber`/`RecordingStartedAt`）—— **两端的落盘名都不是它**。
+  ///
+  /// 两端的文件都已经在盘上了（手机上装的是 19/21/22 号包），所以**读端必须宽容**，
+  /// 写端维持原样。真要对齐字段名，得挑一次版本一起改。
+  ///
+  /// 关键字段少一个就返回 null（**不编一条出来**）。
+  static RecordingEntry? tryFromJson(Map<String, Object?> json) {
+    final evidenceId = _text(json, ['evidenceId']);
+    final waybill = _text(json, ['waybill', 'waybillNumber']);
+    final startedAt = _text(json, ['startedAt', 'recordingStartedAt']);
+    final endedAt = _text(json, ['endedAt', 'recordingEndedAt']);
+    final location = _text(json, ['location']);
 
-    return RecordingEntry(
-      evidenceId: evidenceId,
-      sessionId: (json['sessionId'] as String?)?.trim().isNotEmpty == true
-          ? (json['sessionId']! as String).trim()
-          : sessionIdFromEvidenceId(evidenceId),
-      waybill: WaybillNumber.parse(json['waybill'] as String?),
-      startedAt: DateTime.parse(json['startedAt']! as String).toLocal(),
-      endedAt: DateTime.parse(json['endedAt']! as String).toLocal(),
-      duration: Duration(
-          milliseconds:
-              (((json['durationSeconds'] as num?) ?? 0) * 1000).round()),
-      location: RelativePath.parse(json['location'] as String?),
-      contentHash: ContentHash.parse(json['contentHash'] as String?),
-      sourceDeviceId: (json['sourceDeviceId'] as String?) ?? '',
-    );
+    if (evidenceId == null || waybill == null || startedAt == null ||
+        endedAt == null || location == null) {
+      return null;
+    }
+
+    try {
+      final sessionId = _text(json, ['sessionId']);
+
+      return RecordingEntry(
+        evidenceId: evidenceId,
+        sessionId: sessionId ?? sessionIdFromEvidenceId(evidenceId),
+        waybill: WaybillNumber.parse(waybill),
+        startedAt: DateTime.parse(startedAt).toLocal(),
+        endedAt: DateTime.parse(endedAt).toLocal(),
+        duration: Duration(
+            milliseconds:
+                ((_number(json, ['durationSeconds', 'duration']) ?? 0) * 1000).round()),
+        location: RelativePath.parse(location),
+        contentHash: ContentHash.parse(_text(json, ['contentHash']) ?? ''),
+        sourceDeviceId: _text(json, ['sourceDeviceId']) ?? '',
+      );
+    } on Object {
+      // 字段在、内容不合法（单号格式、时间格式、哈希长度…）——
+      // 与「缺字段」同样处理：丢掉这一条，不编。
+      return null;
+    }
+  }
+
+  /// 按候选名取字符串，**大小写不敏感**。
+  static String? _text(Map<String, Object?> json, List<String> names) {
+    for (final entry in json.entries) {
+      for (final name in names) {
+        if (entry.key.toLowerCase() != name.toLowerCase()) continue;
+        final value = entry.value;
+        if (value is String && value.trim().isNotEmpty) return value;
+      }
+    }
+    return null;
+  }
+
+  /// 按候选名取数字（数字或能当数字的字符串）。
+  static double? _number(Map<String, Object?> json, List<String> names) {
+    for (final entry in json.entries) {
+      for (final name in names) {
+        if (entry.key.toLowerCase() != name.toLowerCase()) continue;
+        final value = entry.value;
+        if (value is num) return value.toDouble();
+        if (value is String) {
+          final parsed = double.tryParse(value);
+          if (parsed != null) return parsed;
+        }
+      }
+    }
+    return null;
   }
 }
 
@@ -130,11 +185,14 @@ class JsonLinesRecordingIndex implements RecordingIndex {
       if (line.trim().isEmpty) continue;
 
       try {
-        entries.add(
-            RecordingEntry.fromJson(jsonDecode(line) as Map<String, Object?>));
-      } on Object {
+        final entry = RecordingEntry.tryFromJson(
+            jsonDecode(line) as Map<String, Object?>);
+
+        // 认不出来（缺关键字段/字段不合法）就丢掉这一条 —— **不编一条出来**。
         // 半截 JSON（原子写要防的正是这种，但历史遗留文件可能长这样）。
         // 读不出来的行跳过，不能让一条坏行毁掉整个索引。
+        if (entry != null) entries.add(entry);
+      } on Object {
         continue;
       }
     }
