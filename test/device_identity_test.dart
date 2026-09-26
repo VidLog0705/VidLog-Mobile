@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/recording/device_identity.dart';
+import 'package:vidlog_mobile/recording/lan_probe.dart' show defaultHostPort;
 
 /// 本机身份（需求方 2026-09-22：本机名可改、电脑端用它区分机位）。
 ///
@@ -68,6 +69,64 @@ void main() {
 
     expect(reloaded.hostAddress, '192.168.1.10');
     expect(reloaded.hostName, '打包间电脑');
+  });
+
+  test('没设过端口 → 默认 8720', () async {
+    File(path()).writeAsStringSync(jsonEncode({'deviceId': 'abc'}));
+
+    final identity = await DeviceIdentity.load(path());
+
+    expect(identity.hostPort, defaultHostPort);
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // 电脑端端口（2026-09-26 扫码入网时加的）
+  //
+  //   端口来自**二维码里那一串**。收下却不存的话，入网那一次是对的
+  //   （当场用的就是码里的端口），而之后每一次上传都打到 8720 上，
+  //   用户看到的是「连不上电脑端」—— 一个与真实原因看不出任何关系的提示。
+  // ══════════════════════════════════════════════════════════════════
+
+  test('端口跟着地址一起落盘', () async {
+    final identity = await DeviceIdentity.load(path());
+
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑', port: 8721);
+    final reloaded = await DeviceIdentity.load(path());
+
+    expect(reloaded.hostPort, 8721);
+  });
+
+  test('不传端口就沿用现在的（手填地址那条路）', () async {
+    final identity = await DeviceIdentity.load(path());
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑', port: 8721);
+
+    await identity.setHost(address: '192.168.1.11', name: '打包间电脑');
+
+    expect(identity.hostPort, 8721, reason: '只改了地址，端口不该被悄悄拨回默认');
+  });
+
+  test('★ 换了端口也算换了台电脑端 → 凭据丢掉', () async {
+    // 同一个地址上可能是两台不同的服务。留着旧凭据的话每次上传都撞 401，
+    // 而用户看到的是「连不上」—— 他刚改完地址，最自然的结论是「地址填错了」。
+    final identity = await DeviceIdentity.load(path());
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑', port: 8720);
+    await identity.setCredential('凭据');
+
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑', port: 9999);
+
+    expect(identity.credential, isEmpty);
+  });
+
+  test('文件里的端口被手改坏 → 回默认，不是发去 0 号端口', () async {
+    for (final broken in <Object>['abc', 0, -1, 70000, 12.5, true]) {
+      File(path()).writeAsStringSync(
+        jsonEncode({'deviceId': 'abc', 'hostAddress': '192.168.1.10', 'hostPort': broken}),
+      );
+
+      final identity = await DeviceIdentity.load(path());
+
+      expect(identity.hostPort, defaultHostPort, reason: '坏值 $broken（${broken.runtimeType}）');
+    }
   });
 
   // 这条记的是一个**会真丢东西**的分支：读不出 id 就只能重新生成，

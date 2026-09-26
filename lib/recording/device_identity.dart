@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'lan_probe.dart' show defaultHostPort;
 import 'recording_workspace.dart' show writeFileAtomically;
 
 /// 本机名没设过时的默认值。
@@ -102,6 +103,7 @@ class DeviceIdentity {
     required this.deviceId,
     required this.deviceName,
     this.hostAddress = '',
+    this.hostPort = defaultHostPort,
     this.hostName = '',
     this.credential = '',
   });
@@ -119,6 +121,14 @@ class DeviceIdentity {
   /// 手填是契约 §1.1 步骤 1 认可的路径（原文：「发现不到 → 允许手动填地址」）。
   /// 自动发现是 M5 的事。
   String hostAddress;
+
+  /// 电脑端服务的端口。默认 [defaultHostPort]（8720）。
+  ///
+  /// 它来自**二维码里那一串** —— 扫进来的那台电脑端不必用默认端口。
+  /// 收下却不存的话，入网那一次是对的（当场就用码里的端口），
+  /// 而之后每一次上传都会打到 8720 上，用户看到的是「连不上电脑端」——
+  /// 一个与真实原因（端口不对）看不出任何关系的提示。
+  int hostPort;
 
   /// 手填的电脑端名字。只用来显示 —— 真连没连上由探测决定，不由它决定。
   String hostName;
@@ -173,6 +183,7 @@ class DeviceIdentity {
                   )
                 : defaultDeviceName,
             hostAddress: (json['hostAddress'] as String?)?.trim() ?? '',
+            hostPort: _portFrom(json['hostPort']),
             hostName: (json['hostName'] as String?)?.trim() ?? '',
             credential: (json['credential'] as String?)?.trim() ?? '',
           );
@@ -202,6 +213,7 @@ class DeviceIdentity {
         'deviceId': deviceId,
         'deviceName': deviceName,
         'hostAddress': hostAddress,
+        'hostPort': hostPort,
         'hostName': hostName,
         'credential': credential,
       }),
@@ -226,13 +238,39 @@ class DeviceIdentity {
   /// 它认不出来。留着的话每次上传都会撞 401，而用户看到的是「连不上」——
   /// 他刚改完地址，最自然的结论是「地址填错了」，于是接着改地址，
   /// 真正的原因（该重新配对）永远浮现不出来。丢掉它，界面就会明说「请重新配对」。
-  Future<void> setHost({required String address, required String name}) async {
+  /// [port] 不传就沿用现在的（手填地址那条路走的就是这个默认）。
+  Future<void> setHost({
+    required String address,
+    required String name,
+    int? port,
+  }) async {
     final next = address.trim();
-    if (next != hostAddress) credential = '';
+    final nextPort = port ?? hostPort;
+
+    // 端口变了也算换了台电脑端 —— 同一个地址上可能是两台不同的服务。
+    if (next != hostAddress || nextPort != hostPort) credential = '';
 
     hostAddress = next;
+    hostPort = nextPort;
     hostName = name.trim();
     await save();
+  }
+
+  /// 端口：认不出的值一律回 [defaultHostPort]。
+  ///
+  /// 不这么做的话，`device.json` 里一个被手改坏的 `hostPort: 0` 会让每一次
+  /// 上传都发去 `http://192.168.1.10:0/` —— 界面只会说「连不上电脑端」，
+  /// 而真正的原因在文件里，谁也看不出来。
+  static int _portFrom(Object? value) {
+    final port = switch (value) {
+      final int v => v,
+      // 12.0 收，12.5 不收 —— 小数端口是坏值，不是「四舍五入一下」。
+      final double v when v == v.roundToDouble() => v.toInt(),
+      final String v => int.tryParse(v.trim()) ?? 0,
+      _ => 0,
+    };
+
+    return port >= 1 && port <= 65535 ? port : defaultHostPort;
   }
 
   /// 入网成功后把凭据记下来。**落盘** —— 只在内存里留着的凭据，

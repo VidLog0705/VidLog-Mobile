@@ -165,32 +165,71 @@ class UploadClient {
     );
   }
 
-  /// 入网请求。电脑端屏幕上会显示一个 6 位配对码，用户读出来敲进手机。
-  Future<void> enrollRequest({required String deviceId, required String deviceName}) async {
-    await _send(
+  /// 入网第一步：报上「我来了」，并**顺带问批没批**（规格 §3.4.5）。
+  ///
+  /// [token] 是**电脑端屏幕上那张二维码里的一串**（`EnrollQrPayload.token`）——
+  /// 用户不再手输任何东西。
+  ///
+  /// ⚠️ **手机轮询的是这个接口，不是 [enrollClaim]**。它**只报警不发货**
+  /// （一个字节的凭据都不产出），所以「我还在等」的那几轮反复调它没有副作用。
+  /// 合成一个的话，每轮轮询都在调一个会发货的接口。
+  ///
+  /// 返回 [EnrollStatus.pending] 就继续调，直到 [EnrollStatus.approved]（去领凭据）
+  /// 或 [EnrollStatus.rejected]（停住并告诉用户）。
+  Future<EnrollOutcome> enrollRequest({
+    required String deviceId,
+    required String deviceName,
+    required String token,
+  }) async {
+    final json = await _send(
       'POST',
       'enroll/request',
-      body: {'deviceId': deviceId, 'deviceName': deviceName},
+      body: {'deviceId': deviceId, 'deviceName': deviceName, 'token': token},
       authenticated: false,
     );
+
+    return _outcomeOf(json);
   }
 
-  /// 凭配对码换凭据。**只发一次** —— 领走之后这条请求即销毁。
-  Future<String> enrollClaim({required String deviceId, required String code}) async {
+  /// 入网第二步：用**同一个令牌**换凭据。**只发一次** —— 领走之后整张码即作废。
+  ///
+  /// ⚠️ 「还没批」和「被拒了」**不是错误**：电脑端回的是 200 + `status`，
+  /// 所以这里返回 [EnrollOutcome] 而不是抛（`05-上传接口形状.md` §2.3）。
+  /// 回 4xx 的只有两种真错误：令牌不对（`bad_token`）、屏幕上那张码没了
+  /// （`no_pending_request`）—— 那两种由 [_send] 变成 [UploadFailure] 抛出去。
+  Future<EnrollOutcome> enrollClaim({
+    required String deviceId,
+    required String token,
+  }) async {
     final json = await _send(
       'POST',
       'enroll/claim',
-      body: {'deviceId': deviceId, 'code': code},
+      body: {'deviceId': deviceId, 'token': token},
       authenticated: false,
     );
 
-    final value = (json['credential'] as String?)?.trim() ?? '';
-    if (value.isEmpty) {
-      // 200 却没给凭据 —— 两端实现不一致，别把它当成「入网成功」。
-      throw const UploadFailure(UploadErrorCodes.badRequest, detail: '入网成功但没拿到凭据');
+    return _outcomeOf(json);
+  }
+
+  /// 200 的报文 → 处置。
+  ///
+  /// **有凭据就等于批准**（`EnrollCredentialPayload` 只带 `credential`、不带 `status`），
+  /// 没有凭据的报文里必有 `status`。两条都读，就不必让调用方知道它调的是哪一步。
+  static EnrollOutcome _outcomeOf(Map<String, Object?> json) {
+    final credential = (json['credential'] as String?)?.trim() ?? '';
+    if (credential.isNotEmpty) {
+      return EnrollOutcome(EnrollStatus.approved, credential: credential);
     }
 
-    return value;
+    final raw = (json['status'] as String?)?.trim() ?? '';
+    final status = EnrollStatus.tryParse(raw);
+    if (status == null) {
+      // 认不出的状态**不当成 pending** —— 那会让手机对着一个不会变的答复
+      // 一直转下去，而用户看到的只是「连接中…」。
+      throw UploadFailure(UploadErrorCodes.badRequest, detail: '电脑端回了个认不出的入网状态：$raw');
+    }
+
+    return EnrollOutcome(status);
   }
 
   Future<ProbeResult> probe({

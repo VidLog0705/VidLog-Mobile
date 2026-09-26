@@ -24,9 +24,11 @@ import '../recording/session_finalizer.dart';
 import '../recording/work_mode.dart';
 import '../states.dart';
 import '../upload/archive_store.dart';
+import '../upload/enrollment.dart';
 import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
 import 'camera_preview.dart';
+import 'scan_connect_page.dart';
 import 'zoom_dial.dart';
 
 /// 采集页底部抽屉里正在展开哪一块。`null` = 三块都收着。
@@ -453,6 +455,7 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 而用户会照着一个假绿灯等一晚上。`lan_probe.dart` 里那段自认的债就是这个。
   Future<void> _probeHost() async {
     final address = _identity?.hostAddress ?? '';
+    final port = _identity?.hostPort ?? defaultHostPort;
     if (address.isEmpty) {
       if (mounted) setState(() => _hostOnline = false);
       return;
@@ -465,7 +468,7 @@ class _RecorderPageState extends State<RecorderPage> {
       // 这一趟**不带凭据**：健康检查是入网之前就要能调的（文档 §2.1），
       // 而且「在不在」与「认不认我」是两件事 —— 混在一起的话，一台
       // 把我们忘了的电脑端会显示成「离线」，用户就会去改地址。
-      online = (await UploadClient(address: address).health()).isVidLog;
+      online = (await UploadClient(address: address, port: port).health()).isVidLog;
     } on Object {
       // 拒绝连接 / 超时 / 解析不了地址 / 不是我们认得的那台 —— 对界面
       // 来说都是同一件事：连不上。
@@ -502,8 +505,10 @@ class _RecorderPageState extends State<RecorderPage> {
       archive: _archive,
       client: UploadClient(
         address: identity.hostAddress,
-        // 端口用 `UploadClient` 自己的默认值（`defaultHostPort`）——
-        // 手机端不该有第二处写死 8720 的地方。
+        // 端口来自**二维码里那一串**（`hostPort`），默认 8720 ——
+        // 不传的话，扫码连进来的那台电脑端只要不是默认端口，
+        // 入网会成功、之后的每一次上传都会打到 8720 上。
+        port: identity.hostPort,
         credential: identity.credential,
       ),
     );
@@ -591,106 +596,240 @@ class _RecorderPageState extends State<RecorderPage> {
     _armRetry(null);
   }
 
-  /// 入网：让电脑端认下这台手机，换一把凭据回来。
+  /// 【扫码连接】：扫电脑端屏幕上那张二维码，报到、等它同意，再把凭据领回来。
   ///
-  /// 契约 §1.1 的两步走：先**请求**（电脑端屏幕上出现待批准的请求），
-  /// 再拿**配对码**去换凭据。凭据只发一次（文档 §2.3），所以这一步不能重放 ——
-  /// 失败了就重新请求一次。
+  /// 规格 §3.4.5 ①（2026-09-24 改版）：**用户不需要手输任何东西**。
+  ///
+  /// 三步，中间的等待是**看得见的**：
+  ///   1. 扫码 —— 拿到电脑端的地址与一次性令牌（[ScanConnectPage]）；
+  ///   2. 反复报到、同时等电脑端上的人点【同意】—— 那一步在
+  ///      `Enroller` 里，它有测试（`test/uploader_test.dart` 的入网那组）；
+  ///   3. 领凭据、落盘，然后**提示用户编辑机位名**（规格 ①第 4 条）。
+  ///
+  /// ⚠️ **被拒绝要当场看见**（I3）：电脑端说不，这里就停下来把话说明白，
+  /// 不是一直转圈。
   Future<void> _pairHost() async {
     final identity = _identity;
     if (identity == null) return;
 
-    if (identity.hostAddress.trim().isEmpty) {
-      await _editHost();
-      if ((_identity?.hostAddress ?? '').trim().isEmpty) return;
+    final payload = await ScanConnectPage.open(
+      context,
+      gateway: _gateway,
+      // 相机在这个页面之前就开着的话**不能关** —— 那可能是录制中，
+      // 或者发货栏的取景框还开着。关了就是掐掉别人的会话。
+      closeCameraWhenDone: _coordinator?.isCameraOpen != true,
+    );
+
+    if (payload == null || !mounted) return; // 用户返回了，没扫
+
+    await _enroll(identity: identity, host: payload.host, port: payload.port, token: payload.token);
+  }
+
+  /// 扫码之后到「拿到凭据」之间的那段路。
+  ///
+  /// [host] / [port] 来自二维码，但**地址允许被改**：规格 §3.4.5 ② 要求
+  /// 「扫码连不上时允许手填地址」这条兜底留着 —— 一台机器可能同时插着有线、
+  /// 无线、虚拟网卡，电脑端挑出来的那个地址不一定就是手机连得上的那个。
+  /// 令牌仍然是被扫进来的那一张。
+  Future<void> _enroll({
+    required DeviceIdentity identity,
+    required String host,
+    required int port,
+    required String token,
+  }) async {
+    var address = host.trim();
+
+    while (true) {
+      if (address.isEmpty) return;
+
+      // 地址与端口落盘。换地址/端口 = 换一台电脑端 ⇒ `setHost` 会把旧凭据丢掉
+      // （这是对的：那是**别的**电脑端签发的）。
+      await identity.setHost(address: address, name: identity.hostName, port: port);
+
+      if (!mounted) return;
+
+      final attempt = await _attemptEnroll(
+        identity: identity,
+        address: address,
+        port: port,
+        token: token,
+      );
+
+      if (!mounted) return;
+
+      final failure = attempt.failure;
+
+      if (failure is UploadFailure && failure.code == UploadErrorCodes.network) {
+        // 规格 §3.4.5 ②：**「扫码连不上时允许手填地址」这条兜底必须保留**。
+        // 电脑端挑出来的地址不一定就是手机连得上的那个 —— 一台机器可能同时
+        // 插着有线、无线、虚拟网卡，它挑的是「最像」的那个。
+        //
+        // ⚠️ 这里换的**只是地址**：令牌还是刚扫进来的那一张，没有重新扫。
+        final edited = await _askHostAddress(current: '$address:$port');
+        if (edited == null || edited.isEmpty || !mounted) return;
+
+        address = edited;
+        continue;
+      }
+
+      if (failure != null) {
+        _snack(failure is UploadFailure ? failure.userHint : '连接失败：$failure');
+        return;
+      }
+
+      final outcome = attempt.outcome;
+      if (outcome == null) return; // 用户点了取消
+
+      if (outcome.status == EnrollStatus.rejected) {
+        // 规格 §3.4.5 ①：**拒绝要看得见**，而且不是「网络错误」那种说法。
+        _snack('电脑端拒绝了这次连接。要重试的话，在电脑端上重新生成一张二维码再扫。');
+        return;
+      }
+
+      final credential = outcome.credential;
+      if (credential == null) {
+        // 批准了却又没给凭据 —— 只可能是电脑端那边在这中间换了张码
+        // （或者两端实现不一致）。**不当作成功**：没有凭据就是没入网。
+        _snack('没有拿到凭据。请在电脑端上重新生成一张二维码，再扫一次。');
+        return;
+      }
+
+      // **落盘**：只在内存里留着的凭据，重启一次就等于没入过网。
+      await identity.setCredential(credential);
+
+      if (!mounted) return;
+
+      // 凭据换了 → 上传器必须重建（见 [_buildUploader]）。
+      _buildUploader();
+      setState(() => _status = '已连接');
+      await _probeHost();
+
+      if (!mounted) return;
+
+      // 规格 §3.4.5 ①第 4 条：「同意 → 手机端提示**连接成功**，
+      // 并让用户**编辑机位名**」。
+      _snack('连接成功');
+      await _editDeviceName();
+
+      unawaited(_runUploads(manual: true));
+      return;
+    }
+  }
+
+  /// 跑一次入网：报到 → 等批准 → 领凭据，中间用进度框把等待**显示出来**。
+  ///
+  /// 拆出来是因为它可能被跑两次：第一次连不上时，界面会问一个能手填的地址，
+  /// 拿着**同一个令牌**再跑一次（规格 §3.4.5 ② 的兜底）。
+  ///
+  /// 返回值用记录而不是抛：调用方要区分「用户取消」（outcome 为空）
+  /// 与「连不上」（failure 是 network）—— 后者是**唯一**该问地址的情况。
+  Future<({EnrollOutcome? outcome, Object? failure})> _attemptEnroll({
+    required DeviceIdentity identity,
+    required String address,
+    required int port,
+    required String token,
+  }) async {
+    final navigator = Navigator.of(context);
+    final waited = ValueNotifier(Duration.zero);
+
+    var cancelled = false;
+    var dialogClosed = false;
+    void closeDialog() {
+      if (dialogClosed) return;
+      dialogClosed = true;
+      if (mounted) navigator.pop();
     }
 
-    final client = UploadClient(address: identity.hostAddress);
-    final controller = TextEditingController();
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('等电脑端同意'),
+        content: ValueListenableBuilder<Duration>(
+          valueListenable: waited,
+          builder: (context, value, child) => Text(
+            '连接请求已经发给电脑端了。\n\n'
+            '请到那台电脑上点【同意】—— 屏幕上会弹出'
+            '「${identity.deviceName} 申请连接」。\n\n'
+            '已经等了 ${value.inSeconds} 秒。',
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              cancelled = true;
+              closeDialog();
+            },
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    ));
 
     try {
-      await client.enrollRequest(
+      final outcome = await Enroller(client: UploadClient(address: address, port: port)).enroll(
         deviceId: identity.deviceId,
         deviceName: identity.deviceName,
+        token: token,
+        cancelled: () => cancelled,
+        onWaiting: (value) => waited.value = value,
       );
-    } on UploadFailure catch (failure) {
-      if (mounted) _snack('请求入网失败：${failure.userHint}');
-      return;
+
+      return (outcome: outcome, failure: null);
     } on Object catch (error) {
-      if (mounted) _snack('连不上电脑端：$error');
-      return;
+      return (outcome: null, failure: error);
+    } finally {
+      closeDialog();
+      waited.dispose();
     }
+  }
 
-    if (!mounted) return;
+  /// 问一个能手填的电脑端地址（规格 §3.4.5 ② 的兜底）。
+  ///
+  /// 返回**主机部分**（端口不动）；用户取消返回 null。
+  Future<String?> _askHostAddress({required String current}) async {
+    final host = current.split(':').first;
+    final controller = TextEditingController(text: host);
 
-    final code = await showDialog<String>(
+    final answer = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('配对电脑端'),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('连不上这台电脑'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              '电脑端上现在应该弹出了这台手机的入网请求。'
-              '在电脑上点【允许】，再把它显示的 6 位配对码敲在这里。',
-              style: TextStyle(fontSize: 13),
+            Text(
+              '二维码里写的地址是 $current，手机连不上。\n\n'
+              '一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的不一定是你能连上的那个。'
+              '在电脑端上执行 ipconfig 看一下它的局域网地址，填在这里再试一次。',
+              style: const TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
               autofocus: true,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: '6 位配对码',
-                hintText: '123456',
-              ),
-              onSubmitted: (value) => Navigator.of(context).pop(value),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              '配对码 5 分钟内有效，连错 5 次就作废，要重新请求一次。',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(labelText: '电脑端地址', hintText: '192.168.1.23'),
+              onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('算了'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('配对'),
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('再试一次'),
           ),
         ],
       ),
     );
+
     controller.dispose();
-
-    if (code == null || code.trim().isEmpty) return;
-
-    try {
-      final credential = await client.enrollClaim(
-        deviceId: identity.deviceId,
-        code: code.trim(),
-      );
-      // **落盘**：只在内存里留着的凭据，重启一次就等于没入过网。
-      await identity.setCredential(credential);
-    } on UploadFailure catch (failure) {
-      if (mounted) setState(() => _status = '配对失败：${failure.userHint}');
-      return;
-    } on Object catch (error) {
-      if (mounted) setState(() => _status = '配对失败：$error');
-      return;
-    }
-
-    if (!mounted) return;
-
-    // 凭据换了 → 上传器必须重建（见 [_buildUploader]）。
-    _buildUploader();
-    setState(() => _status = '已配对');
-    await _probeHost();
-    unawaited(_runUploads(manual: true));
+    return answer?.trim();
   }
 
   /// 一条录像到底卡在哪 —— 给用户看的话，以及一个能救回来的按钮。
@@ -1687,21 +1826,17 @@ class _RecorderPageState extends State<RecorderPage> {
                   onPressed: identity == null ? null : _editHost,
                   child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
                 ),
-                // ⚠️ **这个按钮现在是禁用状态，而且不会自己好** ——
-                // 草图上有它，但「扫码连接」要扫的是**电脑端显示的二维码**，
-                // 而电脑端今天只解码（面单）、不出码。写在这里而不是删掉：
-                // 需求方画了它，就该看得见「它为什么还不亮」，
-                // 而不是以为漏做了（踩坑 #13 的另一种形态）。
-                // 电脑端出了二维码之后，这里改成开扫、把地址回填给 `_pairHost`。
-                const TextButton(
-                  onPressed: null,
-                  child: Text('扫码连接'),
+                // 扫码连接：**主路径**（规格 §3.4.5 ①）。电脑端上点
+                // 【连接电脑/手机】弹出二维码，这里扫它 —— 用户不用手输任何东西。
+                TextButton(
+                  onPressed: identity == null ? null : _pairHost,
+                  child: const Text('扫码连接'),
                 ),
               ],
             ),
             const Text(
-              '「扫码连接」要等电脑端先出一个二维码（还没做）—— '
-              '现在在电脑端上能看到它的 IP，用【改电脑端地址】填进来。',
+              '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
+              '（一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的地址不一定是你能连上的那个。）',
               style: TextStyle(fontSize: 11, color: Colors.black45),
             ),
           ],

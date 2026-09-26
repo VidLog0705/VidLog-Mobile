@@ -217,7 +217,16 @@ abstract final class UploadErrorCodes {
   static const evidenceMismatch = 'evidence_mismatch';
   static const unplayable = 'unplayable';
   static const notFound = 'not_found';
-  static const badCode = 'bad_code';
+
+  /// 入网令牌不对（过期 / 已经被用掉 / 不是屏幕上那张码里的）。
+  ///
+  /// ⚠️ 2026-09-24 配对码改成二维码时，电脑端把这个码从 `bad_code` 改成了
+  /// **`bad_token`**（`UploadContracts.BadToken`）。字符串是协议的一部分，
+  /// 跟着改，否则电脑端说 `bad_token` 而这边只认 `bad_code`，
+  /// 用户看到的是「程序的问题，请联系开发」。
+  static const badToken = 'bad_token';
+
+  /// 电脑端屏幕上那张码已经没了（超时、被领走、或者被新生成的一张顶掉）。
   static const noPendingRequest = 'no_pending_request';
 
   /// 本地合成的码：根本没连上（拒绝连接 / 超时 / 解析不了地址）。
@@ -250,6 +259,47 @@ enum UploadErrorKind {
   hostTooOld,
 }
 
+/// 一次入网请求的处置（规格 §3.4.5；`05-上传接口形状.md` §2.2 的三个状态）。
+enum EnrollStatus {
+  /// 电脑端收到了，**还没有人做决定**。手机照着继续等。
+  pending,
+
+  /// 批了。去 `claim` 那一步领凭据。
+  approved,
+
+  /// 电脑端**拒绝**了这次连接。
+  ///
+  /// ⚠️ 要让用户看见并**停下来** —— 拒绝之后那条请求在电脑端是留着的，
+  /// 所以这里再问多少次都是同一个答复，一直转圈是纯损失。
+  rejected;
+
+  /// 认不出来就返回 null —— **不要悄悄当成 [pending]**：
+  /// 那会让手机对着一个永远不会变的答复一直转下去。
+  static EnrollStatus? tryParse(String value) => switch (value.trim()) {
+        'pending' => EnrollStatus.pending,
+        'approved' => EnrollStatus.approved,
+        'rejected' => EnrollStatus.rejected,
+        _ => null,
+      };
+}
+
+/// 入网那两步（`request` / `claim`）的返回值。
+///
+/// 两步共用一个类型，是因为它们**回答的是同一个问题**（「批没批」），
+/// 差别只在 claim 那一步顺带把凭据带回来。
+class EnrollOutcome {
+  const EnrollOutcome(this.status, {this.credential});
+
+  final EnrollStatus status;
+
+  /// 凭据。**只有 `claim` 且 [EnrollStatus.approved] 时才非空** ——
+  /// `request` 那一步一个字节的凭据都不产出。
+  final String? credential;
+
+  @override
+  String toString() => 'EnrollOutcome(${status.name})';
+}
+
 /// 一次上传失败。
 ///
 /// ⚠️ [userHint] 是**给用户的下一步**，不是给日志的。文档 §3 最后那段：
@@ -278,6 +328,12 @@ class UploadFailure implements Exception {
         UploadErrorCodes.server => '电脑端出错了，可以再试一次。',
         UploadErrorCodes.badCredential => '这台手机在电脑端已经不认了，请重新配对。',
         UploadErrorCodes.notFound => '电脑端版本太旧，认不出这个接口。请升级电脑端。',
+        // 这两条只出现在入网那一步，说的都是「那张码不能用了，再去电脑端要一张」——
+        // 而不是「再试一次」：令牌已经作废了，重试同一个令牌永远不会成功。
+        UploadErrorCodes.badToken =>
+          '这张二维码已经不能用了（过期、或者已经被用掉）。请在电脑端重新生成一张，再扫一次。',
+        UploadErrorCodes.noPendingRequest =>
+          '电脑端屏幕上那张二维码已经不在了。请在电脑端重新生成一张，再扫一次。',
         UploadErrorCodes.unplayable =>
           '电脑端打不开这段录像。**别删手机上的原文件**，重新录一次这一件。',
         UploadErrorCodes.alreadyPublished => '电脑上已经有一份同名但内容不同的录像，请找管理员核对。',

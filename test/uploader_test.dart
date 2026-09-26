@@ -12,6 +12,7 @@ import 'package:vidlog_mobile/recording/punch_log.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/states.dart';
 import 'package:vidlog_mobile/upload/archive_store.dart';
+import 'package:vidlog_mobile/upload/enrollment.dart';
 import 'package:vidlog_mobile/upload/upload_protocol.dart';
 import 'package:vidlog_mobile/upload/uploader.dart';
 
@@ -383,6 +384,187 @@ void main() {
       expect(h.fake.chunkUploads, isEmpty);
     });
   });
+
+  // ─────────────────────────────────────────────
+  // 入网（规格 §3.4.5）：扫到二维码之后，到拿到凭据之间的那段路
+  // ─────────────────────────────────────────────
+
+  group('入网：报到 → 等批准 → 领凭据', () {
+    late FakeDesktop desktop;
+    late Enroller enroller;
+
+    setUp(() async {
+      desktop = await FakeDesktop.start();
+      enroller = Enroller(
+        client: UploadClient(address: '127.0.0.1', port: desktop.port),
+        // ⚠️ 只把「等待」抽掉。轮询的**次数与顺序**仍然是真的 ——
+        // 那才是这里要验的东西。等真时钟的话每条用例都得跑好几秒。
+        sleep: (_) async {},
+      );
+    });
+
+    tearDown(() => desktop.dispose());
+
+    Future<EnrollOutcome?> enroll({
+      String? token,
+      bool Function()? cancelled,
+      void Function(Duration waited)? onWaiting,
+    }) =>
+        enroller.enroll(
+          deviceId: deviceId,
+          deviceName: '打包手机-1',
+          token: token ?? desktop.enrollToken,
+          cancelled: cancelled ?? () => false,
+          onWaiting: onWaiting,
+        );
+
+    test('批准之后拿到凭据', () async {
+      final outcome = await enroll();
+
+      expect(outcome?.status, EnrollStatus.approved);
+      expect(outcome?.credential, testCredential);
+      // ⚠️ claim **只调一次** —— 凭据只发一次，多调一次就是「同一张码领了两回」。
+      expect(desktop.enrollClaimCount, 1);
+    });
+
+    test('报到时把设备名与令牌都带上', () async {
+      await enroll();
+
+      final sent = desktop.enrollRequests.single;
+      expect(sent['deviceId'], deviceId);
+      expect(sent['deviceName'], '打包手机-1');
+      expect(sent['token'], desktop.enrollToken);
+    });
+
+    test('报到那一步**不产出凭据**', () async {
+      // 「只报警不发货」是这个接口的全部意义：手机在「我还在等」的那几轮
+      // 反复调的就是它，它要是会发货，每一轮轮询都在领一次凭据。
+      final outcome = await UploadClient(address: '127.0.0.1', port: desktop.port)
+          .enrollRequest(deviceId: deviceId, deviceName: '打包手机-1', token: desktop.enrollToken);
+
+      expect(outcome.status, EnrollStatus.approved);
+      expect(outcome.credential, isNull);
+    });
+
+    test('还没批就一轮一轮地问，批准之后才去领', () async {
+      desktop.enrollPollsUntilApproved = 3;
+      final waits = <Duration>[];
+
+      final outcome = await enroll(onWaiting: waits.add);
+
+      expect(outcome?.status, EnrollStatus.approved);
+      expect(desktop.enrollRequests, hasLength(4)); // 3 次 pending + 第 4 次批了
+      expect(desktop.enrollClaimCount, 1);
+      // 等待必须**看得见**（I3 的精神）：界面拿这些数显示「已经等了 N 秒」，
+      // 而不是让用户对着一个转圈猜「是不是卡住了」。
+      expect(waits, [
+        Duration.zero,
+        const Duration(seconds: 1),
+        const Duration(seconds: 2),
+      ]);
+    });
+
+    test('被拒绝：当场停住，而且**一次都不去领凭据**', () async {
+      desktop.enrollRejected = true;
+
+      final outcome = await enroll();
+
+      expect(outcome?.status, EnrollStatus.rejected);
+      expect(outcome?.credential, isNull);
+      // 人做了个「不」，程序却去领凭据 = 把人工批准整个绕过去。
+      expect(desktop.enrollClaimCount, 0);
+    });
+
+    test('用户取消：返回 null，取消之后一个请求都不再发', () async {
+      desktop.enrollPollsUntilApproved = 100;
+      var polls = 0;
+
+      final outcome = await enroll(
+        cancelled: () => polls >= 2,
+        onWaiting: (_) => polls++,
+      );
+
+      expect(outcome, isNull);
+      expect(desktop.enrollRequests, hasLength(2));
+      expect(desktop.enrollClaimCount, 0);
+    });
+
+    test('令牌不对：说得清「去电脑端重新生成一张」，而且不去领凭据', () async {
+      await expectLater(
+        enroll(token: '这是别的一张码上的令牌'),
+        throwsA(isA<UploadFailure>().having((f) => f.code, 'code', UploadErrorCodes.badToken)),
+      );
+
+      expect(desktop.enrollClaimCount, 0);
+    });
+
+    test('屏幕上那张码没了：是 no_pending_request，不是「程序的问题」', () async {
+      desktop.enrollSessionGone = true;
+
+      await expectLater(
+        enroll(),
+        throwsA(isA<UploadFailure>()
+            .having((f) => f.code, 'code', UploadErrorCodes.noPendingRequest)
+            // 用户要看到的是「再去电脑端要一张」，不是「这是程序的问题」。
+            .having((f) => f.userHint, 'userHint', contains('重新生成'))),
+      );
+    });
+
+    test('批准之后那张码被换掉：claim 回 pending，**不当成成功**', () async {
+      // 在「批准」与「领取」之间，电脑端上有人重新生成了一张码 ——
+      // 那一整轮请求都作废。这时 claim 回的是 200 + pending，不是错误。
+      desktop.enrollClaimStatusOverride = 'pending';
+
+      final outcome = await enroll();
+
+      expect(outcome?.status, EnrollStatus.pending);
+      expect(outcome?.credential, isNull);
+    });
+
+    test('认不出的状态**不当成 pending**', () async {
+      // 当成 pending 的话手机会对着一个永远不变的答复一直转下去，
+      // 用户只看到「连接中…」。宁可当场说「认不出」。
+      desktop.enrollRequestStatusOverride = 'maybe';
+
+      await expectLater(
+        enroll(),
+        throwsA(isA<UploadFailure>()
+            .having((f) => f.code, 'code', UploadErrorCodes.badRequest)),
+      );
+    });
+
+    test('凭据只发一次：同一个令牌再领一次就是「屏幕上那张码没了」', () async {
+      await enroll();
+
+      await expectLater(
+        UploadClient(address: '127.0.0.1', port: desktop.port)
+            .enrollClaim(deviceId: deviceId, token: desktop.enrollToken),
+        throwsA(isA<UploadFailure>()
+            .having((f) => f.code, 'code', UploadErrorCodes.noPendingRequest)),
+      );
+    });
+
+    test('电脑端没开着：归成 network（可重试），不是「程序的问题」', () async {
+      final probe = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final deadPort = probe.port;
+      await probe.close(force: true);
+
+      final offline = Enroller(
+        client: UploadClient(address: '127.0.0.1', port: deadPort),
+        sleep: (_) async {},
+      );
+
+      await expectLater(
+        offline.enroll(
+          deviceId: deviceId,
+          deviceName: '打包手机-1',
+          token: 'tok',
+          cancelled: () => false,
+        ),
+        throwsA(isA<UploadFailure>().having((f) => f.code, 'code', UploadErrorCodes.network)),
+      );
+    });
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -448,6 +630,37 @@ class FakeDesktop {
   /// 第几片回一个**错**的哈希（模拟传过去的字节在途中变了）。
   int? corruptChunkHashAt;
 
+  // ─────────────────────────────────────────────
+  // 入网（规格 §3.4.5）
+  // ─────────────────────────────────────────────
+
+  /// 屏幕上那张二维码里的令牌。
+  String enrollToken = 'tok-screen';
+
+  /// 批准之前还会回几次 `pending`。（0 = 第一次就问出「批了」。）
+  int enrollPollsUntilApproved = 0;
+
+  /// 硬指定 `request` / `claim` 回的状态。用来演「电脑端回了个认不出的状态」，
+  /// 以及「批准之后、领凭据之前那张码被换掉了」。
+  String? enrollRequestStatusOverride;
+  String? enrollClaimStatusOverride;
+
+  /// 电脑端上的人点的是【拒绝】。
+  bool enrollRejected = false;
+
+  /// 屏幕上那张码没了（过期 / 被领走 / 被新生成的一张顶掉）。
+  bool enrollSessionGone = false;
+
+  /// 发出去的凭据。**只发一次** —— 见 [_enrollClaim]。
+  String? issuedCredential;
+
+  /// 收到过的 `enroll/request` 报文，按顺序。用来问「它到底在轮询哪个接口」。
+  final List<Map<String, Object?>> enrollRequests = [];
+
+  /// `enroll/claim` 被调了几次。**「不该调」比「调了」重要**：
+  /// 被拒之后还去领凭据，就是「人还没做决定，程序先动手了」。
+  int enrollClaimCount = 0;
+
   final Map<String, Map<int, Uint8List>> _chunks = {};
 
   void seedChunk(String target, int index, List<int> bytes) {
@@ -473,6 +686,11 @@ class FakeDesktop {
       });
     }
 
+    // 入网这两条**不要凭据**（电脑端那两条也在鉴权之前）—— 走到这里就是
+    // 「这台手机还没有凭据」，那正是它来入网的原因。
+    if (path == '/api/v1/enroll/request') return _enrollRequest(request.response, body);
+    if (path == '/api/v1/enroll/claim') return _enrollClaim(request.response, body);
+
     final auth = request.headers.value(HttpHeaders.authorizationHeader) ?? '';
     if (auth != 'Bearer $hostCredential') {
       return _json(request.response, HttpStatus.unauthorized, {'error': 'bad_credential'});
@@ -485,6 +703,60 @@ class FakeDesktop {
     if (path == '/api/v1/upload/commit') return _commit(request.response, body);
 
     return _json(request.response, HttpStatus.notFound, {'error': 'not_found'});
+  }
+
+  /// 入网第一步：报到 + 问批没批。**只报警不发货** —— 这方法一个字节的凭据都不产出。
+  Future<void> _enrollRequest(HttpResponse response, Uint8List body) async {
+    final json = jsonDecode(utf8.decode(body)) as Map<String, Object?>;
+    enrollRequests.add(json);
+
+    if (enrollSessionGone) {
+      return _json(response, HttpStatus.gone, {'error': 'no_pending_request'});
+    }
+
+    if ((json['token'] as String?) != enrollToken) {
+      return _json(response, HttpStatus.forbidden, {'error': 'bad_token'});
+    }
+
+    return _json(response, HttpStatus.ok, {
+      'status': enrollRequestStatusOverride ?? _nextEnrollStatus(),
+    });
+  }
+
+  /// 入网第二步：领凭据。**领走之后整张码作废**（与电脑端一致）——
+  /// 所以第二个 claim 拿到的是 `no_pending_request`，这正是「只发一次」的形状。
+  Future<void> _enrollClaim(HttpResponse response, Uint8List body) async {
+    enrollClaimCount++;
+
+    final json = jsonDecode(utf8.decode(body)) as Map<String, Object?>;
+
+    if (enrollSessionGone) {
+      return _json(response, HttpStatus.gone, {'error': 'no_pending_request'});
+    }
+
+    if ((json['token'] as String?) != enrollToken) {
+      return _json(response, HttpStatus.forbidden, {'error': 'bad_token'});
+    }
+
+    final status = enrollClaimStatusOverride ?? _nextEnrollStatus();
+    if (status != 'approved') {
+      // 「还没批 / 被拒了」回 **200**，不是 4xx —— 它们不是请求坏了。
+      return _json(response, HttpStatus.ok, {'status': status});
+    }
+
+    enrollSessionGone = true;
+    return _json(response, HttpStatus.ok, {
+      'credential': issuedCredential ??= testCredential,
+    });
+  }
+
+  String _nextEnrollStatus() {
+    if (enrollRejected) return 'rejected';
+    if (enrollPollsUntilApproved > 0) {
+      enrollPollsUntilApproved--;
+      return 'pending';
+    }
+    return 'approved';
   }
 
   Future<void> _probe(HttpResponse response, Uint8List body) async {

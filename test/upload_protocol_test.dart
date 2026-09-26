@@ -207,6 +207,34 @@ void main() {
       expect(const UploadFailure(UploadErrorCodes.unplayable).userHint,
           contains('别删'));
     });
+
+    test('入网那两种说得清「回电脑端再要一张码」', () {
+      // 令牌已经作废了，重试同一个令牌永远成功不了 —— 所以提示里说的
+      // 必须是**下一步动作**（重新生成），不是「再试一次」。
+      for (final code in const [
+        UploadErrorCodes.badToken,
+        UploadErrorCodes.noPendingRequest,
+      ]) {
+        expect(UploadFailure(code).userHint, contains('重新生成'), reason: code);
+        expect(UploadFailure(code).isRetryable, isFalse, reason: code);
+      }
+    });
+  });
+
+  group('入网状态', () {
+    test('三个状态都认，前后空白不管', () {
+      expect(EnrollStatus.tryParse('pending'), EnrollStatus.pending);
+      expect(EnrollStatus.tryParse(' approved '), EnrollStatus.approved);
+      expect(EnrollStatus.tryParse('rejected'), EnrollStatus.rejected);
+    });
+
+    test('★ 认不出的状态返回 null —— **不是**当成 pending', () {
+      // 当成 pending 的话手机会对着一个永远不变的答复一直转下去，
+      // 用户只看到「连接中…」，而界面上没有任何东西告诉他出了什么事。
+      for (final value in const ['', 'Pending', 'maybe', 'ok', '批准']) {
+        expect(EnrollStatus.tryParse(value), isNull, reason: '"$value"');
+      }
+    });
   });
 
   group('回执', () {

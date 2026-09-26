@@ -134,16 +134,22 @@ void main() {
       isNull,
     );
 
-    // 【扫码连接】**这一版是禁用且不会自己好的**（需求方 2026-09-23 草图上
-    // 有它，但电脑端今天不出二维码）。这条断言是**刻意钉住的**：
-    // 哪天电脑端出了码、把它接上了，这里会红 —— 那时该做的事是
-    // 顺着这条注释去改 `_hostCard`，而不是把断言删掉图个绿。
+    // 【扫码连接】接上了（2026-09-26）。原来这里钉的是「**禁用且不会自己好**」
+    // ——那时电脑端只解码、不出码，按钮是写死 `onPressed: null` 的。
+    //
+    // ⚠️ 顺着那条注释改的，不是删掉图个绿：现在它与**旁边那几个按钮同一条判据**
+    // （设备信息读出来才可点）。所以这里断言的是「两者一致」，而不是
+    // 「它是禁用的」—— 后者在这台测试机上会碰巧成立（启动还没走完），
+    // 于是断言绿在一个巧合上。
+    final scanButton =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, '扫码连接'));
+    final rescanButton =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, '重新搜索'));
+
     expect(
-      tester
-          .widget<TextButton>(find.widgetWithText(TextButton, '扫码连接'))
-          .onPressed,
-      isNull,
-      reason: '扫码连接还没接上电脑端的二维码，不该是可点的',
+      scanButton.onPressed == null,
+      rescanButton.onPressed == null,
+      reason: '【扫码连接】与相邻按钮同一条判据：设备信息读出来才可点',
     );
 
     // ⚠️ 这一页在真机上比一屏长，而 `ListView` 是**懒构建**的：下面那张卡
