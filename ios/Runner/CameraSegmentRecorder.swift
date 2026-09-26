@@ -187,8 +187,13 @@ struct RecorderSpec {
     /// 1. 编码器有（`availableVideoCodecTypes` 里有没有 HEVC）
     /// 2. 有一个**正好这个尺寸**的设备格式（不是「能缩放到」——
     ///    会话 preset 走的是「按这个模式打开设备」，列不出来就是打开不了）
+    ///
+    /// ⚠️ `availableVideoCodecTypes` 是**实例属性**，不是类型属性 ——
+    /// CI 的 macOS 编译抓到的（写成 `AVCaptureVideoDataOutput.…` 报
+    /// 「Instance member cannot be used on type」）。所以现造一个空输出对象只为读它：
+    /// 那个列表只跟机型与 iOS 版本有关，与这个对象的状态无关。
     func isUsable(on device: AVCaptureDevice) -> Bool {
-        guard AVCaptureVideoDataOutput.availableVideoCodecTypes.contains(codecType) else {
+        guard AVCaptureVideoDataOutput().availableVideoCodecTypes.contains(codecType) else {
             return false
         }
 
