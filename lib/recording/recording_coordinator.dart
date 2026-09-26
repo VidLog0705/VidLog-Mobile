@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
+import '../diagnostics/app_log.dart';
 import '../primitives.dart';
 import '../scanning/scan_gate.dart';
 import 'business_type.dart';
@@ -664,8 +665,14 @@ class RecordingCoordinator {
     _pending = _pending.then((_) async {
       try {
         await body();
-      } on Object catch (error) {
+      } on Object catch (error, stack) {
         _lastError = '$error';
+
+        // 事件链上出的错**必须留痕**：这一层吞掉异常是为了不让整条链断掉
+        // （一条报错会让后面每一条会话都收不了尾），但吞掉≠瞒下来 ——
+        // 而这里此前只回调一句 `onNativeFailure`，进程一退就没了。
+        AppLog.instance.error('录制', '事件处理失败', error: error, stackTrace: stack);
+
         onNativeFailure?.call('事件处理失败：$error');
       } finally {
         _completedEvents++;
@@ -697,6 +704,12 @@ class RecordingCoordinator {
     }
   }
 
+  /// 原生事件的唯一入口。
+  ///
+  /// ⚠️ **逐帧路径一条都不进日志**：`barcodeDetected` 与 `sceneSampled`
+  /// 是每秒好几条的（相机连续识码），记它们等于把日志淹掉。
+  /// 这里只记**状态变迁**（分段封闭、原生报错）——
+  /// 那两种是「要能事后查」的，而逐帧那些不是。
   Future<void> _onNativeEvent(NativeRecorderEvent event) async {
     switch (event) {
       case SegmentClosedEvent():
@@ -767,7 +780,13 @@ class RecordingCoordinator {
 
       case RecorderFailedEvent():
         _lastError = event.message;
+
         // 原生层报错**必须让用户看见** —— 静默失败是规格明确禁止的。
+        // 同时留痕：这类消息此前只进界面的那个 60 行环形缓冲，进程一退就没了。
+        AppLog.instance.error('原生', event.message, data: {
+          if (_sessionId != null) '会话': _sessionId,
+        });
+
         onNativeFailure?.call(event.message);
     }
   }
@@ -780,6 +799,13 @@ class RecordingCoordinator {
   Future<void> _onSegmentClosed(SegmentClosedEvent event) async {
     final sessionId = _sessionId;
     if (sessionId == null) return;
+
+    // 分段封闭是**掉电后能恢复**的前提，记一行便宜的 debug：
+    // 平时看不见（生产是 info），排查「这一段为什么没收进 manifest」时要它。
+    AppLog.instance.debug('录制', '分段已封闭', data: {
+      '会话': sessionId,
+      '序号': event.sequence,
+    });
 
     _segments
       ..removeWhere((s) => s.sequence == event.sequence)

@@ -22,6 +22,7 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 
+import '../diagnostics/app_log.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart' show defaultHostPort;
@@ -293,6 +294,7 @@ class UploadClient {
   }) async {
     final client = _httpFactory()..connectionTimeout = connectTimeout;
     final limit = timeout ?? commitTimeout;
+    final startedAt = DateTime.now();
 
     try {
       final request = method == 'GET'
@@ -318,20 +320,48 @@ class UploadClient {
       final text = await utf8.decoder.bind(response).join().timeout(limit);
 
       if (response.statusCode == HttpStatus.ok) {
+        _trace(method, path, response.statusCode, startedAt);
         return _decode(text, response.statusCode);
       }
 
       throw _failureFrom(response.statusCode, text);
-    } on UploadFailure {
+    } on UploadFailure catch (failure) {
+      // 失败**一定要看得见**：一次上传有几十个请求，只有失败那几条能定位问题。
+      AppLog.instance.warn('上传', '${failure.code}（$method /$path）', data: {
+        'status': failure.status,
+        '耗时ms': _elapsed(startedAt),
+        if (failure.detail != null) 'detail': failure.detail,
+      });
+
       rethrow;
     } on Object catch (error) {
       // 拒绝连接 / 超时 / DNS 失败 / 半路断开 —— 对用户都是同一件事：连不上。
       // ⚠️ 归成**可重试**：这一类比任何别的都更可能只是「电脑端刚好没开」。
+      AppLog.instance.warn('上传', '连不上电脑端（$method /$path）', data: {
+        '耗时ms': _elapsed(startedAt),
+        '错误': '$error',
+      });
+
       throw UploadFailure(UploadErrorCodes.network, detail: '$error');
     } finally {
       client.close(force: true);
     }
   }
+
+  /// 成功那一条记 **debug**：一次上传几十个请求，全都记 info 的话
+  /// 正常流量会把日志淹掉（而淹掉的日志等于没有日志）。
+  void _trace(String method, String path, int status, DateTime startedAt) =>
+      AppLog.instance.debug('上传', '$method /$path → $status', data: {
+        'status': status,
+        '耗时ms': _elapsed(startedAt),
+      });
+
+  static int _elapsed(DateTime startedAt) =>
+      DateTime.now().difference(startedAt).inMilliseconds;
+
+  // ⚠️ **这个类里绝不把 `credential` 写进日志**：它在 `Authorization` 头上，
+  // 而诊断包是把日志整个发回去的。上面那几条只记方法、路径、状态与耗时 ——
+  // 路径里也没有密钥（入网那两个接口的令牌在**报文体**里，同样不记）。
 
   Map<String, Object?> _decode(String text, int status) {
     try {
@@ -486,6 +516,16 @@ class Uploader {
       }
     }
 
+    // 一趟队列的进出各一条。**一趟一条**，不是一条录像一条 ——
+    // 队列里几十条时逐条记 info，日志会被正常流量淹掉。
+    AppLog.instance.info('上传', '备份队列跑完', data: {
+      'manual': manual,
+      '待传条数': entries.length,
+      '已归档': outcomes.where((o) => o.kind == UploadOutcomeKind.archived).length,
+      '还会再试': outcomes.where((o) => o.kind == UploadOutcomeKind.retryLater).length,
+      '已失败': outcomes.where((o) => o.kind == UploadOutcomeKind.failed).length,
+    });
+
     return UploadPass(outcomes: outcomes, nextRetryAt: nextRetryAt);
   }
 
@@ -592,6 +632,14 @@ class Uploader {
       );
       await archive.record(done);
 
+      // 一条录像走完收尾 → 传上去 → 验过回执，是**要留痕的里程碑**：
+      // 「这条到底备份好了没有」事后只有这一条能回答。
+      AppLog.instance.info('上传', '一条录像已归档', data: {
+        'evidenceId': entry.evidenceId,
+        '单号': entry.waybill.value,
+        '电脑端': done.receiverDeviceName,
+      });
+
       return UploadOutcome(
         evidenceId: entry.evidenceId,
         kind: UploadOutcomeKind.archived,
@@ -620,6 +668,18 @@ class Uploader {
         clearRetry: terminal,
       );
       await archive.record(next);
+
+      // **到顶变失败**那一条是 I3 的核心（规格 §3.4.3 ★ 来自一次真实故障：
+      // 原系统上传失败后进终态、永不重试，用户完全不知道数据没传上去）。
+      // 退避中的那些不记 —— 它们还会自己再试，记了只是噪声。
+      if (terminal) {
+        AppLog.instance.error('上传', '这一条传不上去了', data: {
+          'evidenceId': entry.evidenceId,
+          '单号': entry.waybill.value,
+          '码': failure.code,
+          '试了几次': attempt,
+        });
+      }
 
       return UploadOutcome(
         evidenceId: entry.evidenceId,

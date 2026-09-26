@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import '../diagnostics/app_log.dart';
 import 'lan_probe.dart' show defaultHostPort;
 import 'recording_workspace.dart' show writeFileAtomically;
 
@@ -275,8 +276,13 @@ class DeviceIdentity {
 
   /// 入网成功后把凭据记下来。**落盘** —— 只在内存里留着的凭据，
   /// 重启一次就等于没入过网，每次开 App 都要重新配对。
+  ///
+  /// ⚠️ 顺手**登记给日志脱敏层**（与电脑端 `DeviceRegistry.NewCredential`
+  /// 同一套规矩：谁生成密钥谁登记）。放在这里而不是调用点 ——
+  /// 调用点将来会变多，而**漏一处的表现是凭据静默落进日志**。
   Future<void> setCredential(String value) async {
     credential = value.trim();
+    AppLog.instance.registerSecret(credential);
     await save();
   }
 }

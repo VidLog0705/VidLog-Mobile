@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/primitives.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
 import 'package:vidlog_mobile/recording/label_store.dart';
@@ -422,6 +423,27 @@ void main() {
       expect(gateway.cameraQrOnly, isFalse);
 
       await coordinator.dispose();
+    });
+
+    test('★ 逐帧事件一条日志都不记_否则相机每秒好几条会把日志淹掉', () async {
+      // `barcodeDetected` 与 `sceneSampled` 是**连续**上报的（相机一直在识码）。
+      // 记它们等于把日志淹掉，而**淹掉的日志等于没有日志** ——
+      // 这条钉的就是「逐帧不进日志」那个边界。
+      await AppLog.instance.resetForTesting();
+
+      final coordinator = make();
+      nowMs = 1000;
+      await coordinator.openCamera();
+
+      gateway.emit(const BarcodeDetectedEvent(
+          text: 'SF1000000001', centerX: 0.5, centerY: 0.5));
+      gateway.emit(const SceneSampledEvent(isStatic: false));
+      await coordinator.waitForPendingEvents();
+
+      expect(AppLog.instance.tail.value, isEmpty);
+
+      await coordinator.dispose();
+      await AppLog.instance.resetForTesting();
     });
 
     test('closeCamera() 关掉相机；已经关了就不再关', () async {

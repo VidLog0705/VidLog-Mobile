@@ -1,4 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+
+import '../diagnostics/app_log.dart';
 
 /// 原生层上报的事件。
 sealed class NativeRecorderEvent {
@@ -252,21 +255,33 @@ class ChannelRecorderGateway implements RecorderGateway {
 
   @override
   Stream<NativeRecorderEvent> get events =>
-      _events.receiveBroadcastStream().map(_parse).where((e) => e != null).cast();
+      _events.receiveBroadcastStream().map(parseNativeEvent).where((e) => e != null).cast();
 }
 
 /// 把通道来的 map 解析成领域事件。
 ///
 /// 认不出来的消息**直接丢掉**而不是抛 —— 原生层加了新事件类型时，
 /// 老版本 Dart 不该因此崩掉（版本偏斜在移动端是常态）。
-NativeRecorderEvent? _parse(dynamic raw) {
-  if (raw is! Map) return null;
+/// 把一条原生消息解成领域事件；认不出来返回 null。
+///
+/// ⚠️ **公开是为了能被测**（与 `deviceNameInputFormatter` 同一条理由）：
+/// 「认不出的消息要留痕」那条判据只有在测试能真的喂一条进去时才验得了。
+@visibleForTesting
+NativeRecorderEvent? parseNativeEvent(dynamic raw) {
+  if (raw is! Map) {
+    // 不是 map 说明消息形状就不对（原生层改坏了、或者根本不是我们的消息）。
+    _reportDropped('非 map', raw);
+    return null;
+  }
 
   switch (raw['type']) {
     case 'segmentClosed':
       final filePath = raw['filePath'];
       final sequence = raw['sequence'];
-      if (filePath is! String || sequence is! int) return null;
+      if (filePath is! String || sequence is! int) {
+        _reportDropped('segmentClosed 少了字段', raw);
+        return null;
+      }
 
       return SegmentClosedEvent(
         filePath: filePath,
@@ -280,7 +295,10 @@ NativeRecorderEvent? _parse(dynamic raw) {
 
     case 'barcodeDetected':
       final text = raw['text'];
-      if (text is! String || text.isEmpty) return null;
+      if (text is! String || text.isEmpty) {
+        _reportDropped('barcodeDetected 没带内容', raw);
+        return null;
+      }
 
       return BarcodeDetectedEvent(
         text: text,
@@ -293,6 +311,23 @@ NativeRecorderEvent? _parse(dynamic raw) {
       return RecorderFailedEvent(raw['message'] as String? ?? '原生层未给出原因');
 
     default:
+      // ⚠️ 这里以前是**一句 return null** —— 认不出的消息静默丢弃。
+      // 那条规矩本身是对的（老版本 Dart 不该因为原生加了新事件就崩），
+      // 但**丢得一声不响**就把它变成了一个洞：原生那边发了什么、
+      // 这边为什么没反应，日志里一个字都没有。
+      // 认不出来是**罕见**的（版本偏斜时才发生），所以记 Warning 不会刷屏。
+      _reportDropped('认不出的事件类型 ${raw['type']}', raw);
       return null;
   }
+}
+
+/// 记一条「有消息被丢掉了」。
+///
+/// ⚠️ **载荷本身不落盘**（只记类型名）：原生事件里可能带着单号，
+/// 而这条日志会进诊断包。要诊断「为什么这个事件没被处理」，
+/// 类型名就够了；真要看载荷，那是另一件事，得先想清楚脱敏。
+void _reportDropped(String reason, dynamic raw) {
+  AppLog.instance.warn('原生', '丢弃了一条原生消息：$reason', data: {
+    if (raw is Map && raw['type'] != null) '类型': raw['type'],
+  });
 }
