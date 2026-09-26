@@ -386,6 +386,21 @@ class AppLog {
       '${at.second.toString().padLeft(2, '0')}';
 }
 
+/// 界面那行开头的记号 → 级别。
+///
+/// ⚠️ / ✗ 是 warn，其余是 info。**记号本来就在调用点上当着**（用户从抽屉里
+/// 一眼分得出轻重），再让每处多传一个级别参数只是把同一件事换个地方写。
+///
+/// 抽成顶层函数是为了**能被测** —— 它在页面类的私有成员里时，
+/// 那条判据就永远只有「跑一遍看看」这一种验法。
+AppLogLevel logLevelOfUiLine(String line) {
+  final trimmed = line.trimLeft();
+  if (trimmed.startsWith('⚠️') || trimmed.startsWith('✗')) {
+    return AppLogLevel.warn;
+  }
+  return AppLogLevel.info;
+}
+
 /// 从 `app-yyyyMMdd-HHmmss.jsonl` 里取出时间戳；解析不出返回 null。
 ///
 /// 与电脑端 `LogRetention.TryParseTimestamp` 同一套口径 —— 两端的日志文件

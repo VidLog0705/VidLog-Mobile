@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../diagnostics/app_log.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
 import '../recording/device_identity.dart';
@@ -161,7 +162,6 @@ class _RecorderPageState extends State<RecorderPage> {
   final _waybillController = TextEditingController();
 
   String _status = '正在准备…';
-  final List<String> _events = [];
   bool _askingToContinue = false;
   bool _starting = false;
 
@@ -366,6 +366,11 @@ class _RecorderPageState extends State<RecorderPage> {
       final documents = await getApplicationDocumentsDirectory();
       final root = Directory('${documents.path}/vidlog')..createSync(recursive: true);
       _rootPath = root.path;
+
+      // 日志：**数据目录一确定就 init**（早于其它一切业务装配）——
+      // 在那之前 `AppLog` 处在缓冲模式，记是记着的，只是还没落盘。
+      // ⚠️ `init` 自己吞掉建目录的失败并退化成纯内存，所以这里不 try。
+      AppLog.instance.init(directory: '${root.path}/logs');
 
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
@@ -1428,19 +1433,25 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
+  /// 界面事件 —— 同时**转发给 [AppLog]**（落盘、结构化、脱敏）。
+  ///
+  /// ⚠️ 2026-09-26 之前这里只往内存里插一行，`setState` **整个页面**，
+  /// 而这个页面挂着平台视图（相机预览）—— 录制事件密的时候等于每来一条重建一次预览。
+  /// 现在：落盘那一半是**同步入队**的（不 await 磁盘），
+  /// 界面那一半由 [AppLog.tail] 这个 `ValueNotifier` 推给**只有它关心的那两个控件**。
+  ///
+  /// 级别从行首那个记号推出来（⚠️ / ✗ 是 warn，其余 info）——
+  /// 那些记号本来就在 17 个调用点上当着，再让每处多传一个参数
+  /// 只是把同一件事换个地方写。
   void _log(String line) {
-    if (!mounted) return;
-    final now = DateTime.now();
-    setState(() {
-      _events.insert(
-        0,
-        '${now.hour.toString().padLeft(2, '0')}:'
-        '${now.minute.toString().padLeft(2, '0')}:'
-        '${now.second.toString().padLeft(2, '0')}  $line',
-      );
-      if (_events.length > 60) _events.removeLast();
-    });
+    AppLog.instance.log(logLevelOfUiLine(line), _logTag, line);
   }
+
+  /// 界面事件在日志里的分类。
+  ///
+  /// 技术性的那些（上传、原生通道、录制编排）由各自的**收口点**记，
+  /// 带自己的分类；这个标签管的是「用户在抽屉里看见的那一行」。
+  static const _logTag = '界面';
 
   // ─────────────────────────────────────────────
   // 界面
@@ -2752,7 +2763,13 @@ class _RecorderPageState extends State<RecorderPage> {
     return Row(
       children: [
         tab(_WorkSheet.manual, '手动输入'),
-        tab(_WorkSheet.events, '事件 ${_events.length}'),
+        // 条数跟着日志走，所以只有这一个入口需要订阅 ——
+        // 整页 `setState` 换成这一个 `TextButton` 重建。
+        ValueListenableBuilder<List<String>>(
+          valueListenable: AppLog.instance.tail,
+          builder: (context, events, child) =>
+              tab(_WorkSheet.events, '事件 ${events.length}'),
+        ),
         tab(_WorkSheet.diagnostics, '诊断'),
       ],
     );
@@ -2835,16 +2852,21 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// **它内部没有平台视图，滚起来是顺的** —— 这也是它敢放在取景画面上的原因。
   Widget _eventsList() {
-    if (_events.isEmpty) {
-      return const Center(child: Text('（还没有事件）', style: TextStyle(fontSize: 12)));
-    }
+    return ValueListenableBuilder<List<String>>(
+      valueListenable: AppLog.instance.tail,
+      builder: (context, events, child) {
+        if (events.isEmpty) {
+          return const Center(child: Text('（还没有事件）', style: TextStyle(fontSize: 12)));
+        }
 
-    return ListView.builder(
-      itemCount: _events.length,
-      itemBuilder: (context, index) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Text(_events[index], style: const TextStyle(fontSize: 12)),
-      ),
+        return ListView.builder(
+          itemCount: events.length,
+          itemBuilder: (context, index) => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text(events[index], style: const TextStyle(fontSize: 12)),
+          ),
+        );
+      },
     );
   }
 

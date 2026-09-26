@@ -160,6 +160,17 @@ void main() {
     });
   });
 
+  group('界面那行的级别', () {
+    test('⚠️ 与 ✗ 是 warn_其余是 info', () {
+      expect(logLevelOfUiLine('⚠️ 上传失败：超时'), AppLogLevel.warn);
+      expect(logLevelOfUiLine('✗ 相机打不开'), AppLogLevel.warn);
+      expect(logLevelOfUiLine('  ⚠️ 前面有空格也算'), AppLogLevel.warn);
+      expect(logLevelOfUiLine('✓ 已配对'), AppLogLevel.info);
+      expect(logLevelOfUiLine('📦 包裹进框'), AppLogLevel.info);
+      expect(logLevelOfUiLine(''), AppLogLevel.info);
+    });
+  });
+
   group('背压', () {
     test('排队的行数封顶_而且把丢了几条写进下一条', () async {
       // 录制风暴时不能让内存无界增长；但也**不能丢了不吭声** ——

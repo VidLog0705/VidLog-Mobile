@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/app/recorder_page.dart';
+import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart';
@@ -15,6 +16,42 @@ void main() {
     // 默认落在**备份**栏。**不去断言数据目录初始化完成** ——
     // 那要走平台通道，widget 测试里没有实现；页面自己会把它降级成一条错误状态。
     expect(find.text('备份'), findsWidgets);
+  });
+
+  /// 「事件 ▸」抽屉现在**跟着日志走**（2026-09-26）。
+  ///
+  /// 以前它是页面自己一个 `List<String>` + 每次 `_log` 就 `setState` 整页；
+  /// 现在数据源是 `AppLog.tail`（`ValueNotifier`），只有抽屉那两个控件订阅。
+  ///
+  /// ⚠️ 这里能这么测，是因为 `AppLog` **没 init 也能记**（缓冲模式）——
+  /// widget 测试里没有平台通道，`_bootstrap` 走不到 init 那一步。
+  testWidgets('★ 事件抽屉跟着日志走，不再重建整页', (WidgetTester tester) async {
+    await AppLog.instance.resetForTesting();
+
+    await tester.pumpWidget(const VidLogApp());
+
+    // 抽屉入口在**采集页**上（备份页没有），先切过去。
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    // ⚠️ 不写死 0：widget 测试里没有平台通道，`_bootstrap` 会失败并**记一条**——
+    // 那一格恰恰证明「没 init 也照记」（缓冲模式）是通的。
+    // 所以断言的是「这一条之后**多了一格**」。
+    final before = AppLog.instance.tail.value.length;
+    expect(find.text('事件 $before ▸'), findsOneWidget);
+
+    AppLog.instance.info('界面', '一条测试事件');
+    await tester.pump();
+
+    // 入口上的条数跟着变 —— 用户靠它知道「刚刚有事情发生」。
+    expect(find.text('事件 ${before + 1} ▸'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('work-sheet-events')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('一条测试事件'), findsOneWidget);
+
+    await AppLog.instance.resetForTesting();
   });
 
   /// 本机名的输入框守门人（需求方 2026-09-23：上限 12 格，汉字算 2 格）。
