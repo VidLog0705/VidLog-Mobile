@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../diagnostics/app_log.dart';
+import '../diagnostics/error_handlers.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
 import '../recording/device_identity.dart';
@@ -161,6 +162,9 @@ class _RecorderPageState extends State<RecorderPage> {
 
   final _waybillController = TextEditingController();
 
+  /// 切后台时刷日志的那个监听器（见 `initState`）。
+  AppLifecycleListener? _lifecycle;
+
   String _status = '正在准备…';
   bool _askingToContinue = false;
   bool _starting = false;
@@ -312,6 +316,13 @@ class _RecorderPageState extends State<RecorderPage> {
     super.initState();
     _startClock();
     unawaited(_bootstrap());
+
+    // 退到后台之前把排队的日志刷出去（iOS 上挂起之后随时会被系统杀掉）。
+    // 挂在页面 State 上而不是 `main()` 里：它就是应用唯一那一屏，
+    // 生命周期与进程一致，而且**跟着 dispose 一起收**
+    // —— 顶层变量那种写法会被分析器判成「声明了没用到」，
+    // 而那句警告说的其实是实话：它确实只是被「持有」着。
+    _lifecycle = attachLogFlushOnPause();
   }
 
   @override
@@ -319,6 +330,7 @@ class _RecorderPageState extends State<RecorderPage> {
     _clockTick?.cancel();
     _heartbeat?.cancel();
     _retryTimer?.cancel();
+    _lifecycle?.dispose();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
     _recordsSearch.dispose();

@@ -63,10 +63,19 @@ class AppLogLine {
       };
 
   /// 界面那一行（「事件 ▸」抽屉）。**不是**落盘格式 —— 抽屉里要的是能一眼扫过的。
-  String get text =>
-      '${at.hour.toString().padLeft(2, '0')}:'
-      '${at.minute.toString().padLeft(2, '0')}:'
-      '${at.second.toString().padLeft(2, '0')}  $message';
+  ///
+  /// 异常那几条**把异常本身也带上**（只取第一行）：光写「未捕获异常」
+  /// 对着一台手机也没有任何用，而「什么异常」正是人第一眼要找的。
+  /// 完整堆栈在落盘那一份里（`stack` 字段）。
+  String get text {
+    final stamp = '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}:'
+        '${at.second.toString().padLeft(2, '0')}';
+
+    final detail = (data['异常'] as String?)?.split('\n').first.trim();
+
+    return '$stamp  $message${detail == null || detail.isEmpty ? '' : '：$detail'}';
+  }
 }
 
 /// 手机端的日志：**结构化、落盘、按文件名轮转、脱敏**。

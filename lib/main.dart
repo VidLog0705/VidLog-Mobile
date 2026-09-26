@@ -1,9 +1,25 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app/recorder_page.dart';
+import 'diagnostics/app_log.dart';
+import 'diagnostics/error_handlers.dart';
 
 void main() {
-  runApp(const VidLogApp());
+  // ⚠️ 三层未捕获异常钩子里的**第三层**（前两层在 installFlutterErrorHandlers）。
+  // 全局异常必须带堆栈落盘 —— 这个应用退到后台之后随时可能被杀，
+  // 用户报「它自己没了」时，磁盘上那条是唯一可查的东西。
+  runZonedGuarded(
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+      installFlutterErrorHandlers();
+      runApp(const VidLogApp());
+    },
+    (error, stack) {
+      AppLog.instance.error('界面', '未捕获异常（根 zone）', error: error, stackTrace: stack);
+    },
+  );
 }
 
 /// VidLog 手机端。
