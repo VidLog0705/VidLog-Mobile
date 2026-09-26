@@ -12,6 +12,7 @@ import 'recorder_config.dart';
 import 'recorder_events.dart';
 import 'recorder_gateway.dart';
 import 'recording_workspace.dart';
+import 'scan_error_log.dart';
 import 'session_finalizer.dart';
 import 'stop_controller.dart';
 import 'work_mode.dart';
@@ -46,12 +47,14 @@ class RecordingCoordinator {
     MonotonicClock? clock,
     ScanGate? scanGate,
     PackageTracker? packageTracker,
+    ScanErrorLog? scanErrors,
     this.onAction,
     bool cameraAlreadyOpen = false,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
         _punchLog = punchLog,
+        _scanErrors = scanErrors,
         _stopController = StopController(mode: mode, config: config),
         _clock = clock ?? _defaultClock(),
         _scanGate = scanGate ?? ScanGate(),
@@ -104,6 +107,12 @@ class RecordingCoordinator {
 
   /// 打点日志（规格 §3.2.4：识别到就立刻落盘，不等会话结束）。
   final PunchLog _punchLog;
+
+  /// 错误扫描记录（规格 §6.1「必须保存的事实」里的那一条）。
+  ///
+  /// 可空：它是一条**诊断**记录，缺了不影响录制 ——
+  /// 所以测试里那些不关心它的装配（以及将来可能的裁剪）不必硬塞一个。
+  final ScanErrorLog? _scanErrors;
 
   final StopController _stopController;
   final MonotonicClock _clock;
@@ -457,6 +466,26 @@ class RecordingCoordinator {
     // （打点按会话归属，事后看就是脏数据）；两条都打又会把操作员的一次动作
     // 算成两次打点。
     if (!rotates) await _recordPunch(waybill, source);
+
+    // 错码保护触发（规格 §3.3.2）：扫到的不是本件。
+    //
+    // ⚠️ 「换件」不算错码 —— 那是连续扫模式的**正常路径**
+    // （`rotates` 为真时状态机会收掉本段、开下一段），记进去的话
+    // 一次正常的换件会被当成一次操作失误。
+    //
+    // 这一条是规格 §6.1「必须保存的事实」里点名的「错误扫描（诊断用）」，
+    // 2026-09-26 之前**两端都没有实现**：错码保护只做了提示与播报。
+    final expected = _waybill;
+    if (!rotates && _sessionId != null && expected != null && waybill != expected) {
+      await _scanErrors?.record(ScanErrorEvent(
+        sessionId: _sessionId!,
+        expectedWaybill: expected,
+        scannedWaybill: waybill,
+        // 墙钟：这是一条**事后诊断**记录（规格原话「不是控制流的输入」），
+        // 要的是「什么时候扫错的」，与 I11 管的那类证据时刻不是一回事。
+        occurredAt: DateTime.now(),
+      ));
+    }
 
     await _dispatch([WaybillDetected(_clock(), waybill)]);
 

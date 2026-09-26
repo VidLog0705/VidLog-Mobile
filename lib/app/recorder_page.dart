@@ -13,6 +13,7 @@ import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart';
 import '../recording/punch_log.dart';
+import '../recording/scan_error_log.dart';
 import '../recording/recorder_config.dart';
 import '../recording/recorder_events.dart';
 import '../recording/recorder_gateway.dart';
@@ -102,6 +103,7 @@ class _RecorderPageState extends State<RecorderPage> {
   late SessionFinalizer _finalizer;
   late RecordingIndex _index;
   late PunchLog _punchLog;
+  late ScanErrorLog _scanErrors;
   late LabelStore _labels;
   late ArchiveStore _archive;
 
@@ -397,6 +399,8 @@ class _RecorderPageState extends State<RecorderPage> {
       // 与电脑端同一个位置（`<root>/punches.jsonl`），键名也逐字相同 ——
       // 两端的打点日志是同一份形态。
       _punchLog = PunchLog('${root.path}/punches.jsonl');
+      // 错误扫描（规格 §6.1「必须保存的事实」）。与打点、标签同一层。
+      _scanErrors = ScanErrorLog('${root.path}/scan-errors.jsonl');
       // 归档状态与索引同构（追加写 JSON Lines）—— 键名是 PascalCase，
       // 与 `labels.jsonl` / `punches.jsonl` 一致（见 `archive_store.dart`）。
       _archive = ArchiveStore('${root.path}/archive.jsonl');
@@ -929,6 +933,8 @@ class _RecorderPageState extends State<RecorderPage> {
       workspace: _workspace,
       finalizer: _finalizer,
       punchLog: _punchLog,
+      // 错码保护触发的事件要落盘（规格 §6.1「必须保存的事实」里的「错误扫描」）。
+      scanErrors: _scanErrors,
       mode: _mode,
       config: _config,
       cameraAlreadyOpen: cameraWasOpen,

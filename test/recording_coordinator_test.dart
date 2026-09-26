@@ -16,6 +16,7 @@ import 'package:vidlog_mobile/recording/recorder_gateway.dart';
 import 'package:vidlog_mobile/recording/recording_coordinator.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/recording/recording_workspace.dart';
+import 'package:vidlog_mobile/recording/scan_error_log.dart';
 import 'package:vidlog_mobile/recording/session_finalizer.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
@@ -49,6 +50,7 @@ void main() {
   late PunchLog punchLog;
   late PackageTracker tracker;
   late LabelStore labels;
+  late ScanErrorLog scanErrors;
   late List<RecorderAction> actions;
 
   RecordingCoordinator make({
@@ -66,6 +68,7 @@ void main() {
     punchLog = PunchLog('$root/punches.jsonl');
     tracker = PackageTracker();
     labels = LabelStore('$root/labels.jsonl');
+    scanErrors = ScanErrorLog('$root/scan-errors.jsonl');
 
     return RecordingCoordinator(
       gateway: gateway,
@@ -73,6 +76,7 @@ void main() {
       finalizer:
           SessionFinalizer(rootDirectory: root, index: index, labels: labels),
       punchLog: punchLog,
+      scanErrors: scanErrors,
       mode: mode,
       config: config,
       clock: clock,
@@ -421,6 +425,58 @@ void main() {
       await coordinator.openCamera();
 
       expect(gateway.cameraQrOnly, isFalse);
+
+      await coordinator.dispose();
+    });
+
+    // ─────────────────────────────────────────────
+    // 错误扫描（规格 §6.1「必须保存的事实」——2026-09-26 补）
+    // ─────────────────────────────────────────────
+
+    test('★ 扫到别的面单要落一条错误扫描记录', () async {
+      // 这一条是规格 §6.1 点名的「错误扫描（诊断用）」，
+      // 2026-09-26 之前**两端都没实现**：错码保护只做了提示与播报。
+      final coordinator = make();
+      await begin(coordinator);
+
+      final sessionId = coordinator.sessionId;
+
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      final event = (await scanErrors.loadAll()).single;
+
+      // 四个字段逐字对齐母仓 docs/02-数据模型.md §1.7。
+      expect(event.sessionId, sessionId);
+      expect(event.expectedWaybill.value, waybill.value);
+      expect(event.scannedWaybill.value, otherWaybill.value);
+      expect(event.occurredAt.year, greaterThan(2000), reason: '时刻要真的填上');
+
+      await coordinator.dispose();
+    });
+
+    test('换件**不算**错码_那是连续扫模式的正常路径', () async {
+      // `rotates` 为真时状态机会收掉本段、开下一段 —— 记进去的话，
+      // 一次正常的换件会被当成一次操作失误，而那种「记错了」最难发现。
+      final coordinator = make(mode: WorkMode.continuousScan);
+      await begin(coordinator);
+
+      await coordinator.onWaybillDetected(otherWaybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(await scanErrors.loadAll(), isEmpty);
+
+      await coordinator.dispose();
+    });
+
+    test('复扫同一个单号不算错码（那是正常停止路径）', () async {
+      final coordinator = make();
+      await begin(coordinator);
+
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(await scanErrors.loadAll(), isEmpty);
 
       await coordinator.dispose();
     });
