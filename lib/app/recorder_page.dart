@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../diagnostics/app_log.dart';
+import '../diagnostics/diagnostics_package.dart';
 import '../diagnostics/error_handlers.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
@@ -2908,9 +2909,66 @@ class _RecorderPageState extends State<RecorderPage> {
           const Divider(height: 20),
           _recoveredBody(),
         ],
+        const Divider(height: 20),
+        // 一键诊断包（`AGENTS.md` §6：日志要能导出为诊断包，用户一键打包发回）。
+        // 放在**已有的**诊断抽屉里，不新增界面面。
+        FilledButton.tonal(
+          onPressed: _exportDiagnostics,
+          child: const Text('导出诊断包'),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _diagnosticsNote ?? '遇到问题时点它，然后把生成的那个文件发回来。',
+          style: const TextStyle(fontSize: 12),
+        ),
       ],
     );
   }
+
+  /// 生成诊断包并说清**它落在哪**。
+  ///
+  /// ⚠️ iOS 上路径不用解释：`Info.plist` 里已有 `UIFileSharingEnabled`，
+  /// 那个目录就是「文件 → 我的 iPhone → VidLog」。Android 是弱侧，
+  /// 所以顺带把路径**显示出来并可复制**（用户能自己去找）。
+  Future<void> _exportDiagnostics() async {
+    final root = _rootPath;
+    if (root.isEmpty) {
+      setState(() => _diagnosticsNote = '还没读出数据目录，稍等一下再点。');
+      return;
+    }
+
+    try {
+      final entries = await _index.loadAll();
+      final errors = await _scanErrors.loadAll();
+
+      final path = await DiagnosticsPackage.build(
+        rootPath: root,
+        // ⚠️ 只传**安全的零件**：凭据在 `_identity` 里，绝不进去。
+        settings: {
+          'mode': _mode.name,
+          'staticStop': _staticStop.name,
+          'durationFallback': _durationFallback.name,
+          'voiceEnabled': _settings?.voiceEnabled,
+          'retentionOutbound': _retentionOutbound.name,
+          'retentionReturn': _retentionReturn.name,
+        },
+        deviceName: _identity?.deviceName ?? '',
+        sessionCount: _sessionCount,
+        orphanCount: _pendingCount,
+        entries: entries,
+        now: DateTime.now(),
+      );
+
+      if (!mounted) return;
+      setState(() => _diagnosticsNote =
+          describeDiagnosticsPackage(path, hasScanErrors: errors.isNotEmpty));
+    } on Object catch (error) {
+      if (mounted) setState(() => _diagnosticsNote = '导出失败：$error');
+    }
+  }
+
+  /// 诊断包那行提示（生成之后写路径，之前写用法）。
+  String? _diagnosticsNote;
 
 
   /// 改设置：**先落盘，再刷界面**。
