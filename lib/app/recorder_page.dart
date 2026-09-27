@@ -18,6 +18,7 @@ import '../recording/lan_probe.dart';
 import '../recording/manual_delete.dart';
 import '../recording/punch_log.dart';
 import '../recording/scan_error_log.dart';
+import '../recording/thumbnail_cache.dart';
 import '../recording/recorder_config.dart';
 import '../recording/recorder_events.dart';
 import '../recording/recorder_gateway.dart';
@@ -294,6 +295,15 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 可信时钟（规格 §3.6.4）。`null` = 还没装配好（`_bootstrap` 之前）。
   TrustedClock? _clock;
+
+  /// 缩略图缓存（规格 §3.4.3：**不得每次进页面都重新抽帧**）。
+  late final ThumbnailCache _thumbnails = ThumbnailCache(
+    rootDirectory: _rootPath,
+    generate: _gateway.generateThumbnail,
+  );
+
+  /// `evidenceId → 标签键 → 值`。列表要按它显示【发货 / 退货】那个小胶囊。
+  Map<String, Map<String, String>> _labelsByEvidence = const {};
 
   /// 正在跑一趟上传。用来禁用按钮、不让两趟叠在一起。
   bool _uploading = false;
@@ -1547,6 +1557,15 @@ class _RecorderPageState extends State<RecorderPage> {
       final archiveRecords = await _archive.loadAll();
 
       if (!mounted) return;
+      // 列表上那个【发货 / 退货】小胶囊要它（规格 §3.4.3 的第 ① 项）。
+      // ⚠️ 追加写、同键**后者胜出** —— 与另外两端同一个口径。
+      final labels = <String, Map<String, String>>{};
+      for (final label in await _labels.loadAll()) {
+        labels.putIfAbsent(label.evidenceId, () => {})[label.key] = label.value;
+      }
+
+      if (!mounted) return;
+
       setState(() {
         _sessionCount = sessions;
         _pendingCount = pending;
@@ -1561,6 +1580,7 @@ class _RecorderPageState extends State<RecorderPage> {
         _locationByEvidenceId = {
           for (final entry in entries) entry.evidenceId: entry.location.value,
         };
+        _labelsByEvidence = labels;
       });
     } on Object catch (error) {
       if (mounted) setState(() => _status = '读取工作区失败：$error');
@@ -2219,6 +2239,153 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
+  /// 备份页里的一行 —— **规格 §3.4.3 点名的七项**。
+  ///
+  /// | # | 那一项 | 落点 |
+  /// |---|---|---|
+  /// | ① | 标签（发货 / 退货） | 行首那个小胶囊 |
+  /// | ② | 缩略图 | 左边 48×48 的方块，抽帧失败时是占位图标 |
+  /// | ③ | 播放按钮 | 缩略图上那个 ▶ 覆盖层 |
+  /// | ④ | `快递单号.mp4` | 标题 |
+  /// | ⑤ | 录制时间 | 副标题前半 |
+  /// | ⑥ | 时长 | 副标题后半 |
+  /// | ⑦ | 已上传 / 未上传 | 右边那个状态小标（**与总览共用同一个归并规则**） |
+  ///
+  /// ⚠️ **④ 是「列表里显示的名字」，不是磁盘文件名** ——
+  /// 磁盘名与归档路径**一律不动**（改了会波及索引、检索、归档回查，
+  /// 还要迁移已经录好的那些）。
+  Widget _recordTile(RecordingSession session) {
+    final label = _businessTypeOf(session);
+
+    return ListTile(
+      dense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      // ① 标签
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (label != null) _typeBadge(label),
+          const SizedBox(width: 6),
+          _thumbnail(session),
+        ],
+      ),
+      // ④ 显示名
+      title: Text(
+        session.waybill.value.isEmpty
+            ? session.sessionId
+            : '${session.waybill.value}.mp4',
+        style: const TextStyle(fontWeight: FontWeight.w600),
+        overflow: TextOverflow.ellipsis,
+      ),
+      // ⑤ 时间 ⑥ 时长
+      subtitle: Text(
+        '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}'
+        '${session.bytes > 0 ? ' · ${_sizeLabel(session.bytes)}' : ''}',
+        style: const TextStyle(fontSize: 12),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ⑦ 上传状态
+          _uploadChip(session),
+          // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
+          // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
+          // 这里只负责发起，判定与安全都在 `_askDelete` 里。
+          IconButton(
+            key: Key('delete-${session.sessionId}'),
+            icon: const Icon(Icons.delete_outline, size: 20),
+            tooltip: '删除这一条',
+            onPressed: _settingsReady ? () => _askDelete(session) : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 这一条是发货还是退货。判不出来时为 null（**不猜**）。
+  BusinessType? _businessTypeOf(RecordingSession session) {
+    for (final evidenceId in session.evidenceIds) {
+      final raw = _labelsByEvidence[evidenceId]?[BusinessType.labelKey];
+      final parsed = BusinessType.tryParse(raw);
+      if (parsed != null) return parsed;
+    }
+
+    return null;
+  }
+
+  Widget _typeBadge(BusinessType type) {
+    final returning = type == BusinessType.returning;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: (returning ? Colors.orange : Colors.blue).withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        returning ? '退货' : '发货',
+        style: TextStyle(
+          fontSize: 11,
+          color: returning ? Colors.deepOrange : Colors.blue.shade700,
+        ),
+      ),
+    );
+  }
+
+  /// ② 缩略图 + ③ 播放按钮。
+  ///
+  /// ⚠️ **抽帧是异步的、而且会缓存**（规格：不得每次进页面都重新抽帧）——
+  /// 所以这里用 `FutureBuilder`：第一帧是占位，抽好了自动换成图。
+  Widget _thumbnail(RecordingSession session) {
+    final evidenceId = session.evidenceIds.first;
+    final videoPath = '$_rootPath/${_locationByEvidenceId[evidenceId] ?? ''}';
+
+    return FutureBuilder<String?>(
+      future: _thumbnails.thumbnailFor(evidenceId, videoPath),
+      builder: (context, snapshot) {
+        final path = snapshot.data;
+
+        return InkWell(
+          // ③ 播放：交给**系统播放器**（不自己写播放器、不引 video_player）。
+          onTap: path == null ? null : () => _play(session, videoPath),
+          child: SizedBox(
+            width: 48,
+            height: 48,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: path == null
+                      ? Container(
+                          color: Colors.black12,
+                          child: const Icon(Icons.movie_outlined,
+                              size: 20, color: Colors.black38),
+                        )
+                      : Image.file(File(path), fit: BoxFit.cover),
+                ),
+                if (path != null)
+                  const Center(
+                    child: Icon(Icons.play_circle_fill,
+                        size: 20, color: Colors.white70),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 交给系统播放器。**播不了要当场说清楚**（I3）。
+  Future<void> _play(RecordingSession session, String videoPath) async {
+    try {
+      await _gateway.playVideo(videoPath);
+    } on Object catch (error) {
+      _log('⚠️ 这一段打不开：$error');
+    }
+  }
+
   /// 归档状态 → 那一格的字与色。
   ///
   /// 用词与 `ArchiveRecord` 的状态名**一一对应**，不另起一套：
@@ -2345,34 +2512,8 @@ class _RecorderPageState extends State<RecorderPage> {
           else
             for (final session in rows) ...[
               const Divider(height: 1),
-              ListTile(
-                dense: true,
-                title: Text(
-                  session.waybill.value.isEmpty
-                      ? session.sessionId
-                      : session.waybill.value,
-                ),
-                subtitle: Text(
-                  '${_stamp(session.startedAt)} · '
-                  '${_durationLabel(session.duration)} · '
-                  '${session.bytes > 0 ? _sizeLabel(session.bytes) : '大小未知'}',
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _uploadChip(session),
-                    // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
-                    // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
-                    // 这里只负责发起，判定与安全都在 `_askDelete` 里。
-                    IconButton(
-                      key: Key('delete-${session.sessionId}'),
-                      icon: const Icon(Icons.delete_outline, size: 20),
-                      tooltip: '删除这一条',
-                      onPressed: _settingsReady ? () => _askDelete(session) : null,
-                    ),
-                  ],
-                ),
-              ),
+              // 规格 §3.4.3 的七项：标签 / 缩略图 / 播放 / `单号.mp4` / 时间 / 时长 / 上传状态。
+              _recordTile(session),
             ],
           const Divider(height: 1),
           Padding(

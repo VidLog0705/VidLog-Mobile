@@ -209,6 +209,23 @@ abstract interface class RecorderGateway {
   /// 提示丢一句是小事，不能让它拖垮停录。
   Future<void> speak(String text, {bool beep = false});
 
+  /// 抽一帧当缩略图（规格 §3.4.3 的列表项之一）。
+  ///
+  /// [videoPath] 是**成品**视频（归档目录里的那一段），[outputPath] 是要写出的
+  /// JPEG。返回 false 表示抽不出来（文件坏了、编解码器不支持）——
+  /// **那不是错误**，界面显示一个占位方块即可。
+  ///
+  /// 抽帧走**系统 API**（iOS `AVAssetImageGenerator` / 安卓
+  /// `MediaMetadataRetriever`），**不引任何第三方包**。
+  Future<bool> generateThumbnail(String videoPath, String outputPath);
+
+  /// 用**系统播放器**播放这一段（规格 §3.4.3 的「播放按钮」）。
+  ///
+  /// 手机端**不自己写播放器**：iOS 用 `AVPlayerViewController`、
+  /// 安卓交给系统播放器（`ACTION_VIEW`）—— 与本仓「能走系统 API 就不引包」
+  /// 同一条立场（引 `video_player` 要多一个依赖、多一份许可证要核）。
+  Future<void> playVideo(String videoPath);
+
   /// 原生事件流。
   Stream<NativeRecorderEvent> get events;
 }
@@ -290,6 +307,18 @@ class ChannelRecorderGateway implements RecorderGateway {
   @override
   Future<void> speak(String text, {bool beep = false}) => _methods
       .invokeMethod<void>('speak', {'text': text, 'beep': beep});
+
+  @override
+  Future<bool> generateThumbnail(String videoPath, String outputPath) async =>
+      await _methods.invokeMethod<bool>('generateThumbnail', {
+        'videoPath': videoPath,
+        'outputPath': outputPath,
+      }) ??
+      false;
+
+  @override
+  Future<void> playVideo(String videoPath) =>
+      _methods.invokeMethod<void>('playVideo', {'videoPath': videoPath});
 
   @override
   Stream<NativeRecorderEvent> get events =>

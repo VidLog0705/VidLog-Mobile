@@ -2110,6 +2110,12 @@ class FakeGateway implements RecorderGateway {
   int focusCalls = 0;
 
   @override
+  Future<bool> generateThumbnail(String videoPath, String outputPath) async => false;
+
+  @override
+  Future<void> playVideo(String videoPath) async {}
+
+  @override
   Future<void> playDetentSound() async {
     detentSounds++;
   }

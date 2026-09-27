@@ -37,6 +37,19 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 播放录像要把它交给**系统播放器**（规格 §3.4.3 的「播放按钮」）。
+             录像在 App 私有目录里，别的应用读不到 —— 所以要用 FileProvider
+             临时授一个读权限给那个播放器（用完即失效，不对外开放任何目录）。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -1,9 +1,12 @@
 package com.vidlog.vidlog_mobile
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.media.AudioManager
+import android.media.MediaMetadataRetriever
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
@@ -247,6 +250,9 @@ class RecorderChannel(private val activity: FlutterActivity) :
                 result.success(null)
             }
 
+            "generateThumbnail" -> generateThumbnail(call, result)
+            "playVideo" -> playVideo(call, result)
+
             "speak" -> speak(call, result)
 
             else -> result.notImplemented()
@@ -433,6 +439,97 @@ class RecorderChannel(private val activity: FlutterActivity) :
      * **不等念完就回结果**：TTS 是异步的，等它等于让 Dart 侧那条事件链
      * 干等一两秒。Dart 只关心「递出去了没有」。
      */
+    /**
+     * 抽一帧当缩略图（规格 §3.4.3）。
+     *
+     * 用系统的 `MediaMetadataRetriever` —— **不引任何第三方包**。
+     * 抽不出来（文件坏了、编解码器不支持）时回 false，**不报错**：
+     * 缩略图是锦上添花，界面显示一个占位方块就行。
+     *
+     * ⚠️ **不能在主线程上做**：解一帧要几百毫秒，主线程卡住的话界面直接冻住
+     * （一页十几条 = 好几秒）。所以扔到后台线程。
+     */
+    private fun generateThumbnail(call: MethodCall, result: MethodChannel.Result) {
+        val videoPath = call.argument<String>("videoPath")
+        val outputPath = call.argument<String>("outputPath")
+
+        if (videoPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
+            result.error("bad_args", "缺少 videoPath / outputPath", null)
+            return
+        }
+
+        Thread {
+            val retriever = MediaMetadataRetriever()
+            var ok = false
+
+            try {
+                retriever.setDataSource(videoPath)
+
+                // 取第 1 秒那一帧：第 0 秒常常还是黑的（相机刚起来 / 第一帧没内容）。
+                val frame = retriever.getFrameAtTime(
+                    1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+
+                if (frame != null) {
+                    File(outputPath).outputStream().use { stream ->
+                        ok = frame.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+                    }
+                    frame.recycle()
+                }
+            } catch (error: Throwable) {
+                // 抽不出来不是错误 —— 见方法注释。
+                Log.w(TAG, "抽帧失败：$videoPath", error)
+                ok = false
+            } finally {
+                try {
+                    retriever.release()
+                } catch (ignored: Throwable) {
+                    // 释放失败无所谓。
+                }
+            }
+
+            activity.runOnUiThread { result.success(ok) }
+        }.start()
+    }
+
+    /**
+     * 用**系统播放器**播放这一段（规格 §3.4.3 的「播放按钮」）。
+     *
+     * ⚠️ 刻意**不引 `video_player`**：多一个依赖就多一份要核的许可证，
+     * 而系统那个播放器本来就在。`ACTION_VIEW` 交给系统，连界面都不用写。
+     *
+     * ⚠️ 用户按返回键就回到 App —— 不要自己记播放状态（那会变成「退出后还在播」）。
+     */
+    private fun playVideo(call: MethodCall, result: MethodChannel.Result) {
+        val videoPath = call.argument<String>("videoPath")
+        if (videoPath.isNullOrBlank()) {
+            result.error("bad_args", "缺少 videoPath", null)
+            return
+        }
+
+        val file = File(videoPath)
+        if (!file.exists()) {
+            // I3：播不了要当场说清楚，而不是「点了没反应」。
+            result.error("missing", "这一段在本机上已经不在了", null)
+            return
+        }
+
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                activity, "${activity.packageName}.fileprovider", file)
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "video/mp4")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            activity.startActivity(Intent.createChooser(intent, "播放这一段录像"))
+            result.success(null)
+        } catch (error: Throwable) {
+            Log.w(TAG, "起播放器失败", error)
+            result.error("no_player", "这台设备上没有能播放它的应用", null)
+        }
+    }
+
     private fun speak(call: MethodCall, result: MethodChannel.Result) {
         val text = call.argument<String>("text")
         if (text.isNullOrBlank()) {

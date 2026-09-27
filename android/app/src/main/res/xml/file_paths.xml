@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    能交给系统播放器的那些路径（规格 §3.4.3 的「播放按钮」）。
+
+    ⚠️ **只列 App 自己的两个目录**，不列整块存储：
+    这份清单是「别的应用能通过 FileProvider 读到什么」的边界，
+    而录像就在这两处之一（`getApplicationDocumentsDirectory()` 是主要的那个，
+    外部目录是诊断包与安卓上的弱侧兜底）。列宽了等于把用户整台手机开放出去。
+-->
+<paths>
+    <!-- 内部私有目录：`getApplicationDocumentsDirectory()` -->
+    <files-path name="internal" path="." />
+
+    <!-- 外部私有目录：`getExternalStorageDirectory()` -->
+    <external-files-path name="external" path="." />
+</paths>

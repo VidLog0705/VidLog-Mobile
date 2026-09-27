@@ -1,7 +1,9 @@
 import AVFoundation
+import AVKit
 import AudioToolbox
 import Flutter
 import Foundation
+import UIKit
 
 /// 原生录制器 ↔ Dart 的桥。
 ///
@@ -202,12 +204,107 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             recorder?.autoFocusAndZoom()
             result(nil)
 
+        case "generateThumbnail":
+            generateThumbnail(call, result: result)
+
+        case "playVideo":
+            playVideo(call, result: result)
+
         case "speak":
             speak(call, result: result)
 
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// 抽一帧当缩略图（规格 §3.4.3）。
+    ///
+    /// 用系统的 `AVAssetImageGenerator` —— **不引任何第三方包**。
+    /// 抽不出来（文件坏了、编解码器不支持）时回 false，**不报错**：
+    /// 缩略图是锦上添花，界面显示一个占位方块就行。
+    private func generateThumbnail(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let videoPath = args["videoPath"] as? String,
+              let outputPath = args["outputPath"] as? String,
+              !videoPath.isEmpty, !outputPath.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 videoPath / outputPath", details: nil))
+            return
+        }
+
+        let asset = AVURLAsset(url: URL(fileURLWithPath: videoPath))
+        let generator = AVAssetImageGenerator(asset: asset)
+
+        // ⚠️ 允许容差：精确到帧会**逐帧解码**，一页十几条要等很久。
+        // 缩略图只要「一眼认出是哪一段」，不要求那一帧正好。
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 320, height: 320)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 1, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 1, preferredTimescale: 600)
+
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                // 取第 1 秒那一帧：第 0 秒常常还是黑的（相机刚起来 / 第一帧没内容）。
+                let time = CMTime(seconds: 1, preferredTimescale: 600)
+                let image = try generator.copyCGImage(at: time, actualTime: nil)
+
+                guard let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.7) else {
+                    DispatchQueue.main.async { result(false) }
+                    return
+                }
+
+                try data.write(to: URL(fileURLWithPath: outputPath))
+                DispatchQueue.main.async { result(true) }
+            } catch {
+                // 抽不出来不是错误 —— 见方法注释。
+                DispatchQueue.main.async { result(false) }
+            }
+        }
+    }
+
+    /// 用**系统播放器**播放这一段（规格 §3.4.3 的「播放按钮」）。
+    ///
+    /// ⚠️ 刻意**不引 `video_player`**：多一个依赖就多一份要核的许可证，
+    /// 而系统那个播放器本来就在（与本仓「能走系统 API 就不引包」同一条立场）。
+    private func playVideo(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let videoPath = args["videoPath"] as? String, !videoPath.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 videoPath", details: nil))
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: videoPath) else {
+            // I3：播不了要当场说清楚，而不是「点了没反应」。
+            result(FlutterError(code: "missing", message: "这一段在本机上已经不在了", details: nil))
+            return
+        }
+
+        let player = AVPlayer(url: URL(fileURLWithPath: videoPath))
+        let controller = AVPlayerViewController()
+        controller.player = player
+
+        guard let root = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap({ $0.windows })
+            .first(where: { $0.isKeyWindow })?.rootViewController
+        else {
+            result(FlutterError(code: "no_view", message: "找不到可以展示播放器的界面", details: nil))
+            return
+        }
+
+        // 从最顶上那个控制器弹 —— 当前可能已经有别的弹窗（比如删除确认）。
+        var presenter = root
+        while let next = presenter.presentedViewController {
+            presenter = next
+        }
+
+        presenter.present(controller, animated: true) {
+            player.play()
+        }
+
+        result(nil)
     }
 
     /// 读出一句提示。`beep` 为真时**先滴一声再开口**（规格 §3.3.6）。
