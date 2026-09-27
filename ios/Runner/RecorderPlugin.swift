@@ -3,6 +3,7 @@ import AVKit
 import AudioToolbox
 import Flutter
 import Foundation
+import Photos
 import UIKit
 
 /// 原生录制器 ↔ Dart 的桥。
@@ -210,6 +211,9 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "playVideo":
             playVideo(call, result: result)
 
+        case "shareVideo":
+            shareVideo(call, result: result)
+
         case "speak":
             speak(call, result: result)
 
@@ -305,6 +309,100 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         }
 
         result(nil)
+    }
+
+    /// 把这一段**原样**交出去（规格 §3.7）：先存进**系统相册**，再弹**系统分享面板**。
+    ///
+    /// ⚠️ 规格原话：「改掉分享连接，只分享视频本身**无损完整**视频」。
+    /// 所以这里**没有任何处理视频的代码** —— 它是「保存 + 交给系统」两步。
+    ///
+    /// ⚠️ **每一步失败都要说得出原因**（I3）：相册权限被拒是最常见的一种，
+    /// 而它表现为「点了没反应」的话，用户只会以为功能坏了。
+    /// 分享面板那一步失败**不算整体失败**（东西已经进相册了）。
+    private func shareVideo(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let videoPath = args["videoPath"] as? String, !videoPath.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 videoPath", details: nil))
+            return
+        }
+
+        let url = URL(fileURLWithPath: videoPath)
+
+        guard FileManager.default.fileExists(atPath: videoPath) else {
+            // 「只在归档层就先取回本地」—— 那一步由 Dart 侧负责（它知道归档层在哪儿）。
+            result(FlutterError(
+                code: "missing",
+                message: "这一段的本地副本不在了 —— 先从电脑端取回来再交付。",
+                details: nil))
+            return
+        }
+
+        saveToPhotoLibrary(url) { saveError in
+            if let saveError {
+                // 相册没存进去 ⇒ 整体失败（用户以为交付了，而相册里什么都没有）。
+                result(FlutterError(code: "save_failed", message: saveError, details: nil))
+                return
+            }
+
+            self.presentShareSheet(url) { shared in
+                // 分享面板**没弹出来**也回成功：东西已经在相册里了，
+                // 而「用户从相册里自己发」是一条走得通的路。
+                result(shared ? nil : nil)
+            }
+        }
+    }
+
+    /// 存进系统相册。回调里的字符串非空表示失败（给用户看的原因）。
+    ///
+    /// ⚠️ 只要 **`.addOnly`**（「只写」）—— 我们**从不相册里读任何东西**，
+    /// 要一个能看光用户全部照片的权限是过分的（iOS 会把两者分成两个授权）。
+    private func saveToPhotoLibrary(_ url: URL, completion: @escaping (String?) -> Void) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                completion("没有相册权限。去系统设置里给这个应用打开「照片」，再试一次。")
+                return
+            }
+
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            } completionHandler: { success, error in
+                DispatchQueue.main.async {
+                    completion(success ? nil : "存进相册失败：\(error?.localizedDescription ?? "未知原因")")
+                }
+            }
+        }
+    }
+
+    /// 弹系统分享面板。
+    private func presentShareSheet(_ url: URL, completion: @escaping (Bool) -> Void) {
+        DispatchQueue.main.async {
+            guard let root = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap({ $0.windows })
+                .first(where: { $0.isKeyWindow })?.rootViewController
+            else {
+                completion(false)
+                return
+            }
+
+            var presenter = root
+            while let next = presenter.presentedViewController {
+                presenter = next
+            }
+
+            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+
+            // iPad 上不给 sourceView 会直接崩（`popoverPresentationController` 为 nil）。
+            if let popover = sheet.popoverPresentationController {
+                popover.sourceView = presenter.view
+                popover.sourceRect = CGRect(
+                    x: presenter.view.bounds.midX, y: presenter.view.bounds.midY,
+                    width: 0, height: 0)
+            }
+
+            presenter.present(sheet, animated: true) { completion(true) }
+        }
     }
 
     /// 读出一句提示。`beep` 为真时**先滴一声再开口**（规格 §3.3.6）。

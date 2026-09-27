@@ -234,6 +234,48 @@ class UploadClient {
     return EnrollOutcome(status);
   }
 
+  /// 从电脑端**取回**某一段（规格 §3.7：「只在归档层就先取回本地，再分享」）。
+  ///
+  /// 走的是回放页那个 `/media/{evidenceId}` —— 它本来就在（网页回放用它），
+  /// 所以**不必另开一个下载接口**。
+  ///
+  /// ⚠️ 那段录像是什么样，取回来就是什么样：**不转码、不压缩**（§3.7.1）。
+  Future<void> downloadEvidence(String evidenceId, String targetPath) async {
+    final client = _httpFactory();
+    client.connectionTimeout = connectTimeout;
+
+    try {
+      final uri = Uri.parse(
+          'http://$address:$port/media/${Uri.encodeComponent(evidenceId)}');
+
+      final request = await client.getUrl(uri).timeout(connectTimeout);
+      final response = await request.close().timeout(commitTimeout);
+
+      if (response.statusCode != 200) {
+        throw UploadFailure(
+          UploadErrorCodes.badRequest,
+          detail: '电脑端回了一个 ${response.statusCode} —— 那一段可能已经不在电脑上了',
+        );
+      }
+
+      final file = File(targetPath);
+      await file.parent.create(recursive: true);
+
+      // 先写临时名再改名：取到一半断网留下的半截文件如果直接叫 .mp4，
+      // 界面会把它当成一段完整的录像（而那正是要防的）。
+      final temporary = '$targetPath.part';
+
+      final sink = File(temporary).openWrite();
+      await response.pipe(sink);
+      await sink.flush();
+      await sink.close();
+
+      await File(temporary).rename(targetPath);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// 回查归档层：这一份还在不在（规格 §3.5.4 / §3.5.6③）。
   ///
   /// 手动删除的**前置闸**：不能只看手机上那条「已备份」的记录 ——

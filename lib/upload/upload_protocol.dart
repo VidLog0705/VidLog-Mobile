@@ -72,7 +72,7 @@ class Receipt {
   final String receiverDeviceId;
   final String receiverDeviceName;
 
-  /// 归档层内的相对路径。规格 §3.7.1：分享链接指向归档层，所以现在就得留着。
+  /// 归档层内的相对路径 —— 后来去取回本地（交付原视频）时要用它。
   final String location;
 
   static Receipt fromJson(Map<String, Object?> json) => Receipt(
@@ -116,7 +116,7 @@ const receiptSignatureScheme = 'vidlog-receipt/v1';
 /// HMAC-SHA256，**密钥 = 凭据的原始字节**（不是它的字符串）。
 /// ⚠️ 这是 MAC 不是公钥签名：够用来确认「这条回执确实是那台电脑端发的」
 /// （验证方就是持有同一份凭据的这台设备），但**没有不可否认性**。
-/// 什么时候必须换成公钥签名，见文档 §5 —— 是 M6 的分享链接。
+/// 什么时候必须换成公钥签名，见文档 §5（`04-许可设计.md` 那条线）。
 String receiptMac(String credential, Receipt receipt) {
   final key = base64UrlDecode(credential);
   final mac = Hmac(sha256, key).convert(utf8.encode(canonicalReceipt(receipt)));

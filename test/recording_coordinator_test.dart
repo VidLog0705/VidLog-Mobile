@@ -2116,6 +2116,9 @@ class FakeGateway implements RecorderGateway {
   Future<void> playVideo(String videoPath) async {}
 
   @override
+  Future<String?> shareVideo(String videoPath) async => null;
+
+  @override
   Future<void> playDetentSound() async {
     detentSounds++;
   }

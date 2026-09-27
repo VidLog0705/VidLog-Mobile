@@ -45,6 +45,11 @@
 	     而这条线索在界面上完全看不出来。 -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>VidLog 需要在局域网内连接打包间的电脑，把录像备份过去。</string>
+	<!-- 交付原视频（规格 §3.7）要把它存进**系统相册**，再弹分享面板。
+	     ⚠️ 只要 **Add**（只写）那一条 —— 我们从不读相册里的任何东西，
+	     而 iOS 把「只写」与「读写」分成两个授权，要后者是过分的。 -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>VidLog 要把录好的视频存进你的相册，你才能把它发给别人。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

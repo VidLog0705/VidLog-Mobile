@@ -252,6 +252,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
 
             "generateThumbnail" -> generateThumbnail(call, result)
             "playVideo" -> playVideo(call, result)
+            "shareVideo" -> shareVideo(call, result)
 
             "speak" -> speak(call, result)
 
@@ -527,6 +528,108 @@ class RecorderChannel(private val activity: FlutterActivity) :
         } catch (error: Throwable) {
             Log.w(TAG, "起播放器失败", error)
             result.error("no_player", "这台设备上没有能播放它的应用", null)
+        }
+    }
+
+    /**
+     * 把这一段**原样**交出去（规格 §3.7）：存进**系统相册**，再弹**系统分享面板**。
+     *
+     * ⚠️ 规格原话：「改掉分享连接，只分享视频本身**无损完整**视频」。
+     * 所以这里**没有任何处理视频的代码** —— 它是「复制进 MediaStore + 交给系统」两步。
+     *
+     * ⚠️ 存相册走 `MediaStore`（安卓 10+ 不需要任何存储权限；
+     * 10 以下要 `WRITE_EXTERNAL_STORAGE`，而那个权限在清单里**没有** ——
+     * 所以 10 以下会失败并**如实说出来**，而不是静默什么都不做）。
+     */
+    private fun shareVideo(call: MethodCall, result: MethodChannel.Result) {
+        val videoPath = call.argument<String>("videoPath")
+
+        if (videoPath.isNullOrBlank()) {
+            result.error("bad_args", "缺少 videoPath", null)
+            return
+        }
+
+        val source = File(videoPath)
+        if (!source.exists()) {
+            // 「只在归档层就先取回本地」—— 那一步由 Dart 侧负责。
+            result.error("missing", "这一段的本地副本不在了 —— 先从电脑端取回来再交付。", null)
+            return
+        }
+
+        Thread {
+            val uri = copyToGallery(source)
+            activity.runOnUiThread {
+                if (uri == null) {
+                    result.error("save_failed", "存进相册失败（安卓 10 以下需要存储权限）。", null)
+                    return@runOnUiThread
+                }
+
+                // 弹系统分享面板。**没弹出来也算成功** —— 东西已经进相册了，
+                // 用户从相册里自己发是一条走得通的路。
+                shareUri(uri)
+                result.success(null)
+            }
+        }.start()
+    }
+
+    /** 把文件复制进系统相册（`MediaStore`），返回它的 uri；失败返回 null。 */
+    private fun copyToGallery(source: File): android.net.Uri? {
+        val resolver = activity.contentResolver
+        val collection = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            android.provider.MediaStore.Video.Media.getContentUri(
+                android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, source.name)
+            put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            // ⚠️ 不写 IS_PENDING 的话，别的应用可能在我们还在复制时就看见这个半截文件。
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+
+        val uri = try {
+            resolver.insert(collection, values)
+        } catch (error: Throwable) {
+            Log.w(TAG, "插入相册失败", error)
+            null
+        } ?: return null
+
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                source.inputStream().use { input -> input.copyTo(output) }
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "写相册失败", error)
+            resolver.delete(uri, null, null)
+            return null
+        }
+
+        // 复制完了再「发布」—— 与上面 IS_PENDING 配对。
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            resolver.update(uri, android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
+            }, null, null)
+        }
+
+        return uri
+    }
+
+    /** 弹系统分享面板。 */
+    private fun shareUri(uri: android.net.Uri) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "video/mp4"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            activity.startActivity(Intent.createChooser(intent, "把这段录像发出去"))
+        } catch (error: Throwable) {
+            Log.w(TAG, "弹分享面板失败", error)
         }
     }
 

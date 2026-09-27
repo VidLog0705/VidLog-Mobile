@@ -226,6 +226,15 @@ abstract interface class RecorderGateway {
   /// 同一条立场（引 `video_player` 要多一个依赖、多一份许可证要核）。
   Future<void> playVideo(String videoPath);
 
+  /// 把这一段**原样**交出去（规格 §3.7）。
+  ///
+  /// 两步都由系统做：**存进系统相册**（iOS `PHPhotoLibrary` / 安卓 `MediaStore`），
+  /// 然后**弹系统分享面板**。**不转码、不压缩、不裁剪**
+  /// —— 这个方法里没有任何处理视频的代码，它是复制 + 交给系统。
+  ///
+  /// 返回 null 表示成功；非 null 是给用户看的原因（存不进相册、没有分享面板…）。
+  Future<String?> shareVideo(String videoPath);
+
   /// 原生事件流。
   Stream<NativeRecorderEvent> get events;
 }
@@ -319,6 +328,19 @@ class ChannelRecorderGateway implements RecorderGateway {
   @override
   Future<void> playVideo(String videoPath) =>
       _methods.invokeMethod<void>('playVideo', {'videoPath': videoPath});
+
+  @override
+  Future<String?> shareVideo(String videoPath) async {
+    try {
+      await _methods.invokeMethod<void>('shareVideo', {'videoPath': videoPath});
+      return null;
+    } on PlatformException catch (error) {
+      // 失败要**说得出原因**（存不进相册 / 没有分享面板），由界面显示给用户。
+      return error.message ?? '分享没能进行（${error.code}）';
+    } on MissingPluginException {
+      return '这一端还没有接上分享。';
+    }
+  }
 
   @override
   Stream<NativeRecorderEvent> get events =>

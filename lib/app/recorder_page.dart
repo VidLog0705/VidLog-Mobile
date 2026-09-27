@@ -2291,6 +2291,13 @@ class _RecorderPageState extends State<RecorderPage> {
           // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
           // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
           // 这里只负责发起，判定与安全都在 `_askDelete` 里。
+          // 交付原视频（规格 §3.7）：存进系统相册 + 弹系统分享面板。
+          IconButton(
+            key: Key('share-${session.sessionId}'),
+            icon: const Icon(Icons.ios_share, size: 20),
+            tooltip: '交付这一段（存相册并分享）',
+            onPressed: () => _shareSession(session),
+          ),
           IconButton(
             key: Key('delete-${session.sessionId}'),
             icon: const Icon(Icons.delete_outline, size: 20),
@@ -2375,6 +2382,73 @@ class _RecorderPageState extends State<RecorderPage> {
         );
       },
     );
+  }
+
+  /// 交付这一段（规格 §3.7）：**原样**存进系统相册 + 弹系统分享面板。
+  ///
+  /// ## 「只在归档层就先取回本地」
+  ///
+  /// 规格原话：「如视频不在电脑端或者手机端本地，那么……需要从存储中下载视频到本地，
+  /// 然后分享」。所以本地副本不在时，先从电脑端取回来（`/media/{evidenceId}`，
+  /// 就是回放页用的那个端点 —— 它已经在了，不必另开一个下载接口）。
+  ///
+  /// ⚠️ **不转码、不压缩、不裁剪**（§3.7.1）：整条路上没有任何处理视频的代码。
+  ///
+  /// ⚠️ §3.6.6：**打码整条不做**。交出去的成品里面单上的姓名电话地址**会原样跟出去**，
+  /// 界面不许暗示做过隐私处理。
+  Future<void> _shareSession(RecordingSession session) async {
+    final root = _rootPath;
+    final evidenceId = session.evidenceIds.first;
+    var path = '$root/${_locationByEvidenceId[evidenceId] ?? ''}';
+
+    try {
+      if (!await File(path).exists()) {
+        final fetched = await _fetchFromArchive(session, evidenceId);
+        if (fetched == null) return;
+        path = fetched;
+      }
+
+      final problem = await _gateway.shareVideo(path);
+
+      if (problem != null) {
+        // I3：交付失败必须说出来 —— 用户以为发出去了，而对方什么都没收到。
+        _log('⚠️ 交付没成功：$problem');
+        if (mounted) setState(() => _status = problem);
+        return;
+      }
+
+      _log('📤 已交付 ${session.waybill.value}（存进相册并弹出分享）');
+    } on Object catch (error) {
+      _log('⚠️ 交付没能进行：$error');
+      if (mounted) setState(() => _status = '交付没能进行：$error');
+    }
+  }
+
+  /// 本地副本不在时，从归档层（电脑端）取回这一段。
+  ///
+  /// 取回来的那份落在 `<root>/` 下的临时位置 —— 它**不进索引**：
+  /// 交付件不是录像（I7 改写后的落点），而索引只增不减。
+  Future<String?> _fetchFromArchive(RecordingSession session, String evidenceId) async {
+    final client = _client;
+    final root = _rootPath;
+
+    if (client == null) {
+      if (mounted) setState(() => _status = '本地副本不在了，而电脑端还没配对 —— 没法取回来交付。');
+      return null;
+    }
+
+    if (mounted) setState(() => _status = '本地副本不在了，正在从电脑端取回来…');
+
+    final target = '$root/share/${session.waybill.value}.mp4';
+
+    try {
+      await client.downloadEvidence(evidenceId, target);
+      _log('⬇️ 从电脑端取回了 ${session.waybill.value}');
+      return target;
+    } on Object catch (error) {
+      if (mounted) setState(() => _status = '取不回来：$error');
+      return null;
+    }
   }
 
   /// 交给系统播放器。**播不了要当场说清楚**（I3）。
