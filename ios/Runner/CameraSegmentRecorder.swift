@@ -233,8 +233,14 @@ struct RecorderSpec {
 /// ⚠️ **一次算、一秒钟重画一次**：字每秒才变一次，而帧是每秒 30 张。
 /// 每帧重画一次文字会把录制的算力吃掉一大块（性能是规格 §3.1 的硬要求）。
 ///
-/// ⚠️ **这份代码没有在真机上跑过**（开发机是 Windows、没有 Xcode 也没有 iPhone）：
-/// 只过了 CI 的 macOS 编译。真机验收见 `docs/真机验收清单.md` §1.26。
+/// ⚠️ **这份代码没有在真机上跑过**（开发机是 Windows、没有 Xcode 也没有 iPhone）。
+/// 真机验收见 `docs/真机验收清单.md` §1.26。
+///
+/// ⚠️ 而且它**第一次过编译是 2026-09-27**（`ios-compile-check.yml` run `36296934767`），
+/// 比它写下来晚了整整一天 —— 期间这里写着「只过了 CI 的 macOS 编译」，
+/// **那句话是假的**（`ios-compile-check.yml` 是手动 dispatch 的，没人 dispatch 就没跑过）。
+/// 修掉的三处见 `git log -- ios/Runner/CameraSegmentRecorder.swift`。
+/// **写完 iOS 代码要手动 dispatch 那一次** —— 这是本条最该记住的事。
 final class WatermarkOverlay {
 
     /// 第一行：走时（北京时间）。
