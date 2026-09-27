@@ -193,6 +193,25 @@ class UploadClient {
     return _outcomeOf(json);
   }
 
+  /// 请求改名（规格 §3.4.5 ③：**二次改名要电脑端同意才能改**）。
+  ///
+  /// ⚠️ 它**要凭据**（`authenticated: true`）：改名发生在入网**之后**，那时手机
+  /// 手上只有凭据。电脑端那边用凭据反查设备 —— 报文里**不送 deviceId**，
+  /// 因为「身份从凭据来」，送 id 的话任何一台已入网设备都能改别人的名字。
+  ///
+  /// ⚠️ 手机**轮询**这个接口（与 [enrollRequest] 同形）：报上新名字，
+  /// 顺便问批没批。三个状态都可能回来。
+  Future<EnrollOutcome> requestRename({required String deviceName}) async {
+    final json = await _send(
+      'POST',
+      'enroll/rename',
+      body: {'deviceName': deviceName},
+      authenticated: true,
+    );
+
+    return _outcomeOf(json);
+  }
+
   /// 入网第二步：用**同一个令牌**换凭据。**只发一次** —— 领走之后整张码即作废。
   ///
   /// ⚠️ 「还没批」和「被拒了」**不是错误**：电脑端回的是 200 + `status`，

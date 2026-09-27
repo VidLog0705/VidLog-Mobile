@@ -189,6 +189,17 @@ void main() {
       }
     });
 
+    test('★ 改名要不要请电脑端同意 —— 判据是「有没有入过网」', () {
+      // 规格 §3.4.5 ③：「……如需要再次更改，**需要电脑端同意才能更改**」。
+      // ⚠️ 两种情形不是一回事：
+      //   · 没入网 ⇒ 这次命名是入网那一步的一部分（电脑端同意连接时已经同意过）
+      //   · 已入网 ⇒ 上面那句原话适用
+      // 抽成函数是因为界面那层在 widget 测试里碰不到 —— 而这个判据决定了
+      // 「要不要去麻烦另一头的人」。
+      expect(DeviceIdentity.renameNeedsApproval(''), isFalse, reason: '还没入网：不必再问一次');
+      expect(DeviceIdentity.renameNeedsApproval('abc123'), isTrue, reason: '已入网：要电脑端同意');
+    });
+
     test('★ 12 个字母正好用完，6 个汉字也一样', () {
       expect(deviceNameWidth('abcdefghijkl'), 12, reason: '12 个字母 = 12 格，正好');
       expect(deviceNameWidth('三号仓打包台'), 12, reason: '6 个汉字 = 12 格，正好');

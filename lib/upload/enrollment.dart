@@ -88,6 +88,37 @@ class Enroller {
 
     return null;
   }
+
+  /// 走完一次改名：报上新名字 → 等电脑端批准（规格 §3.4.5 ③）。
+  ///
+  /// ⚠️ 与 [enroll] 同形（轮询 + `cancelled` + `onWaiting`），但**只有一步** ——
+  /// 改名**不换凭据**（换了的话那台手机下一次上传会撞 401，而它以为只是改了个名字）。
+  ///
+  /// ⚠️ 加了**等待上限**：电脑端可能一直没人点那个弹窗，而无限轮询会让
+  /// 界面永远停在「正在等」—— 用户看不出是没人理还是程序卡了。
+  /// 上限与入网那张码的 5 分钟同量级，理由也一样（都是**人**在另一头操作）。
+  Future<EnrollOutcome?> requestRename({
+    required String deviceName,
+    required bool Function() cancelled,
+    void Function(Duration waited)? onWaiting,
+    Duration maxWait = const Duration(minutes: 5),
+  }) async {
+    var waited = Duration.zero;
+
+    while (!cancelled() && waited < maxWait) {
+      final outcome = await client.requestRename(deviceName: deviceName);
+
+      if (outcome.status != EnrollStatus.pending) {
+        return outcome;
+      }
+
+      onWaiting?.call(waited);
+      await sleep(interval);
+      waited += interval;
+    }
+
+    return null;
+  }
 }
 
 Future<void> _defaultSleep(Duration duration) => Future<void>.delayed(duration);

@@ -2887,10 +2887,75 @@ class _RecorderPageState extends State<RecorderPage> {
 
     if (name == null) return;
 
-    // 空名会退回默认名（见 `DeviceIdentity.rename`）—— 允许名字变空
-    // 等于允许这台手机在电脑端消失。
-    await identity.rename(name);
-    if (mounted) setState(() {});
+    // ── 规格 §3.4.5 ③：**二次改名要电脑端同意** ──────────────────────
+    //
+    // ⚠️ 两种情形**不是一回事**，别合并：
+    //   · **还没入网**（没有凭据）⇒ 这次命名是入网那一步的一部分 ——
+    //     电脑端在「同意连接」时已经同意了这台设备，不必再问一次；
+    //   · **已经入网**（有凭据）⇒ 需求方原话「如需要再次更改，
+    //     需要电脑端同意才能更改」。
+    // ⚠️ `credential` 是**非可空**的 String（空串 = 还没入网），
+    // 判据本体在 `DeviceIdentity.renameNeedsApproval`（那一处能测）。
+    if (!DeviceIdentity.renameNeedsApproval(identity.credential)) {
+      // 空名会退回默认名（见 `DeviceIdentity.rename`）—— 允许名字变空
+      // 等于允许这台手机在电脑端消失。
+      await identity.rename(name);
+      if (mounted) setState(() {});
+      return;
+    }
+
+    await _requestRename(identity, name);
+  }
+
+  /// 已入网之后改名 ⇒ 请电脑端批准（规格 §3.4.5 ③）。
+  ///
+  /// ⚠️ **批准之前不动本机名字**：先改本机再等批准的话，用户看到名字变了、
+  /// 而电脑端那边还是旧的（他甚至可能拒绝）—— 表现是「改了没生效但看着像生效了」。
+  ///
+  /// ⚠️ 等待必须是**看得见的**（I3 的精神）：与入网那一步同形，
+  /// 每轮把「已经等了多久」写到状态行上。
+  Future<void> _requestRename(DeviceIdentity identity, String name) async {
+    final client = _client;
+
+    if (client == null) {
+      _log('⚠️ 还不能改名：电脑端地址或凭据没准备好');
+      return;
+    }
+
+    EnrollOutcome? outcome;
+
+    try {
+      outcome = await Enroller(client: client).requestRename(
+        deviceName: name,
+        // 界面关了就停 —— 没有别的取消入口（等待上限在 `requestRename` 里）。
+        cancelled: () => !mounted,
+        onWaiting: (waited) {
+          if (mounted) {
+            setState(() => _status = '等电脑端同意改名…（已等 ${waited.inSeconds} 秒）');
+          }
+        },
+      );
+    } on Object catch (error) {
+      // 连不上 / 凭据作废 —— 都没改本机名字，说清楚就行。
+      _log('⚠️ 改名没能请求成功：$error');
+      return;
+    }
+
+    if (!mounted || outcome == null) {
+      // 界面关了，或者等超了（电脑端一直没人点那个弹窗）。
+      return;
+    }
+
+    if (outcome.status == EnrollStatus.approved) {
+      await identity.rename(name);
+      if (mounted) setState(() {});
+      _log('机位名已改成「${identity.deviceName}」（电脑端已同意）');
+      return;
+    }
+
+    _log(outcome.status == EnrollStatus.rejected
+        ? '电脑端拒绝了这次改名，名字没变。'
+        : '改名没有完成。');
   }
 
   /// 填 / 改电脑端的地址与名字。
