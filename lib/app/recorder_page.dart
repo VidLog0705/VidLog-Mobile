@@ -151,11 +151,13 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 时长兜底档位。**与静止档位互相独立** —— 关一个不影响另一个。
   DurationFallbackSetting _durationFallback = DurationFallbackSetting.fallback;
 
-  /// 归档后的本地保留期，发货一份（规格 §3.5.2.1）。
-  RetentionSetting _retentionOutbound = RetentionSetting.fallback;
-
-  /// 归档后的本地保留期，退货一份。**与发货那份互相独立** —— 改一个不动另一个。
-  RetentionSetting _retentionReturn = RetentionSetting.fallback;
+  /// 保留期四个数（规格 §3.5.2.1）：发货 / 退货 × 已备份 / 未备份。
+  ///
+  /// ⚠️ **两列语义相反**：已备份那列到期真删；未备份那列**永不自动删**、只催。
+  RetentionSetting _retentionArchivedOutbound = RetentionSetting.fallback;
+  RetentionSetting _retentionArchivedReturn = RetentionSetting.fallback;
+  RetentionSetting _retentionUnarchivedOutbound = RetentionSetting.fallback;
+  RetentionSetting _retentionUnarchivedReturn = RetentionSetting.fallback;
 
   /// 录制规格三项（规格 §3.1.7）。**用户选的**那一档 ——
   /// 实际生效的可能是回落之后的另一档（见 `_coordinator.effectiveSpec`）。
@@ -424,8 +426,10 @@ class _RecorderPageState extends State<RecorderPage> {
       _mode = _settings!.mode;
       _staticStop = _settings!.staticStop;
       _durationFallback = _settings!.durationFallback;
-      _retentionOutbound = _settings!.retentionOutbound;
-      _retentionReturn = _settings!.retentionReturn;
+      _retentionArchivedOutbound = _settings!.retentionArchivedOutbound;
+      _retentionArchivedReturn = _settings!.retentionArchivedReturn;
+      _retentionUnarchivedOutbound = _settings!.retentionUnarchivedOutbound;
+      _retentionUnarchivedReturn = _settings!.retentionUnarchivedReturn;
       _codec = _settings!.codec;
       _resolution = _settings!.resolution;
       _orientation = _settings!.orientation;
@@ -2984,8 +2988,12 @@ class _RecorderPageState extends State<RecorderPage> {
           'staticStop': _staticStop.name,
           'durationFallback': _durationFallback.name,
           'voiceEnabled': _settings?.voiceEnabled,
-          'retentionOutbound': _retentionOutbound.name,
-          'retentionReturn': _retentionReturn.name,
+          // 保留期四个数：记的是**天数**（`null` = 全部保留），不是枚举名 ——
+          // 它已经不是枚举了（「自定义」是任意正整数天）。
+          'retentionArchivedOutbound': _retentionArchivedOutbound.days,
+          'retentionArchivedReturn': _retentionArchivedReturn.days,
+          'retentionUnarchivedOutbound': _retentionUnarchivedOutbound.days,
+          'retentionUnarchivedReturn': _retentionUnarchivedReturn.days,
         },
         deviceName: _identity?.deviceName ?? '',
         sessionCount: _sessionCount,
@@ -3019,8 +3027,10 @@ class _RecorderPageState extends State<RecorderPage> {
     StaticStopSetting? staticStop,
     DurationFallbackSetting? durationFallback,
     bool? voiceEnabled,
-    RetentionSetting? retentionOutbound,
-    RetentionSetting? retentionReturn,
+    RetentionSetting? retentionArchivedOutbound,
+    RetentionSetting? retentionArchivedReturn,
+    RetentionSetting? retentionUnarchivedOutbound,
+    RetentionSetting? retentionUnarchivedReturn,
     VideoCodec? codec,
     VideoResolution? resolution,
     RecordingOrientation? orientation,
@@ -3033,8 +3043,18 @@ class _RecorderPageState extends State<RecorderPage> {
       if (staticStop != null) _staticStop = staticStop;
       if (durationFallback != null) _durationFallback = durationFallback;
       if (voiceEnabled != null) settings.voiceEnabled = voiceEnabled;
-      if (retentionOutbound != null) _retentionOutbound = retentionOutbound;
-      if (retentionReturn != null) _retentionReturn = retentionReturn;
+      if (retentionArchivedOutbound != null) {
+        _retentionArchivedOutbound = retentionArchivedOutbound;
+      }
+      if (retentionArchivedReturn != null) {
+        _retentionArchivedReturn = retentionArchivedReturn;
+      }
+      if (retentionUnarchivedOutbound != null) {
+        _retentionUnarchivedOutbound = retentionUnarchivedOutbound;
+      }
+      if (retentionUnarchivedReturn != null) {
+        _retentionUnarchivedReturn = retentionUnarchivedReturn;
+      }
       if (codec != null) _codec = codec;
       if (resolution != null) _resolution = resolution;
       if (orientation != null) _orientation = orientation;
@@ -3042,8 +3062,10 @@ class _RecorderPageState extends State<RecorderPage> {
       settings.mode = _mode;
       settings.staticStop = _staticStop;
       settings.durationFallback = _durationFallback;
-      settings.retentionOutbound = _retentionOutbound;
-      settings.retentionReturn = _retentionReturn;
+      settings.retentionArchivedOutbound = _retentionArchivedOutbound;
+      settings.retentionArchivedReturn = _retentionArchivedReturn;
+      settings.retentionUnarchivedOutbound = _retentionUnarchivedOutbound;
+      settings.retentionUnarchivedReturn = _retentionUnarchivedReturn;
       settings.codec = _codec;
       settings.resolution = _resolution;
       settings.orientation = _orientation;
@@ -3410,12 +3432,22 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  // ── ②c 归档后的本地保留期 ─────────────────────
+  // ── ②c 本地保留期：四个数 ─────────────────────
 
-  /// 归档成功后本地留多久，**发货与退货各一份**（规格 §3.5.2.1）。
+  /// 本地留多久 —— **发货 / 退货 × 已备份 / 未备份 = 四个数**（规格 §3.5.2.1）。
   ///
-  /// 需求方 2026-09-23 点名要的，原话是「用下拉式选择」。这里用下拉而不是
-  /// 分段按钮，是因为它有八个档位 —— 分段按钮铺不下，会挤成一行看不清的字。
+  /// 需求方 2026-09-24 点名要的摆法是「**一张两行两列的表**（行 = 已备份 / 未备份，
+  /// 列 = 发货 / 退货）」。用下拉而不是分段按钮，是因为有 9 个档位 ——
+  /// 分段按钮铺不下，会挤成一行看不清的字。
+  ///
+  /// ## ⚠️ 两列语义**相反**（这一块最要紧的一句话）
+  ///
+  /// - **已备份**：到期**真删本地副本**（先过 §3.5.4 回查），起算点 = 备份成功时刻；
+  /// - **未备份**：到期**只标红、只催上传，永不自动删**，起算点 = 录完时刻。
+  ///
+  /// 后者是**唯一副本**（I2），删了就永久没了。这段话必须写在界面上 ——
+  /// 不写的话，用户要么以为「选了不保留却没反应」是坏了（踩坑 #13），
+  /// 要么以为自己选了「马上删」而**不敢选**。
   ///
   /// ## 为什么手机端没有「归档层」那个下拉（电脑端有）
   ///
@@ -3424,9 +3456,6 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 手机的归档层是电脑端（局域网）/ NAS / 网盘，三者都在**别的设备**上。
   /// 所以这里不摆一个「归档层」下拉：它在这台机器上没有第二种可能，
   /// 摆上去就是个改了没反应的开关（踩坑 #13）。
-  ///
-  /// ⚠️ 手机端真正要防的是另一件事：**还没备份上去的那批绝不能删**。
-  /// 那是规格 §3.5.3① 的豁免（未成功归档的 = 唯一副本），与归档层选哪种无关。
   Widget _retentionCard() {
     return Card(
       child: Padding(
@@ -3434,31 +3463,66 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('归档后的本地保留期',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('本地保留期', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             const Text(
-              '备份成功之后，手机上的原片再留多久。发货与退货各一份，改一份不动另一份。'
-              '保留期从「备份成功那一刻」起算，不是从录完起算。',
+              '四个数互相独立，改一个不动另一个。',
               style: TextStyle(fontSize: 12),
             ),
             const SizedBox(height: 12),
 
-            _retentionRow(
-              key: 'settings-retention-outbound',
-              title: '发货',
-              value: _retentionOutbound,
-              onChanged: (value) => _updateSettings(retentionOutbound: value),
+            Row(
+              children: [
+                const SizedBox(width: 64),
+                Expanded(
+                  child: Text('发货',
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                Expanded(
+                  child: Text('退货',
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
             ),
-            const Divider(height: 24),
-            _retentionRow(
-              key: 'settings-retention-return',
-              title: '退货',
-              value: _retentionReturn,
-              onChanged: (value) => _updateSettings(retentionReturn: value),
+            const SizedBox(height: 4),
+
+            _retentionTableRow(
+              title: '已备份',
+              outboundKey: 'settings-retention-archived-outbound',
+              outbound: _retentionArchivedOutbound,
+              onOutbound: (value) =>
+                  _updateSettings(retentionArchivedOutbound: value),
+              returnKey: 'settings-retention-archived-return',
+              returning: _retentionArchivedReturn,
+              onReturn: (value) =>
+                  _updateSettings(retentionArchivedReturn: value),
+            ),
+            const SizedBox(height: 8),
+            _retentionTableRow(
+              title: '未备份',
+              outboundKey: 'settings-retention-unarchived-outbound',
+              outbound: _retentionUnarchivedOutbound,
+              onOutbound: (value) =>
+                  _updateSettings(retentionUnarchivedOutbound: value),
+              returnKey: 'settings-retention-unarchived-return',
+              returning: _retentionUnarchivedReturn,
+              onReturn: (value) =>
+                  _updateSettings(retentionUnarchivedReturn: value),
             ),
 
             const SizedBox(height: 12),
+            const Text(
+              '⚠️「已备份」那一列：备份成功后，手机上的原片再留多久。'
+              '从「备份成功那一刻」起算，不是从录完起算。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '⚠️「未备份」那一列**永不自动删除** —— 那是唯一一份，删了就没了。'
+              '它到期的动作只有提醒（列表标红 + 催上传），从「录完那一刻」起算。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 4),
             const Text(
               '⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动'
               '（硬性豁免，关不掉），所以它实际是「备份成功后最快 24 小时清理」。',
@@ -3476,36 +3540,119 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  Widget _retentionRow({
-    required String key,
+  /// 两行两列表里的一行：一个行首标签 + 两个下拉。
+  Widget _retentionTableRow({
     required String title,
-    required RetentionSetting value,
-    required ValueChanged<RetentionSetting> onChanged,
+    required String outboundKey,
+    required RetentionSetting outbound,
+    required ValueChanged<RetentionSetting> onOutbound,
+    required String returnKey,
+    required RetentionSetting returning,
+    required ValueChanged<RetentionSetting> onReturn,
   }) {
     return Row(
       children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(width: 12),
-        DropdownButton<RetentionSetting>(
-          key: Key(key),
-          value: value,
-          isDense: true,
-          // 八个档位，「30 天」那项不能把这一行撑破。
-          underline: const SizedBox.shrink(),
-          items: [
-            for (final setting in RetentionSetting.values)
-              DropdownMenuItem(value: setting, child: Text(setting.label)),
-          ],
-          // `_settingsReady`：盘上的设置还没读出来时不给改 ——
-          // 改了会被随后读出来的盘上值覆盖，等于改了没反应还看不出来。
-          onChanged: _settingsReady
-              ? (v) {
-                  if (v != null) onChanged(v);
-                }
-              : null,
+        SizedBox(
+          width: 64,
+          child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
         ),
+        Expanded(child: _retentionDropdown(outboundKey, outbound, onOutbound)),
+        const SizedBox(width: 8),
+        Expanded(child: _retentionDropdown(returnKey, returning, onReturn)),
       ],
     );
+  }
+
+  Widget _retentionDropdown(
+    String key,
+    RetentionSetting value,
+    ValueChanged<RetentionSetting> onChanged,
+  ) {
+    // ⚠️ 「自定义」不在列表里，而下拉的 `value` 必须能在 `items` 里找到 ——
+    // 找不到会直接断言失败。所以自定义值临时补一个条目进去（显示成「45 天」），
+    // 用户点开下拉再选就是换成了标准档位。
+    final items = <RetentionSetting>[
+      ...RetentionSetting.standard,
+      if (value.isCustom) value,
+    ];
+
+    return DropdownButton<RetentionSetting>(
+      key: Key(key),
+      value: value,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: [
+        for (final setting in items)
+          DropdownMenuItem(value: setting, child: Text(setting.label)),
+        // 「自定义」这一项不是一个值，是一个入口 —— 选中它只是打开输入框。
+        DropdownMenuItem(
+          value: _customSentinel,
+          child: Text('自定义…', style: TextStyle(fontSize: 13)),
+        ),
+      ],
+      // `_settingsReady`：盘上的设置还没读出来时不给改 ——
+      // 改了会被随后读出来的盘上值覆盖，等于改了没反应还看不出来。
+      onChanged: _settingsReady
+          ? (v) async {
+              if (v == null) return;
+              if (identical(v, _customSentinel)) {
+                final days = await _askCustomDays(value);
+                if (days != null) onChanged(RetentionSetting.fromConfig(days));
+                return;
+              }
+              onChanged(v);
+            }
+          : null,
+    );
+  }
+
+  /// 「自定义」在下拉里的哨兵值。**不会落盘** —— 选中它只是打开输入框。
+  static const _customSentinel = RetentionSetting(-1);
+
+  /// 问一个天数。返回 null 表示用户取消。
+  Future<int?> _askCustomDays(RetentionSetting current) async {
+    final controller = TextEditingController(
+      text: current.days != null && current.isCustom ? '${current.days}' : '',
+    );
+
+    final result = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('自定义保留天数'),
+        content: TextField(
+          key: const Key('retention-custom-days'),
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            suffixText: '天',
+            helperText: '填一个正整数天数（最多 3650 天）',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const Key('retention-custom-ok'),
+            onPressed: () {
+              final days = int.tryParse(controller.text.trim());
+              // ⚠️ 认不出的输入**不关窗也不猜** —— 关掉就等于「改了没反应」。
+              if (days == null || days < 0 || days > RetentionSetting.maxDays) {
+                return;
+              }
+              Navigator.of(context).pop(days);
+            },
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+
+    controller.dispose();
+    return result;
   }
 
   Widget _settingTitle(String title, String blurb) {

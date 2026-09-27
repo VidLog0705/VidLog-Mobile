@@ -60,12 +60,31 @@ class ExemptedEntry {
   final String why;
 }
 
+/// 一条**该催上传**的录像（规格 §3.5.2.1 的「未备份」那一列）。
+///
+/// ⚠️ 它与 [ExemptedEntry] 不是一回事，所以要分开：豁免说的是「它为什么**没被删**」
+/// （几乎每条录像都在豁免列表里），而这一条说的是「**它该被催**」——
+/// 界面上要标红、要计入「N 个未备份」。混在一起的话，界面分不出
+/// 「正常保留」和「该催了」。
+///
+/// **它永远不导致删除。** 未备份的那些是**唯一副本**（I2），
+/// 这一列到期的唯一动作是提醒。
+class NudgedEntry {
+  const NudgedEntry(this.entry, this.why);
+
+  final RecordingEntry entry;
+  final String why;
+}
+
 /// 一次清理计划的完整结论。
 class CleanupPlan {
-  const CleanupPlan(this.candidates, this.exempted);
+  const CleanupPlan(this.candidates, this.exempted, [this.nudges = const []]);
 
   final List<CleanupCandidate> candidates;
   final List<ExemptedEntry> exempted;
+
+  /// 该催上传的那些（规格 §3.5.2.1 的未备份列）。**它们不在候选里，也不会被删。**
+  final List<NudgedEntry> nudges;
 
   /// 这个计划会腾出多少 —— 规格 §3.5.5 的「清理前必须给出预告」要的就是它。
   ///
@@ -102,16 +121,28 @@ int estimateBytes(RecordingEntry entry) => entry.duration.isNegative
 ///
 /// 发货与退货**各算一遍再合起来** —— 分开算顺手保证了两份互不串
 /// （改发货的档位不可能碰到退货的判断）。
+///
+/// ## ⚠️ 四个数：两列语义**相反**（规格 §3.5.2.1）
+///
+/// | 列 | 到期做什么 | 起算点 |
+/// |---|---|---|
+/// | **已备份**（[retentionArchivedOutbound] / [retentionArchivedReturn]） | **真删本地副本**（先过 §3.5.4 回查） | **归档成功时刻** |
+/// | **未备份**（[retentionUnarchivedOutbound] / [retentionUnarchivedReturn]） | **只标红、只催上传，永不自动删** | **录完时刻** |
+///
+/// 未备份那一列落到 [CleanupPlan.nudges]，**连一个候选都产生不出来**。
 CleanupPlan planCleanup({
   required List<RecordingEntry> entries,
   required Map<String, Map<String, String>> labels,
   required Map<String, ArchiveRecord> archive,
-  required RetentionSetting retentionOutbound,
-  required RetentionSetting retentionReturn,
+  required RetentionSetting retentionArchivedOutbound,
+  required RetentionSetting retentionArchivedReturn,
   required DateTime now,
+  RetentionSetting retentionUnarchivedOutbound = RetentionSetting.keepAll,
+  RetentionSetting retentionUnarchivedReturn = RetentionSetting.keepAll,
 }) {
   final candidates = <CleanupCandidate>[];
   final exempted = <ExemptedEntry>[];
+  final nudges = <NudgedEntry>[];
 
   // 按业务类型分组。**没有业务类型标签的一律不清**，见下面那条注释。
   final byType = <BusinessType?, List<RecordingEntry>>{};
@@ -131,8 +162,35 @@ CleanupPlan planCleanup({
       continue;
     }
 
+    // ── 未备份那一列（规格 §3.5.2.1）────────────────────────────
+    //
+    // ⚠️ **它永远不产生候选** —— 未备份的那些是唯一副本（I2）。
+    // 它到期的动作只有「催」：起算点是**录完时刻**（那时还没归档，
+    // 拿归档时刻根本无从算起）。
+    final unarchived = type == BusinessType.returning
+        ? retentionUnarchivedReturn
+        : retentionUnarchivedOutbound;
+
+    if (unarchived.days != null) {
+      for (final entry in group.value) {
+        final record = archive[entry.evidenceId];
+        if (record != null && record.isArchived) continue; // 已备份的走另一列
+
+        final since = now.difference(entry.endedAt);
+        if (since >= Duration(days: unarchived.days!)) {
+          final days = unarchived.days!;
+          nudges.add(NudgedEntry(
+            entry,
+            days == 0
+                ? '还没备份到归档层 —— 你选的是「不保留」，但这一份是唯一副本，系统只会催、不会删'
+                : '还没备份到归档层，已经录完 ${since.inDays} 天了（你设的是 $days 天）',
+          ));
+        }
+      }
+    }
+
     final setting =
-        type == BusinessType.returning ? retentionReturn : retentionOutbound;
+        type == BusinessType.returning ? retentionArchivedReturn : retentionArchivedOutbound;
 
     // 策略是「全部保留」时，谁都别动。
     if (setting.days == null) {
@@ -160,7 +218,7 @@ CleanupPlan planCleanup({
     }
   }
 
-  return CleanupPlan(candidates, exempted);
+  return CleanupPlan(candidates, exempted, nudges);
 }
 
 /// 三段硬豁免，按规格 §3.5.3 **自己的编号顺序**判 —— 一条都不少。

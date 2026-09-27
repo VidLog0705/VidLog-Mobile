@@ -36,8 +36,10 @@ void main() {
     expect(settings.staticStop, StaticStopSetting.fallback);
     expect(settings.durationFallback, DurationFallbackSetting.fallback);
     expect(settings.voiceEnabled, isTrue, reason: '读不出来时播报按**开**算');
-    expect(settings.retentionOutbound, RetentionSetting.fallback);
-    expect(settings.retentionReturn, RetentionSetting.fallback);
+    expect(settings.retentionArchivedOutbound, RetentionSetting.fallback);
+    expect(settings.retentionArchivedReturn, RetentionSetting.fallback);
+    expect(settings.retentionUnarchivedOutbound, RetentionSetting.fallback);
+    expect(settings.retentionUnarchivedReturn, RetentionSetting.fallback);
 
     // 没改过就不写盘：默认值本来就是对的，没必要替一件没发生的事写一次。
     expect(File(path()).existsSync(), isFalse);
@@ -145,20 +147,44 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
-  // 归档后的本地保留期（规格 §3.5.2.1）
+  // 保留期四个数（规格 §3.5.2.1）
   // ─────────────────────────────────────────────
 
-  group('保留期：发货与退货各一份', () {
-    test('★ 两份分开存，改一份不动另一份', () async {
+  group('保留期：四个数', () {
+    test('★ 四个分开存，改一个不动另外三个', () async {
       final settings = await RecordingSettings.load(path());
-      settings.retentionOutbound = RetentionSetting.days7;
-      settings.retentionReturn = RetentionSetting.days30;
+      settings.retentionArchivedOutbound = RetentionSetting.days7;
+      settings.retentionArchivedReturn = RetentionSetting.days30;
+      settings.retentionUnarchivedOutbound = RetentionSetting.days3;
+      settings.retentionUnarchivedReturn = RetentionSetting.none;
       await settings.save();
 
       final reloaded = await RecordingSettings.load(path());
 
-      expect(reloaded.retentionOutbound, RetentionSetting.days7);
-      expect(reloaded.retentionReturn, RetentionSetting.days30);
+      expect(reloaded.retentionArchivedOutbound, RetentionSetting.days7);
+      expect(reloaded.retentionArchivedReturn, RetentionSetting.days30);
+      expect(reloaded.retentionUnarchivedOutbound, RetentionSetting.days3);
+      expect(reloaded.retentionUnarchivedReturn, RetentionSetting.none);
+    });
+
+    test('★ 老设置文件里那两个数按**已备份**那一列读入', () async {
+      // 2026-09-27 之前存的是 `retentionOutbound` / `retentionReturn`，
+      // 那时它俩说的是「已备份后的本地保留期」—— 语义没变，只是多了一列。
+      // 不认的话那两个数会被**静默丢掉**，用户看到的是「我明明设过 7 天，
+      // 怎么变回全部保留了」。
+      File(path()).writeAsStringSync(
+        jsonEncode({'retentionOutbound': 7, 'retentionReturn': 30}),
+      );
+
+      final settings = await RecordingSettings.load(path());
+
+      expect(settings.retentionArchivedOutbound, RetentionSetting.days7);
+      expect(settings.retentionArchivedReturn, RetentionSetting.days30);
+
+      // 新增的两列默认「全部保留」—— **未备份那一列永不自动删**，
+      // 所以老文件升上来之后不会开始删东西。
+      expect(settings.retentionUnarchivedOutbound, RetentionSetting.keepAll);
+      expect(settings.retentionUnarchivedReturn, RetentionSetting.keepAll);
     });
 
     test('⚠️「全部保留」与「不保留」必须是两个值，不能都读成缺字段', () async {
@@ -166,38 +192,41 @@ void main() {
       // 实现成「缺字段就当 0」，这一条会红 —— 而那个 bug 在真机上表现为
       // **用户选了「全部保留」，东西却在备份后第二天被删掉**。
       final settings = await RecordingSettings.load(path());
-      settings.retentionOutbound = RetentionSetting.keepAll;
-      settings.retentionReturn = RetentionSetting.none;
+      settings.retentionArchivedOutbound = RetentionSetting.keepAll;
+      settings.retentionArchivedReturn = RetentionSetting.none;
       await settings.save();
 
       final reloaded = await RecordingSettings.load(path());
 
-      expect(reloaded.retentionOutbound, RetentionSetting.keepAll);
-      expect(reloaded.retentionReturn, RetentionSetting.none);
-      expect(reloaded.retentionOutbound.days, isNull);
-      expect(reloaded.retentionReturn.days, 0);
+      expect(reloaded.retentionArchivedOutbound, RetentionSetting.keepAll);
+      expect(reloaded.retentionArchivedReturn, RetentionSetting.none);
+      expect(reloaded.retentionArchivedOutbound.days, isNull);
+      expect(reloaded.retentionArchivedReturn.days, 0);
     });
 
     test('垃圾值一律回落到「全部保留」—— 朝**少删**的那头落', () async {
-      for (final garbage in <Object?>['7 天', '', <int>[], true, 999, -1]) {
+      for (final garbage in <Object?>['7 天', '', <int>[], true]) {
         File(path()).writeAsStringSync(
-          jsonEncode({'retentionOutbound': garbage, 'retentionReturn': garbage}),
+          jsonEncode({
+            'retentionArchivedOutbound': garbage,
+            'retentionArchivedReturn': garbage,
+          }),
         );
 
         final settings = await RecordingSettings.load(path());
 
-        expect(settings.retentionOutbound, RetentionSetting.keepAll,
+        expect(settings.retentionArchivedOutbound, RetentionSetting.keepAll,
             reason: '「$garbage」不该被当成任何一个真实档位');
-        expect(settings.retentionReturn, RetentionSetting.keepAll);
+        expect(settings.retentionArchivedReturn, RetentionSetting.keepAll);
       }
     });
 
-    test('档位超范围回落不夹取（999 不会变成 30 天）', () async {
-      File(path()).writeAsStringSync(jsonEncode({'retentionOutbound': 999}));
+    test('档位超范围回落不夹取（99999 不会变成 3650 天）', () async {
+      File(path()).writeAsStringSync(jsonEncode({'retentionArchivedOutbound': 99999}));
 
       final settings = await RecordingSettings.load(path());
 
-      expect(settings.retentionOutbound, RetentionSetting.keepAll);
+      expect(settings.retentionArchivedOutbound, RetentionSetting.keepAll);
     });
   });
 
@@ -208,6 +237,24 @@ void main() {
       expect(RetentionSetting.fromConfig(0), RetentionSetting.none);
     });
 
+    test('★ 列表之外的整数天是「自定义」，不是回落', () {
+      // 规格 §3.5.2.1 的 9 项里有一项就是「自定义」——
+      // 45 天既不该被拒，也不该被夹成 30 天。
+      expect(RetentionSetting.fromConfig(45), const RetentionSetting(45));
+      expect(RetentionSetting.fromConfig('45'), const RetentionSetting(45));
+      expect(RetentionSetting.fromConfig(45).isCustom, isTrue);
+      expect(RetentionSetting.fromConfig(45).label, '45 天');
+
+      // 列表里那几个仍然认得出是标准档位（不是「自定义」）。
+      expect(RetentionSetting.fromConfig(7).isCustom, isFalse);
+      expect(RetentionSetting.fromConfig(7), RetentionSetting.days7);
+
+      // 上限是 10 年（实现标定，与电脑端同一个值）—— 越界回落，**不夹取**。
+      expect(RetentionSetting.fromConfig(3650).isCustom, isTrue);
+      expect(RetentionSetting.fromConfig(3651), RetentionSetting.keepAll);
+      expect(RetentionSetting.fromConfig(-1), RetentionSetting.keepAll);
+    });
+
     test('认不出的一律回落到 fallback（全部保留）', () {
       expect(RetentionSetting.fromConfig(null), RetentionSetting.fallback);
       expect(RetentionSetting.fromConfig('days7'), RetentionSetting.fallback,
@@ -216,11 +263,12 @@ void main() {
     });
 
     test('下拉里的名字与需求方列举的一致', () {
-      // 需求方原话是「不保留/3/5/7/10/15/30/」；**「全部保留」是规格 §3.5.2
-      // 本来就规定的默认**，所以多这一项 —— 这个偏差要跟他确认（交接.md §5）。
+      // 规格 §3.5.2.1 的 9 项：「不保留 / 3 / 5 / 7 / 10 / 15 / 30 / **自定义** /
+      // 全部保留」。⚠️ 列表里只有 8 个值 —— 第 9 项「自定义」不是一个值，
+      // 是「手输天数」这个能力（见上面那条用例）。
       expect(
-        RetentionSetting.values.map((s) => s.label).toList(),
-        ['全部保留', '不保留', '3 天', '5 天', '7 天', '10 天', '15 天', '30 天'],
+        RetentionSetting.standard.map((s) => s.label).toList(),
+        ['不保留', '3 天', '5 天', '7 天', '10 天', '15 天', '30 天', '全部保留'],
       );
     });
   });

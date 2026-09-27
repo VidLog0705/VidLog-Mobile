@@ -67,8 +67,10 @@ void main() {
     List<RecordingEntry> entries, {
     Map<String, Map<String, String>>? labelTable,
     Map<String, ArchiveRecord>? archive,
-    RetentionSetting outbound = RetentionSetting.days3,
-    RetentionSetting returning = RetentionSetting.days3,
+    RetentionSetting archivedOutbound = RetentionSetting.days3,
+    RetentionSetting archivedReturn = RetentionSetting.days3,
+    RetentionSetting unarchivedOutbound = RetentionSetting.keepAll,
+    RetentionSetting unarchivedReturn = RetentionSetting.keepAll,
   }) =>
       planCleanup(
         entries: entries,
@@ -79,8 +81,10 @@ void main() {
             },
         archive: archive ??
             {for (final e in entries) e.evidenceId: archived(e.evidenceId)},
-        retentionOutbound: outbound,
-        retentionReturn: returning,
+        retentionArchivedOutbound: archivedOutbound,
+        retentionArchivedReturn: archivedReturn,
+        retentionUnarchivedOutbound: unarchivedOutbound,
+        retentionUnarchivedReturn: unarchivedReturn,
         now: now,
       );
 
@@ -147,7 +151,7 @@ void main() {
       // 这也是「不保留」实际不等于立刻删的原因。
       final e = entry('a', ago: const Duration(hours: 3));
 
-      final result = plan([e], outbound: RetentionSetting.none);
+      final result = plan([e], archivedOutbound: RetentionSetting.none);
 
       expect(result.candidates, isEmpty);
       expect(result.exempted.single.why, contains('24 小时'));
@@ -209,8 +213,8 @@ void main() {
           'a': {BusinessType.labelKey: BusinessType.outbound.wire},
           'b': {BusinessType.labelKey: BusinessType.returning.wire},
         },
-        outbound: RetentionSetting.days30,
-        returning: RetentionSetting.none,
+        archivedOutbound: RetentionSetting.days30,
+        archivedReturn: RetentionSetting.none,
       );
 
       expect(result.candidates.single.entry.evidenceId, 'b');
@@ -249,11 +253,87 @@ void main() {
       final b = entry('b', ago: const Duration(days: 400));
 
       final result = plan([a, b],
-          outbound: RetentionSetting.keepAll, returning: RetentionSetting.keepAll);
+          archivedOutbound: RetentionSetting.keepAll,
+      archivedReturn: RetentionSetting.keepAll);
 
       expect(result.candidates, isEmpty);
       expect(result.exempted, hasLength(2));
       expect(result.exempted.every((e) => e.why.contains('全部保留')), isTrue);
+    });
+
+    test('★ 未备份那一列到期只催上传，绝不产生候选（规格 §3.5.2.1）', () {
+      // ⚠️ 这是这一节最要紧的一条：未备份的是**唯一副本**（I2），
+      // 那一列到期的唯一动作是提醒。写成「也删」就是允许系统销毁唯一一份。
+      final e = entry('a', ago: const Duration(days: 30));
+
+      final result = plan(
+        [e],
+        archive: const {}, // 没备份上去
+        archivedOutbound: RetentionSetting.none,
+        archivedReturn: RetentionSetting.none,
+        unarchivedOutbound: RetentionSetting.days7,
+      );
+
+      expect(result.candidates, isEmpty, reason: '未备份的**绝不许**进候选');
+      final nudge = result.nudges.single;
+      expect(nudge.entry.evidenceId, 'a');
+      expect(nudge.why, contains('还没备份'));
+    });
+
+    test('未备份那一列设成「全部保留」就不催', () {
+      // 规格原话：「全部保留 = **永不提醒**（不做任何操作，直到用户重新选择别的选项）」。
+      final e = entry('a', ago: const Duration(days: 3000));
+
+      final result = plan([e], archive: const {});
+
+      expect(result.nudges, isEmpty);
+    });
+
+    test('未备份那一列的起算点是**录完时刻**，不是归档时刻', () {
+      // 规格 §3.5.2.1 的表格：未备份列「起算点 = 录完时刻」。
+      // 这条录像**根本没归档**，拿归档时刻根本无从算起 —— 这正是它必须用录完时刻。
+      final fresh = entry('fresh', ago: const Duration(hours: 2));
+      final old = entry('old', ago: const Duration(days: 30));
+
+      final result = plan(
+        [fresh, old],
+        archive: const {},
+        unarchivedOutbound: RetentionSetting.days7,
+      );
+
+      expect(result.nudges.single.entry.evidenceId, 'old');
+    });
+
+    test('未备份那一列选「不保留」时，措辞要点明它不会被删', () {
+      // 用户选了「不保留」却看见东西还在 —— 那句话必须当场解释清楚，
+      // 否则他会以为坏了（踩坑 #13），或者更糟：以为自己选了「马上删」而不敢选。
+      final e = entry('a', ago: const Duration(days: 1));
+
+      final result = plan(
+        [e],
+        archive: const {},
+        unarchivedOutbound: RetentionSetting.none,
+      );
+
+      final nudge = result.nudges.single;
+      expect(nudge.why, contains('唯一副本'));
+      expect(nudge.why, contains('不会删'));
+    });
+
+    test('已备份的那些不受未备份那一列影响', () {
+      // 四个数互相独立：已备份那条走已备份的档位，未备份的才走另一列。
+      final archivedOne = entry('archived', ago: const Duration(days: 30));
+      final loose = entry('loose', ago: const Duration(days: 30));
+
+      final result = plan(
+        [archivedOne, loose],
+        archive: {'archived': archived('archived')},
+        archivedOutbound: RetentionSetting.days7,
+        unarchivedOutbound: RetentionSetting.days3,
+      );
+
+      expect(result.candidates.single.entry.evidenceId, 'archived');
+      expect(result.nudges.single.entry.evidenceId, 'loose');
     });
 
     test('★ 每一条没被清的都说得出为什么（§3.5.5：用户要能查）', () {

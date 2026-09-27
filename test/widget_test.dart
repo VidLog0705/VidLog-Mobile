@@ -574,13 +574,14 @@ void main() {
       isNull,
     );
 
-    // 归档后的本地保留期那两块下拉同理（规格 §3.5.2.1）。
-    // 它们**两份各自一个**，所以两条都验 —— 只验一条的话，
-    // 另一条漏掉守卫（`onChanged: (v) => ...` 而没套 `_settingsReady`）
-    // 在真机上就是「退货那一份改了没反应」。
+    // 保留期那四个下拉同理（规格 §3.5.2.1）。四个数**各一个**，所以四个都验 ——
+    // 少套一个的 `_settingsReady`，那一格在真机上就是「改了没反应」，
+    // 而且是静默的：下拉看起来能点。
     for (final key in const [
-      'settings-retention-outbound',
-      'settings-retention-return',
+      'settings-retention-archived-outbound',
+      'settings-retention-archived-return',
+      'settings-retention-unarchived-outbound',
+      'settings-retention-unarchived-return',
     ]) {
       expect(
         tester

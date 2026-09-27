@@ -43,8 +43,10 @@ class RecordingSettings {
     required this.staticStop,
     required this.durationFallback,
     required this.voiceEnabled,
-    required this.retentionOutbound,
-    required this.retentionReturn,
+    required this.retentionArchivedOutbound,
+    required this.retentionArchivedReturn,
+    required this.retentionUnarchivedOutbound,
+    required this.retentionUnarchivedReturn,
     this.codec = VideoCodec.h264,
     this.resolution = VideoResolution.p1080,
     this.orientation = RecordingOrientation.portrait,
@@ -70,14 +72,24 @@ class RecordingSettings {
   /// **静默关掉一个提示功能，比静默开着吵一点严重得多。**
   bool voiceEnabled;
 
-  /// 归档成功后，**发货**那批本地留多久（规格 §3.5.2.1）。
+  /// 归档成功后，**发货**那批本地留多久（规格 §3.5.2.1 的**已备份**那一列）。
   ///
-  /// 两份分开存，不共用 —— 需求方 2026-09-23 裁决的是「各自一个」：
-  /// 退货件争议多、体积小，实践上不会和发货用同一个天数。
-  RetentionSetting retentionOutbound;
+  /// 四个数分开存，互不影响 —— 需求方 2026-09-23 裁决的是「发货与退货各自一个」，
+  /// 2026-09-24 又加了「已备份 / 未备份」这一维。
+  RetentionSetting retentionArchivedOutbound;
 
-  /// 归档成功后，**退货**那批本地留多久。改它不影响 [retentionOutbound]。
-  RetentionSetting retentionReturn;
+  /// 归档成功后，**退货**那批本地留多久。改它不影响 [retentionArchivedOutbound]。
+  RetentionSetting retentionArchivedReturn;
+
+  /// **还没备份上去**的发货那批留多久。
+  ///
+  /// ⚠️ **这一列永不自动删任何东西**（那是唯一副本，I2）——
+  /// 它到期的动作只有「催」：列表里标红 + 顶部那条「N 个未备份」。
+  /// 起算点是**录完时刻**（未备份的还没有归档时刻可用）。
+  RetentionSetting retentionUnarchivedOutbound;
+
+  /// 还没备份上去的退货那批留多久。见 [retentionUnarchivedOutbound]。
+  RetentionSetting retentionUnarchivedReturn;
 
   /// 编码格式（规格 §3.1.7）。**录制前可选、录制中不可改**。
   VideoCodec codec;
@@ -122,8 +134,20 @@ class RecordingSettings {
         final bool value => value,
         _ => true,
       },
-      retentionOutbound: RetentionSetting.fromConfig(json['retentionOutbound']),
-      retentionReturn: RetentionSetting.fromConfig(json['retentionReturn']),
+      // 保留期四个数。⚠️ **老的 `retentionOutbound` / `retentionReturn` 也要认** ——
+      // 那时它俩说的是「已备份后的本地保留期」，语义没变，只是多了一列
+      // （规格 §3.5.2.1 的 2026-09-24 变更）。不认的话那两个数会被**静默丢掉**，
+      // 用户看到的是「我明明设过 7 天，怎么变回全部保留了」。
+      retentionArchivedOutbound: RetentionSetting.fromConfig(
+          json['retentionArchivedOutbound'] ?? json['retentionOutbound']),
+      retentionArchivedReturn: RetentionSetting.fromConfig(
+          json['retentionArchivedReturn'] ?? json['retentionReturn']),
+      // 新增的两列默认「全部保留」——**未备份那一列永不自动删**，
+      // 所以老文件升上来之后的行为与从前完全一致（不会开始删东西）。
+      retentionUnarchivedOutbound:
+          RetentionSetting.fromConfig(json['retentionUnarchivedOutbound']),
+      retentionUnarchivedReturn:
+          RetentionSetting.fromConfig(json['retentionUnarchivedReturn']),
       codec: VideoCodec.fromConfig(json['codec']),
       resolution: VideoResolution.fromConfig(json['resolution']),
       orientation: RecordingOrientation.fromConfig(json['orientation']),
@@ -156,8 +180,14 @@ class RecordingSettings {
         // 「不保留」这个真实档位的天数。合并的话，读回来会把「永远不删」
         // 变成「归档后最快 24 小时就删」，而且是**静默**的：
         // 用户看到的下拉还是「全部保留」那一项挑不着毛病。
-        'retentionOutbound': retentionOutbound.days,
-        'retentionReturn': retentionReturn.days,
+        //
+        // ⚠️ 2026-09-27 起键名带上了「已备份 / 未备份」—— 老的
+        // `retentionOutbound` / `retentionReturn` **不再写**（写了就是两份真相），
+        // 但**读的时候仍然认**（见 `load`）。
+        'retentionArchivedOutbound': retentionArchivedOutbound.days,
+        'retentionArchivedReturn': retentionArchivedReturn.days,
+        'retentionUnarchivedOutbound': retentionUnarchivedOutbound.days,
+        'retentionUnarchivedReturn': retentionUnarchivedReturn.days,
 
         // 录制规格三项：与工作模式同一个理由，**存名字不存序号** ——
         // 序号一旦被当格式，枚举重排会把老文件静默解析成另一档，
