@@ -129,6 +129,46 @@ void main() {
     }
   });
 
+  // ⚠️ 备份页右上角那个垃圾桶 = 这个（需求方 2026-09-27 照草图定的）。
+  // 它离「删录像」太近，所以这里的每一条都在钉「**录像一条都不碰**」。
+  test('★ 断开配对：地址 / 端口 / 名字 / 凭据一起回到初始，而且落盘', () async {
+    final identity = await DeviceIdentity.load(path());
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑', port: 8721);
+    await identity.setCredential('凭据');
+
+    await identity.forgetHost();
+
+    expect(identity.hostAddress, isEmpty);
+    expect(identity.hostPort, defaultHostPort);
+    expect(identity.hostName, isEmpty);
+    expect(identity.credential, isEmpty, reason: '凭据丢了就得重新走一遍入网（契约 §1.1 步骤 4）');
+
+    final reloaded = await DeviceIdentity.load(path());
+    expect(reloaded.hostAddress, isEmpty, reason: '只在内存里清掉的话，重启一次又回来了');
+    expect(reloaded.credential, isEmpty);
+  });
+
+  test('★ 断开配对**不动设备标识**，也不动机位名', () async {
+    // 断开的是「和那台电脑端的关系」，不是「我是谁」。
+    // 标识一变，电脑端就把这台手机认成一台新机位，历史录像的来源也跟着变了。
+    final identity = await DeviceIdentity.load(path());
+    await identity.rename('三号仓打包台');
+    await identity.setHost(address: '192.168.1.10', name: '打包间电脑');
+    await identity.setCredential('凭据');
+
+    final idBefore = identity.deviceId;
+    await identity.forgetHost();
+
+    expect(identity.deviceId, idBefore, reason: '标识装完定终身，任何操作都不许动它');
+    expect(identity.deviceName, '三号仓打包台', reason: '本机名是给电脑端区分机位用的，与配对无关');
+  });
+
+  test('没配对过也能断开（幂等，不抛）', () async {
+    final identity = await DeviceIdentity.load(path());
+    await identity.forgetHost();
+    expect(identity.hostAddress, isEmpty);
+  });
+
   // 这条记的是一个**会真丢东西**的分支：读不出 id 就只能重新生成，
   // 电脑端会把这台手机认成新机位。它不该发生（写走的是原子写），
   // 真发生了要能自己站起来，而不是卡在启动失败上。

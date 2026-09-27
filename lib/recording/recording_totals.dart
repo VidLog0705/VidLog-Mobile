@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../primitives.dart';
+import 'business_type.dart';
 import 'recording_index.dart';
 
 /// 一次录制 —— 需求方口径的「一条」。
@@ -116,11 +117,12 @@ int countToday(List<RecordingSession> sessions, DateTime now) =>
 bool isSameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
 
-/// `MM-DD` —— 列表副标题里那一段日期。
+/// `9月23日` —— 列表副标题里那一段日期。
 ///
-/// **显示与匹配必须走同一个函数。** 两处各写一套的话，屏幕上明明写着
-/// `09-23` 却搜不出来，用户只会以为搜索坏了（踩坑 #13 的同一条）。
-String dayStamp(DateTime at) => '${_two(at.month)}-${_two(at.day)}';
+/// ⚠️ 2026-09-27 从 `09-23` 改成这个（需求方自绘草图）。
+/// **显示与匹配必须走同一个函数**：两处各写一套的话，屏幕上明明写着
+/// `9月23日` 却搜不出来，用户只会以为搜索坏了（踩坑 #13 的同一条）。
+String dayStamp(DateTime at) => '${at.month}月${at.day}日';
 
 String _two(int value) => value.toString().padLeft(2, '0');
 
@@ -128,9 +130,13 @@ String _two(int value) => value.toString().padLeft(2, '0');
 ///
 /// 匹配的是**那一行界面上真有的字**：单号（没有单号时列表显示会话 id）+ 时间。
 ///
-/// 日期收两种写法：`09-23`（副标题上的形式）与 `2026-09-23`（用户更可能
-/// 敲的形式）。只认前一种的话，敲完整日期会**一条都搜不到** —— 而「搜不到」
-/// 和「搜索坏了」在用户眼里是同一件事。
+/// 日期收**三种**写法，一种都不能少：
+///
+/// | 写法 | 为什么得认 |
+/// |---|---|
+/// | `9月23日` | **屏幕上真有的那种**（[dayStamp]）。不认它就等于搜索坏了 |
+/// | `09-23` | 2026-09-27 之前屏幕上的写法 —— 用户的习惯还在这儿 |
+/// | `2026-09-23` | 用户最可能敲的完整日期 |
 ///
 /// ⚠️ 这是**纯本地筛选**，不查网、不查许可（文档 §04 的 L8：未激活 /
 /// 试用到期 / 校验失败都不得挡住检索与回放）。这里加任何许可判断都是越线。
@@ -139,12 +145,48 @@ bool matchesQuery(RecordingSession session, String query) {
   if (q.isEmpty) return true;
 
   final at = session.startedAt;
-  final fullDate = '${at.year}-${_two(at.month)}-${_two(at.day)}';
+  final dates = [
+    dayStamp(at),
+    '${_two(at.month)}-${_two(at.day)}',
+    '${at.year}-${_two(at.month)}-${_two(at.day)}',
+  ];
 
   return session.waybill.value.toLowerCase().contains(q) ||
       session.sessionId.toLowerCase().contains(q) ||
-      dayStamp(at).contains(q) ||
-      fullDate.contains(q);
+      dates.any((date) => date.contains(q));
+}
+
+/// 录像列表的三条筛选：**来源**（发货 / 退货）、**日期**、**搜索词**。
+///
+/// 抽成纯函数是为了**能测**：界面那一层在 widget 测试里 `_sessions` 恒空
+/// （要读 `index.jsonl`，而那是平台通道），筛选逻辑放在页面里等于没有覆盖。
+///
+/// 三条判据都与页面上别处**共用同一个函数**，不另写一套：
+/// - 日期 → [isSameDay]，与「本机今日」那个统计同一个（否则会出现
+///   「上面写 3 条、下面列 2 条」而用户无从判断谁对）；
+/// - 搜索 → [matchesQuery]；
+/// - 来源 → 调用方传进来的 [typeOf]。业务类型**不在** `RecordingSession` 里
+///   （它按分段存在标签里），所以只能由调用方查了给我们。
+///
+/// [day] 为 null = 不按日期筛（「全部日期」）；[source] 为 null = 全部来源。
+///
+/// ⚠️ 这仍然是**纯本地筛选**，不查网、不查许可（L8）。
+List<RecordingSession> filterSessions(
+  List<RecordingSession> sessions, {
+  DateTime? day,
+  BusinessType? source,
+  String query = '',
+  required BusinessType? Function(RecordingSession) typeOf,
+}) {
+  final trimmed = query.trim();
+
+  return [
+    for (final session in sessions)
+      if ((day == null || isSameDay(session.startedAt, day)) &&
+          (source == null || typeOf(session) == source) &&
+          matchesQuery(session, trimmed))
+        session,
+  ];
 }
 
 /// 盘上视频的实际占用。

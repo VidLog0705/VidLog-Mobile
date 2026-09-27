@@ -135,36 +135,39 @@ void main() {
 
     // ② 三个统计。数字本身才是这一块的实质内容。
     //
-    // 标字是需求方 2026-09-23 照界面草图定的：本机 / 本机全部 / 总占用。
-    // 第一块底下那句「今日录的」**是这里自己加的**（草图只有「本机」两个字）——
-    // 光写「本机」会被读成「本机上全部」，和旁边那块撞车。理由写在 `_totalsCard`。
-    //
-    // ⚠️ 下面那张卡的筛选器上还有一个「全部」，容易和这里的「本机全部」
-    // 看串。`ListView` 懒构建，此刻它还没被 build，所以这几条只可能命中的是
-    // 统计那一块。**筛选器上那对字在下面单独验。**
-    expect(find.text('本机'), findsOneWidget);
+    // ⚠️ 2026-09-27 照草图重排：三个数变成**三张独立小卡**，单位与数字分开了
+    // （`0` + `B`），标字里那个「条」没了（旁边就是数字，不必再说一遍），
+    // 第一块的标字从「本机」改成「本机今日」—— 原来的「本机」会和旁边
+    // 「本机全部」撞车（那一处歧义记在 §13.4，草图这一版把它解掉了）。
+    expect(find.text('本机今日'), findsOneWidget);
     expect(find.text('本机全部'), findsOneWidget);
     expect(find.text('总占用'), findsOneWidget);
-    expect(find.text('0 条'), findsNWidgets(2), reason: '空机上本机和本机全部都是 0 条');
-    expect(find.text('0 B'), findsOneWidget, reason: '空机上总占用是 0 B');
+    expect(find.text('0'), findsNWidgets(3), reason: '空机上三个数都是 0');
+    expect(find.text('B'), findsOneWidget, reason: '总占用那一格是 0 B');
 
     // ③ 电脑备份。没配对就必须**明说传不上去**，而不是显示一个看起来正常的
     // 「主机已连接 / 0 条待上传」。
     expect(find.text('电脑备份'), findsOneWidget);
-    expect(find.text('配对电脑'), findsOneWidget);
     expect(find.textContaining('录像传不上去'), findsOneWidget);
 
     // 没配对就不该有任何连通状态 —— 显示「离线」会让人以为「配过对、只是没连上」。
     //
-    // ⚠️ 但**要显示「未连接」**：这是需求方 2026-09-23 照草图定的，
-    // 而且它说的正是实话（没配过对），不会和「离线」混淆。
+    // ⚠️ 顶上那个胶囊说的是**电脑端在不在**，卡上那个（`_pairedPill`）说的是
+    // **它认不认这台手机**。两件事，两个字，都要在，而且不许混。
+    // 没配过对时：胶囊是「未连接」（实话），卡片上是「未配对」。
     expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('未配对'), findsOneWidget);
     expect(find.text('离线'), findsNothing);
-    expect(find.text('连接'), findsNothing);
+    expect(find.text('电脑端在线'), findsNothing);
+    expect(find.text('电脑端离线'), findsNothing);
     expect(find.text('探测中…'), findsNothing);
 
+    // 没填过地址就不显示那个「断开配对」的垃圾桶 —— 没有关系可断，
+    // 而一个点了没反应的图标和一句没头没尾的禁用一样糟（踩坑 #13）。
+    expect(find.byKey(const Key('host-forget')), findsNothing);
+
     // 没配对就点不动【立即备份】。⚠️ 一个按得下去却什么都不发生的按钮，
-    // 比一个禁用按钮糟得多（踩坑 #13）—— 而**为什么点不动**就写在它下面那行。
+    // 比一个禁用按钮糟得多（踩坑 #13）—— 而**为什么点不动**就写在它上面那行。
     expect(
       tester
           .widget<FilledButton>(find.widgetWithText(FilledButton, '立即备份'))
@@ -175,18 +178,22 @@ void main() {
     // 【扫码连接】接上了（2026-09-26）。原来这里钉的是「**禁用且不会自己好**」
     // ——那时电脑端只解码、不出码，按钮是写死 `onPressed: null` 的。
     //
-    // ⚠️ 顺着那条注释改的，不是删掉图个绿：现在它与**旁边那几个按钮同一条判据**
+    // ⚠️ 顺着那条注释改的，不是删掉图个绿：现在它与**旁边那个按钮同一条判据**
     // （设备信息读出来才可点）。所以这里断言的是「两者一致」，而不是
     // 「它是禁用的」—— 后者在这台测试机上会碰巧成立（启动还没走完），
     // 于是断言绿在一个巧合上。
+    //
+    // ⚠️ 2026-09-27：原来是拿【重新搜索】比的，而那个按钮现在**只在填过地址
+    // 之后才出现**（没地址可搜，一个点了不动的按钮正是踩坑 #13）。
+    // 所以改拿同一排的【填电脑端地址】比 —— 它才是此刻真正并肩的那一个。
     final scanButton =
         tester.widget<TextButton>(find.widgetWithText(TextButton, '扫码连接'));
-    final rescanButton =
-        tester.widget<TextButton>(find.widgetWithText(TextButton, '重新搜索'));
+    final addressButton =
+        tester.widget<TextButton>(find.widgetWithText(TextButton, '填电脑端地址'));
 
     expect(
       scanButton.onPressed == null,
-      rescanButton.onPressed == null,
+      addressButton.onPressed == null,
       reason: '【扫码连接】与相邻按钮同一条判据：设备信息读出来才可点',
     );
 
@@ -254,12 +261,27 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
 
-    // 默认筛「全部」（需求方 2026-09-22）。
-    final segmented = tester.widget<SegmentedButton<bool>>(
-      find.byType(SegmentedButton<bool>),
+    // 两个筛选胶囊（需求方 2026-09-27 照草图定的），换掉了原来那个
+    // 「全部 / 今日」分段按钮：一个管**来源**、一个管**日期**，
+    // 各自都能退回「全部」。
+    //
+    // ⚠️ 那个分段按钮**不许加回来** —— 两套筛选同时在的话，用户没法知道
+    // 「全部」到底是不限时间还是不限来源。
+    expect(find.byKey(const Key('records-source')), findsOneWidget);
+    expect(find.byKey(const Key('records-day')), findsOneWidget);
+    expect(find.text('全部来源 ▾'), findsOneWidget);
+    expect(find.text('全部日期 ▾'), findsOneWidget);
+    expect(find.byType(SegmentedButton<bool>), findsNothing);
+
+    // 【管理】在这一行上（批量锁定 / 批量删除的入口，需求方 2026-09-27）。
+    // 一条录像都没有 ⇒ 点不动（进一个空的管理模式什么也做不了）。
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, '管理'))
+          .onPressed,
+      isNull,
+      reason: '空机上空的管理模式没意义，按钮该是禁用的',
     );
-    expect(segmented.selected, {false}, reason: '默认应该是「全部」');
-    expect(segmented.segments.map((s) => (s.label as Text).data), ['全部', '今日']);
 
     // 每页 5/10/15 是需求方指定的三档，别被后来人改成别的数。
     final dropdown = tester.widget<DropdownButton<int>>(
@@ -276,7 +298,8 @@ void main() {
     // `docs/真机验收清单.md` §1.12。
   });
 
-  testWidgets('★ 备份页在窄屏上不溢出（两个胶囊 + 五个按钮）', (WidgetTester tester) async {
+  testWidgets('★ 备份页在窄屏上不溢出（三张统计卡 + 筛选胶囊 + 那一排按钮）',
+      (WidgetTester tester) async {
     // 默认测试画布是 800×600（横着的），比任何手机都宽 ——
     // 而**布局溢出只在窄屏上才出得来**，宽画布上它永远是绿的。
     // 390 逻辑像素 ≈ 常见手机的宽度。

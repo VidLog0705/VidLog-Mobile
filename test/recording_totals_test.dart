@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/business_type.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/recording/recording_totals.dart';
 
@@ -252,9 +253,14 @@ void main() {
 
   /// 视频记录那一页的搜索框（需求方 2026-09-23 照界面草图加）。
   ///
-  /// 这里守的是**匹配的字就是屏幕上真有的字**：列表副标题上写着 `09-23`，
-  /// 那么敲 `09-23` 就必须搜得到。两处各写一套格式的话，
+  /// 这里守的是**匹配的字就是屏幕上真有的字**：列表副标题上写着 `9月23日`，
+  /// 那么敲 `9月23日` 就必须搜得到。两处各写一套格式的话，
   /// 屏幕上明明有却搜不出来 —— 用户只会以为搜索坏了（踩坑 #13）。
+  ///
+  /// ⚠️ 2026-09-27：屏幕上的日期从 `09-23` 改成了 `9月23日`（需求方自绘草图）。
+  /// **`09-23` 和 `2026-09-23` 两种敲法仍然要搜得到** —— 那是用户手上
+  /// 面单/台账里最可能出现的两种写法，屏幕改成中文之后把它们一起丢掉，
+  /// 换来的是一批「明明有这条却搜不出来」。三种形式都留着（见 `matchesQuery`）。
   group('按单号或日期搜（纯本地，不走许可）', () {
     RecordingSession session({
       String waybill = 'SF1000000001',
@@ -274,8 +280,14 @@ void main() {
     final target = session(startedAt: DateTime(2026, 9, 23, 14, 5));
 
     test('★ 副标题上那一段日期，敲进去搜得到', () {
-      // 列表上显示的就是 `09-23`（见 `dayStamp`）。它必须能搜。
-      expect(dayStamp(target.startedAt), '09-23');
+      // 列表上显示的就是 `9月23日`（见 `dayStamp`）。它必须能搜。
+      expect(dayStamp(target.startedAt), '9月23日');
+      expect(matchesQuery(target, '9月23日'), isTrue);
+    });
+
+    test('⚠️ 屏幕上已经被换成中文日期了，`09-23` 这种敲法照样得能搜', () {
+      // 面单台账上是 `09-23`。屏幕上不显示它，不等于可以搜不到 ——
+      // 搜不到和搜索坏了在用户眼里是同一件事。
       expect(matchesQuery(target, '09-23'), isTrue);
     });
 
@@ -313,6 +325,104 @@ void main() {
       // （构造不出「单号为空」的会话：`WaybillNumber.parse` 空串直接抛，
       //  所以这里用一条有单号的会话来钉那一支。）
       expect(matchesQuery(target, 'sess-1'), isTrue);
+    });
+  });
+
+  /// 备份页「录像记录」那三个筛选（需求方 2026-09-27 照草图定）。
+  ///
+  /// 判定抽成纯函数就是为了能在这里测：界面那一层在 widget 测试里碰不到
+  /// （`_sessions` 恒空，构造不出「多条里有几条该留下」）。
+  ///
+  /// ⚠️ 这一组里最要紧的是**「判不出来」那一条** —— 标签认不出时
+  /// `_businessTypeOf` 返回 null，而 null **不等于任何一类**：
+  /// 按「发货」筛的时候把它带上，用户就会在发货那一栏里看到一条
+  /// 他不知道是什么的东西，然后照它做决定。
+  group('筛选：来源 / 日期 / 搜索词', () {
+    RecordingSession session({
+      required String id,
+      required DateTime at,
+      String waybill = 'SF1000000001',
+    }) =>
+        RecordingSession(
+          sessionId: id,
+          waybill: WaybillNumber.parse(waybill),
+          startedAt: at,
+          duration: const Duration(minutes: 5),
+          bytes: 0,
+          segmentCount: 1,
+          evidenceIds: [id],
+        );
+
+    final outboundToday = session(id: 'a', at: DateTime(2026, 9, 27, 9));
+    final returningToday = session(id: 'b', at: DateTime(2026, 9, 27, 15));
+    final outboundYesterday = session(id: 'c', at: DateTime(2026, 9, 26, 9));
+
+    // 「判不出来」——标签认不出就是不写（见 `BusinessType.tryParse`）。
+    final unknown = session(id: 'd', at: DateTime(2026, 9, 27, 20));
+
+    final all = [outboundToday, returningToday, outboundYesterday, unknown];
+
+    /// 与 `recorder_page._businessTypeOf` 同一个口径。
+    BusinessType? typeOf(RecordingSession s) => switch (s.sessionId) {
+          'a' || 'c' => BusinessType.outbound,
+          'b' => BusinessType.returning,
+          _ => null,
+        };
+
+    List<String> idsOf({
+      DateTime? day,
+      BusinessType? source,
+      String query = '',
+    }) =>
+        [
+          for (final s in filterSessions(all,
+              day: day, source: source, query: query, typeOf: typeOf))
+            s.sessionId,
+        ];
+
+    test('什么都不筛 = 全都在（顺序不变）', () {
+      expect(idsOf(), ['a', 'b', 'c', 'd']);
+    });
+
+    test('按来源筛：只要那一类', () {
+      expect(idsOf(source: BusinessType.outbound), ['a', 'c']);
+      expect(idsOf(source: BusinessType.returning), ['b']);
+    });
+
+    test('⚠️ 判不出来那一类**两边都不进** —— 不许猜', () {
+      // 它既不是发货也不是退货。带上它 = 用户在一个他不认识的分类下面
+      // 看到一条来历不明的录像，而他会当成那一类去处理。
+      expect(idsOf(source: BusinessType.outbound), isNot(contains('d')));
+      expect(idsOf(source: BusinessType.returning), isNot(contains('d')));
+    });
+
+    test('按日期筛：同一天才算（时分秒不参与）', () {
+      expect(idsOf(day: DateTime(2026, 9, 27, 23, 59)), ['a', 'b', 'd']);
+      expect(idsOf(day: DateTime(2026, 9, 26, 0, 0)), ['c']);
+    });
+
+    test('三条一起筛：是**且**不是或', () {
+      final ids = idsOf(
+        day: DateTime(2026, 9, 27),
+        source: BusinessType.outbound,
+        query: 'SF100',
+      );
+      expect(ids, ['a']);
+    });
+
+    test('⚠️ 筛掉了就是筛掉了：不加回「不管什么条件都留着的那几条」', () {
+      // 例如「刚录完还没收尾的那条一定要显示」这种想法 —— 没有这种例外。
+      // 有了的话，用户在「今天」这一档下面会看到一个昨天的东西。
+      expect(idsOf(day: DateTime(2026, 9, 26)), ['c']);
+    });
+
+    test('空列表不炸，空搜索词不过滤', () {
+      expect(
+        filterSessions(const [],
+            query: '', typeOf: typeOf),
+        isEmpty,
+      );
+      expect(idsOf(query: '   '), ['a', 'b', 'c', 'd']);
     });
   });
 }

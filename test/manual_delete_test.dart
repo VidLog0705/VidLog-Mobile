@@ -277,4 +277,195 @@ void main() {
       expect(records.map((r) => r.evidenceId), ['e1', 'e2']);
     });
   });
+
+  /// 批量删除（需求方 2026-09-27 照备份页草图定的【管理】那半）。
+  ///
+  /// ⚠️ 这一层最要紧的一条规矩：**只要有一条不能删，整批一条都不删**。
+  /// 它跟「查不了 ⇒ 不许删」是同一个方向 —— 朝少删的那头落。
+  group('★ 批量删除：一条不行就一条都不删', () {
+    RecordingSession one(String id) => session([id], sessionId: id);
+
+    BatchDeletePlan planFor(
+      List<RecordingSession> sessions,
+      Map<String, ArchiveRecord> records,
+      Map<String, Map<String, VerifyOutcome>> verify,
+    ) =>
+        planBatchDelete(
+          sessions: sessions,
+          records: records,
+          verifyBySession: verify,
+        );
+
+    test('三条都备份了、都回查得到 → 能删', () {
+      final plan = planFor(
+        [one('a'), one('b'), one('c')],
+        {for (final id in ['a', 'b', 'c']) id: archived(id)},
+        {
+          for (final id in ['a', 'b', 'c']) id: {id: VerifyOutcome.ok},
+        },
+      );
+
+      expect(plan.canDelete, isTrue);
+      expect(plan.count, 3);
+      expect(plan.deletable.length, 3);
+      expect(plan.blocked, isEmpty);
+      expect(plan.unarchivedCount, 0);
+    });
+
+    test('★ 里面有一条回查不到 → **整批一条都不删**', () {
+      final plan = planFor(
+        [one('a'), one('b')],
+        {'a': archived('a'), 'b': archived('b')},
+        {
+          'a': {'a': VerifyOutcome.ok},
+          'b': {'b': VerifyOutcome.missing},
+        },
+      );
+
+      expect(plan.canDelete, isFalse);
+      expect(plan.blocked.map((i) => i.session.sessionId), ['b']);
+      // 可删的那条**照样算「可删」**，但 `canDelete` 不给过 ——
+      // 卡的是整批，不是那一条。
+      expect(plan.deletable.map((i) => i.session.sessionId), ['a']);
+    });
+
+    test('★ 里面有一条查不了（断网）→ 也整批不删', () {
+      final plan = planFor(
+        [one('a'), one('b')],
+        {'a': archived('a'), 'b': archived('b')},
+        {
+          'a': {'a': VerifyOutcome.ok},
+          'b': {
+            'b': const VerifyOutcome(
+              exists: false,
+              couldNotVerify: true,
+              reason: '电脑端没开',
+            ),
+          },
+        },
+      );
+
+      expect(plan.canDelete, isFalse);
+      expect(plan.blocked.single.plan.decision, DeleteDecision.refusedCouldNotVerify);
+    });
+
+    test('★ 里面有一条**没问过**（没回查）→ 当「查不了」，整批不删', () {
+      // 少问一条就当「在」的话，删掉的可能是最后一份（I8）。
+      final plan = planFor(
+        [one('a'), one('b')],
+        {'a': archived('a'), 'b': archived('b')},
+        {
+          'a': {'a': VerifyOutcome.ok},
+          // 'b' 那一格压根没给
+        },
+      );
+
+      expect(plan.canDelete, isFalse);
+      expect(plan.blocked.single.plan.decision, DeleteDecision.refusedCouldNotVerify);
+    });
+
+    test('未备份的那些**不用回查**，可以直接删（但弹窗要说出「唯一一份」）', () {
+      final plan = planFor(
+        [one('a'), one('b')],
+        {'a': archived('a'), 'b': pending('b')},
+        {
+          'a': {'a': VerifyOutcome.ok},
+        },
+      );
+
+      expect(plan.canDelete, isTrue);
+      expect(plan.unarchivedCount, 1);
+      expect(batchDeletePreviewText(plan), contains('唯一一份'));
+      expect(batchDeletePreviewText(plan), contains('1 条'));
+    });
+
+    test('空选不是「删 0 条」，是不给删', () {
+      expect(planFor(const [], const {}, const {}).canDelete, isFalse);
+    });
+
+    test('一条里面**有一段**没备份 → 那一条按未备份算', () {
+      final plan = planFor(
+        [session(['e1', 'e2'], sessionId: 'a')],
+        {'e1': archived('e1'), 'e2': pending('e2')},
+        const {},
+      );
+
+      expect(plan.unarchivedCount, 1);
+      expect(plan.canDelete, isTrue);
+    });
+
+    test('占多少是按**每条的字节数之和**算的，编不出一个数来', () {
+      final plan = planFor([one('a'), one('b')], const {}, const {});
+      expect(plan.bytes, 2048, reason: '构造器里每条 1024');
+    });
+  });
+
+  group('批量删除那个弹窗的措辞', () {
+    test('★ 不能删时，**逐条**说清是哪一条、为什么', () {
+      // ⚠️ 一句笼统的「有几条不能删」等于让用户自己去猜是哪几条 ——
+      // 而他猜不出来，只能一条条试（踩坑 #13）。
+      final plan = planBatchDelete(
+        sessions: [
+          RecordingSession(
+            sessionId: 'a',
+            waybill: WaybillNumber.parse('SF1000000001'),
+            startedAt: now,
+            duration: const Duration(minutes: 5),
+            bytes: 0,
+            segmentCount: 1,
+            evidenceIds: const ['a'],
+          ),
+          RecordingSession(
+            sessionId: 'b',
+            waybill: WaybillNumber.parse('SF2000000002'),
+            startedAt: now,
+            duration: const Duration(minutes: 5),
+            bytes: 0,
+            segmentCount: 1,
+            evidenceIds: const ['b'],
+          ),
+        ],
+        records: {'a': archived('a'), 'b': archived('b')},
+        verifyBySession: {
+          'a': {'a': VerifyOutcome.ok},
+          'b': {'b': VerifyOutcome.missing},
+        },
+      );
+
+      final text = batchDeletePreviewText(plan);
+
+      // 单号是**这一层**取的（用户认单号，不认会话 id）。
+      expect(text, contains('SF2000000002'));
+      expect(text, contains('归档层上找不到这一份'), reason: '不许把它笼统说成「不能删」');
+      // 而且必须说清「一条都不会删」—— 否则用户以为删了一部分。
+      expect(text, contains('一条都不会删'));
+    });
+
+    test('能删时，正文说清**删多少条、多大**，并点明「电脑端那份不动」', () {
+      final plan = planBatchDelete(
+        sessions: [
+          RecordingSession(
+            sessionId: 'a',
+            waybill: WaybillNumber.parse('SF1000000001'),
+            startedAt: now,
+            duration: const Duration(minutes: 5),
+            bytes: 3 * 1024 * 1024,
+            segmentCount: 1,
+            evidenceIds: const ['a'],
+          ),
+        ],
+        records: {'a': archived('a')},
+        verifyBySession: {
+          'a': {'a': VerifyOutcome.ok},
+        },
+      );
+
+      final text = batchDeletePreviewText(plan);
+
+      expect(text, contains('这 1 条'));
+      expect(text, contains('3 MB'));
+      expect(text, contains('电脑端那份不动'), reason: '用户最怕的是「两边都没了」');
+      expect(text, contains('删除后无法恢复'));
+    });
+  });
 }

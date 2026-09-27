@@ -39,7 +39,9 @@ import '../upload/enrollment.dart';
 import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
 import 'camera_preview.dart';
+import 'record_detail_page.dart';
 import 'scan_connect_page.dart';
+import 'scan_waybill_page.dart';
 import 'zoom_dial.dart';
 
 /// 采集页底部抽屉里正在展开哪一块。`null` = 三块都收着。
@@ -326,10 +328,31 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 盘上视频的实际占用（含未收尾的片段）。
   int _videoBytes = 0;
 
-  /// 视频记录列表：搜索词 / 筛选 / 每页条数 / 当前页（0 起）。
-  bool _recordsTodayOnly = false;
+  /// 录像记录列表：来源筛 / 日期筛 / 搜索词 / 每页条数 / 当前页（0 起）。
+  ///
+  /// ⚠️ 2026-09-27 照草图改：「全部 / 今日」那个分段按钮换成了两个胶囊
+  /// （[`_sourceChip`]、[`_dayChip`]，每个各管一维）。日期那一维不再是布尔 ——
+  /// 胶囊点开能选**具体某一天**，所以它必须是一个可空的日期：
+  /// 为 null = 不按日期筛（「全部日期」）。
+  ///
+  /// ⚠️ **三个筛选（来源 / 日期 / 搜索词）改动时一律走 [`_applyFilter`]** ——
+  /// 它顺手回第一页并清空选中集，两件都不能漏（见那个函数的文档）。
+  ///
+  /// 三条判据合在 `filterSessions` 里（纯函数，有测试）——
+  /// 写在 `build` 里的话这一页的逻辑就没有覆盖了（widget 测试里 `_sessions` 恒空）。
+  BusinessType? _recordsSource;
+  DateTime? _recordsDay;
   int _recordsPageSize = 5;
   int _recordsPage = 0;
+
+  /// 【管理】模式（需求方 2026-09-27 照草图定的）：批量选、批量锁定、批量删除。
+  bool _managing = false;
+
+  /// 管理模式下选中的那些（`sessionId`）。
+  ///
+  /// 用 id 而不是下标：排序、筛选一变下标就指到别人身上了，而这一批操作里
+  /// 有**删除** —— 选中集错了会删掉用户没打算删的那条。
+  final Set<String> _selected = {};
 
   /// 视频记录的搜索词（单号或日期）。
   ///
@@ -1769,28 +1792,30 @@ class _RecorderPageState extends State<RecorderPage> {
         _ => '设置',
       };
 
-  /// 备份页：本机身份 → 三个统计 → 电脑备份 → 视频记录。
+  /// 备份页：本机身份 → 三个统计 → 电脑备份 → 录像记录。
   ///
-  /// ## 为什么这一页先做，而且今天只能做成这样
+  /// ## 为什么这一页先做
   ///
   /// 规格 §3.4.3 标着 ★，原文写明它来自一次**真实故障**：原系统上传失败后
   /// 进入终态、永不重试，用户完全不知道数据没传上去。那类故障的第一道防线
   /// 不是重试次数，是**看得见**。
   ///
-  /// 而手机端今天**一行上传代码都没有** —— 没有队列、没有网络层、没有配网。
-  /// 所以「东西没备份，而且用户不知道」是眼下唯一确定会发生的事。
-  /// 这一页先把它变成看得见的。
-  ///
   /// ⚠️ **只显示盘上真有的东西**：已收尾的录像、盘上的实际占用、探测得到的
   /// 连通性。不放剩余空间、不放上传进度条 —— 那些今天一个都测不出来，
   /// 而假数字在真机上会被当成真的（这个项目吃过一次亏）。
+  ///
+  /// ## 2026-09-27：照需求方第三张自绘草图重做
+  ///
+  /// 外观几乎全变（卡片化 → 标题 + 三张独立卡 + 通栏按钮），
+  /// 功能**只加不减**。逐条改动与两处「图上画了、没做」记在
+  /// `docs/实现决策.md` §46。
   Widget _backupPage() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        _identityCard(),
-        const SizedBox(height: 12),
-        _totalsCard(),
+        _identityHeader(),
+        const SizedBox(height: 16),
+        _statsRow(),
         const SizedBox(height: 12),
         _hostCard(),
         const SizedBox(height: 12),
@@ -1801,151 +1826,291 @@ class _RecorderPageState extends State<RecorderPage> {
 
   // ── ① 本机身份 ───────────────────────────────
 
-  /// 本机名 + 局域网 IP —— 两个**带标签的胶囊**（需求方 2026-09-23 照界面草图定）。
+  /// 顶部身份区（2026-09-27 照草图从「一张卡 + 两个胶囊」改成标题区）。
   ///
-  /// 本机名是给**电脑端**区分机位用的（需求方 2026-09-22），所以它得可改，
-  /// 而且改完必须落盘 —— 只在内存里留着的名字，断联重连一次就没了，
-  /// 电脑端那台机位就变成一个没人认得的新设备。
+  /// 草图上这里是：大字号机位名 + 一个绿点 + 局域网 IP，下面一行产品名，
+  /// 右端一个连通性胶囊。**不再是卡片**。
   ///
-  /// 标签（「机位名」「手机局域网IP」）是这次新加的：光看值，
-  /// 这两串东西一个是名字、一个是地址，得猜。
-  Widget _identityCard() {
+  /// ⚠️ 机位名必须**可改**（需求方 2026-09-22：电脑端靠它区分机位，而且要能改），
+  /// 而草图上没有铅笔。所以铅笔留在名字右边 —— 只是做小了。
+  /// 一个能改却看不出能改的名字，用户不会发现，只会以为改不了（踩坑 #13）。
+  ///
+  /// ⚠️ 那个绿点说的是**局域网通不通**（有这个地址才点得亮），不是「有网」——
+  /// 手机端今天**测不出**「本机能不能上公网」，画成一个笼统的「在线」
+  /// 就是一个测不出来的状态（§13.1 那条自律）。
+  ///
+  /// ⚠️ 名字是 `Flexible` + 省略号：它是**用户自己敲的**，敲一个长名字
+  /// 就足以把这一行撑爆，而溢出的后果是黄黑条，不是「难看一点」。
+  Widget _identityHeader() {
     final identity = _identity;
+    final ip = _lanIp;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-        child: Row(
-          children: [
-            const Icon(Icons.smartphone),
-            const SizedBox(width: 8),
-            // `Wrap` 而不是 `Row`：两个胶囊在窄屏上排不下一行，
-            // 而**挤成省略号比换行糟得多** —— 这两个值一个字都不能缺。
-            Expanded(
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  _identityChip('机位名', identity?.deviceName ?? defaultDeviceName),
-                  _identityChip('手机局域网IP', _lanIp ?? '未连局域网'),
+                  Flexible(
+                    child: Text(
+                      identity?.deviceName ?? defaultDeviceName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '改本机名',
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.edit_outlined, size: 15, color: Colors.black38),
+                    onPressed: identity == null ? null : _editDeviceName,
+                  ),
                 ],
               ),
-            ),
-            IconButton(
-              tooltip: '改本机名',
-              icon: const Icon(Icons.edit_outlined),
-              onPressed: identity == null ? null : _editDeviceName,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 身份行上的一个胶囊：小字标签 + 值。
-  ///
-  /// 标签与值分成两个 `Text`（不拼成一串）—— 拼起来的话，
-  /// 「未命名机位」这个值在界面上就不作为一个整体存在了，测试和人都找不着它。
-  ///
-  /// ⚠️ **值是 `Flexible` + 省略号**：本机名是**用户自己敲的**，
-  /// 敲一个长名字（「三号仓西门第七个机位」）就足以把这一行撑爆 ——
-  /// 而溢出的后果是黄黑条或者整行被挤出屏幕，不是「难看一点」。
-  /// 省略号是看得见的截断，不是悄悄改掉用户的名字（名字本身照原样存着，点铅笔能看全）。
-  Widget _identityChip(String label, String value) => Chip(
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        label: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '$label ',
-              style: const TextStyle(fontSize: 11, color: Colors.black54),
-            ),
-            Flexible(
-              child: Text(
-                value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12),
+              Row(
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: ip == null ? Colors.grey : Colors.green,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    ip ?? '未连局域网',
+                    style: const TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 2),
+              const Text(
+                '电商发货 / 退货视频取证系统',
+                style: TextStyle(fontSize: 12, color: Colors.black45),
+              ),
+            ],
+          ),
         ),
-      );
-
-  // ── ② 本机 / 本机全部 / 总占用 ─────────────────
-
-  /// 三个数字并排。
-  ///
-  /// 三个口径都是**需求方 2026-09-22 定的**，2026-09-23 照草图改了前两块的标字：
-  /// - **本机** = 起录时间落在今天 0:00~23:59 的条数
-  /// - **本机全部** = 录到的总条数，**一个单号从开始到结束算一条**（不是索引行数）
-  /// - **总占用** = 盘上视频的**实际**大小；传到电脑后删掉手机上的，就按删后的算
-  ///
-  /// ⚠️ 第一块底下写着「今日录的」：草图给它的标字是「本机」，
-  /// 而这个数字只数**今天**那一天的 —— 不加这一句，它会读成「本机上全部」，
-  /// 与旁边那块重复。**这一处是照着草图落的最容易歧义的一个**，
-  /// 需求方要是不想要这三个字，删掉即可（数字本身不用动）。
-  ///
-  /// ⚠️ 总占用可能**大于**上面那些条的大小之和 —— 它含还没走完收尾的孤儿片段。
-  /// 它答的是「这些视频在手机上占了多少地方」，不是「已入库的占了多少」。
-  /// 所以那块底下写着「手机上现存」。
-  Widget _totalsCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: Row(
-          children: [
-            _statCell('本机', '$_todayCount 条', note: '今日录的'),
-            _thinDivider(),
-            _statCell('本机全部', '${_sessions.length} 条'),
-            _thinDivider(),
-            _statCell('总占用', _sizeLabel(_videoBytes), note: '手机上现存'),
-          ],
-        ),
-      ),
+        _hostPill(),
+      ],
     );
   }
 
-  Widget _statCell(String label, String value, {String? note}) {
-    return Expanded(
-      child: Column(
+  /// 顶部右上角那个胶囊：**电脑端在不在**。
+  ///
+  /// ⚠️ 草图上写的是「设备在线」，而**手机端测不出「本机能不能上公网」** ——
+  /// 照那个字面落下来就是一个测不出来的状态（§13.1）。
+  /// 所以这里如实写「电脑端在线 / 电脑端离线 / 未连接」，
+  /// 判据与下面那张卡**同一个**（`_hostOnline` + 地址 + 凭据）。
+  ///
+  /// ⚠️ 草图上它右边有个 `›`，**没画** —— 它要指的是下面那张卡，
+  /// 而那张卡就在同一屏上；画一个点不动的箭头正是踩坑 #13。
+  /// （这一页上保留下来的每一个 `›` 都真的去得了地方：行进详情页、
+  /// 【管理】进批量模式。）
+  Widget _hostPill() {
+    final identity = _identity;
+    final paired = (identity?.credential ?? '').isNotEmpty;
+    final hasHost = (identity?.hostAddress ?? '').isNotEmpty;
+    final online = hasHost && paired && _hostOnline;
+
+    final text = !hasHost || !paired
+        ? '未连接'
+        : (_probingHost
+            ? '探测中…'
+            : (online ? '电脑端在线' : '电脑端离线'));
+
+    final color = (!hasHost || !paired || _probingHost)
+        ? Colors.grey
+        : (online ? Colors.green : Colors.grey);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            value,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
-          ),
-          const SizedBox(height: 4),
-          Text(label, style: const TextStyle(fontSize: 12)),
-          if (note != null) ...[
-            const SizedBox(height: 2),
-            Text(note, style: const TextStyle(fontSize: 11, color: Colors.black45)),
-          ],
+          Icon(Icons.circle, size: 7, color: color),
+          const SizedBox(width: 5),
+          Text(text, style: TextStyle(fontSize: 12, color: color)),
         ],
       ),
     );
   }
 
-  /// 三块之间的细分隔线。
+  // ── ② 本机今日 / 本机全部 / 总占用 ──────────────
+
+  /// 三个数字，**三张独立的小卡**（2026-09-27 照草图；原先是三格 + 细分隔线）。
   ///
-  /// **不用 `VerticalDivider`** —— 它要父级有确定高度（得再套一层
-  /// `IntrinsicHeight`），为一个 1 像素的线多一层布局不划算。
-  Widget _thinDivider() => Container(
-        width: 1,
-        height: 40,
-        color: Theme.of(context).dividerColor,
-      );
+  /// 三个口径都是**需求方 2026-09-22 定的**，标字是 2026-09-27 照草图定的：
+  /// - **本机今日** = 起录时间落在今天 0:00~23:59 的条数
+  /// - **本机全部** = 录到的总条数，**一个单号从开始到结束算一条**（不是索引行数）
+  /// - **总占用** = 盘上视频的**实际**大小；传到电脑后删掉手机上的，就按删后的算
+  ///
+  /// ⚠️ 「本机今日」这四个字比上一版的「本机」+ 注「今日录的」好：
+  /// 那个「本机」会和旁边那块「本机全部」撞车（§13.4 记着这一处歧义）。
+  ///
+  /// ⚠️ 总占用可能**大于**上面那些条的大小之和 —— 它含还没走完收尾的孤儿片段。
+  /// 它答的是「这些视频在手机上占了多少地方」，不是「已入库的占了多少」。
+  /// 这一版把上一版那句注「手机上现存」去掉了（草图没有），**那句注要留着**：
+  /// 去掉之后这个数会被读成「已经入库的占了多少」，而它其实含孤儿片段。
+  /// 所以它挂在下面那行小字上（见 [_statCard] 的 `note`）。
+  Widget _statsRow() {
+    final used = _sizeParts(_videoBytes);
+
+    // ⚠️ `IntrinsicHeight` 是为了让三张卡**一样高**（右边那张多一行小注，
+    // 不等高的话三张卡顶边齐、底边参差，看着像坏了）。
+    //
+    // ⚠️ **不能只在 `Row` 上写 `CrossAxisAlignment.stretch`** ——
+    // 这一页是个 `ListView`，纵向没有约束，stretch 会往下传一个
+    // `h=Infinity`，直接 `BoxConstraints forces an infinite height` 崩掉。
+    // `IntrinsicHeight` 先量出最高的那一张，再把那个高度给三张。
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _statCard(
+              icon: Icons.videocam_outlined,
+              tint: Colors.blue,
+              value: '$_todayCount',
+              label: '本机今日',
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _statCard(
+              icon: Icons.layers_outlined,
+              tint: Colors.blue,
+              value: '${_sessions.length}',
+              label: '本机全部',
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _statCard(
+              icon: Icons.storage_outlined,
+              tint: Colors.purple,
+              value: used.value,
+              unit: used.unit,
+              label: '总占用',
+              note: '含没收尾的片段',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 一张统计小卡：彩色图标 + 大数字 + 标字（+ 可选的一行小注）。
+  ///
+  /// ⚠️ 数字套 `FittedBox`：总占用带单位（`6.9 GB`），而窄屏上三张卡
+  /// 每张只有一百来像素 —— 不缩的话要么溢出、要么被省略号截成 `6.…`
+  /// （数字被截断比难看糟得多，用户会当成真的）。
+  Widget _statCard({
+    required IconData icon,
+    required Color tint,
+    required String value,
+    String? unit,
+    required String label,
+    String? note,
+  }) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: tint.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 19, color: tint),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      value,
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+                if (unit != null) ...[
+                  const SizedBox(width: 2),
+                  Text(
+                    unit,
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            if (note != null)
+              Text(
+                note,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: Colors.black38),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
   // ── ③ 电脑备份 ───────────────────────────────
 
-  /// 配对电脑 + 连通性。
+  /// 配对电脑 + 连通性 + 那个最要紧的数字。
   ///
   /// ⚠️ 「连接 / 离线」探的是**电脑端那台机器**（M3 已经在 8720 端口上开着的
   /// HTTP 服务），既不代表本机有网，也不代表「备份通道建好了」——
   /// 上传代码（M5）2026-09-23 已经写完，所以这一页现在**直接说备份状态**
   /// （`N 个未备份` + 每条的小标），而不是靠一句免责声明兜着。
   /// 那个绿色小字仍然不能自己单独解释自己：**它旁边必须有那个数字。**
+  ///
+  /// ## 2026-09-27 照需求方草图重排
+  ///
+  /// 三处变化，没有一处是纯外观：
+  ///
+  /// 1. **「N 个未备份」提到最上面、加大加粗** —— 它是整页最要紧的一句话
+  ///    （需求方 2026-09-23 原话：「58个未备份，连接后自动备份」）。
+  ///    原来它夹在标题和四行键值表中间，是这一页上最小的一行字。
+  /// 2. **右上角那个垃圾桶 = 断开配对**（需求方 2026-09-27 定的）。
+  ///    ⚠️ 它**一条录像都不碰**，这句话写在弹窗的第一段和确认按钮的字上。
+  /// 3. 四行键值表换成一行「名字 · 地址」。表格里那三个标签
+  ///    （电脑端名字 / 局域网 IP / 配对）里，用户故障时真正要找的是
+  ///    「它认得我吗」和「我该点哪个按钮」—— 那两样现在都在下面。
+  ///
+  /// ⚠️ 那个橙色感叹号**去掉了**：它原来只说「这儿有事」，是什么事要看下面。
+  /// 现在右上角的胶囊直接把状态写成了字（「未配对」「电脑端离线」），
+  /// 一个说不清是什么事的图标就不必留了。
+  ///
+  /// ⚠️ 【配对电脑】与【扫码连接】原来是**两个按钮、同一个动作**
+  /// （都调 `_pairHost`，都是开扫码页）—— 两个标签做同一件事，
+  /// 用户会以为它们不一样。合成一个，标签随配对状态变。
   Widget _hostCard() {
     final identity = _identity;
     final name = identity?.hostName ?? '';
@@ -1974,7 +2139,8 @@ class _RecorderPageState extends State<RecorderPage> {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        // 右边只留 6：右上角那个垃圾桶是 `IconButton`，它自带一圈内边距。
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1986,41 +2152,80 @@ class _RecorderPageState extends State<RecorderPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                _hostBadge(hasHost, paired),
-                if (!online) ...[
-                  const SizedBox(width: 6),
-                  // ⚠️ 只是个「这儿有事要处理」的记号，**不说是什么事**
-                  // —— 具体是哪一件，写在下面那行和按钮上。
-                  // 一个只有感叹号、别的什么都不说的图标，用户只能猜（踩坑 #13）。
-                  const Icon(
-                    Icons.warning_amber_rounded,
-                    size: 18,
-                    color: Colors.orange,
-                  ),
-                ],
+                _pairedPill(hasHost: hasHost, paired: paired),
+                _forgetButton(hasHost: hasHost, paired: paired),
               ],
             ),
             if (_sessions.isNotEmpty) ...[
-              const SizedBox(height: 6),
+              const SizedBox(height: 4),
               Text(
                 pending > 0
                     ? '$pending 个未备份，${paired ? '连上电脑后会自动传过去' : '连接后自动备份'}'
                     : '${_sessions.length} 个都已经备份到电脑端了。',
                 style: TextStyle(
-                  fontSize: 13,
+                  // 加大加粗：整页最要紧的一句话，原来它是这一块最小的字。
+                  fontSize: 15,
+                  fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400,
                   color: pending > 0 ? Colors.black87 : Colors.green[700],
                 ),
               ),
             ],
-            _kv('电脑端名字', name.isEmpty ? '未填' : name),
-            _kv('局域网 IP', hasHost ? address : '未填'),
-            _kv(
-              '配对',
-              paired ? '已配对' : (hasHost ? '未配对 —— 点下面【配对电脑】' : '未配对'),
+            const SizedBox(height: 4),
+            Text(
+              hasHost
+                  ? '${name.isEmpty ? '电脑端' : name} · $address'
+                  : '还没填电脑端地址。',
+              style: const TextStyle(fontSize: 12, color: Colors.black54),
             ),
             if (_nextRetryAt != null)
-              _kv('下次自动重试', _stamp(_nextRetryAt!)),
-            const SizedBox(height: 8),
+              Text(
+                '下次自动重试 ${_stamp(_nextRetryAt!)}',
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+            const SizedBox(height: 10),
+            // 主按钮**通栏**（照草图）：这一页上用户最常做的一件事就是
+            // 「现在传一下」，给它一整行的宽度。
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                // 没配对就点不动，而**为什么点不动**写在上面那行状态和
+                // 那段说明里 —— 一个点了没反应的按钮和一句没头没尾的禁用一样糟
+                // （踩坑 #13）。
+                onPressed: (!paired || _uploading) ? null : () => _runUploads(manual: true),
+                icon: _uploading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_upload_outlined, size: 18),
+                label: Text(_uploading ? '备份中…' : '立即备份'),
+              ),
+            ),
+            const SizedBox(height: 2),
+            // `Wrap` 而不是 `Row`：窄屏上一行排不下，硬塞会把最后那个
+            // 挤出屏幕外面 —— 而**被挤出去的那个会显得像根本没做**。
+            Wrap(
+              spacing: 4,
+              children: [
+                if (hasHost)
+                  TextButton(
+                    onPressed: identity == null ? null : _probeHost,
+                    child: Text(online ? '重新搜索' : '重新连接'),
+                  ),
+                // 扫码连接：**主路径**（规格 §3.4.5 ①）。电脑端上点
+                // 【连接电脑/手机】弹出二维码，这里扫它 —— 用户不用手输任何东西。
+                TextButton(
+                  onPressed: identity == null ? null : _pairHost,
+                  child: Text(paired ? '重新配对' : '扫码连接'),
+                ),
+                TextButton(
+                  onPressed: identity == null ? null : _editHost,
+                  child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
             Text(
               !paired
                   ? '还没和电脑端配对，录像传不上去。'
@@ -2031,49 +2236,9 @@ class _RecorderPageState extends State<RecorderPage> {
                       ? '收尾好的录像会自己传到电脑端。'
                           '在收到电脑端的回执之前，手机上那份不会删 —— '
                           '按保留期自动清理还没做（M6）。'
-                      : '电脑端现在不在线，可重新搜索。'
+                      : '电脑端现在不在线，可重新连接。'
                           '收尾好的录像会在连上之后自己传过去。'),
               style: const TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            // `Wrap` 而不是 `Row`：五个按钮一行排不下，硬塞会把最后那个
-            // 挤出屏幕外面 —— 而**被挤出去的那个会显得像根本没做**。
-            Wrap(
-              spacing: 4,
-              children: [
-                FilledButton.tonalIcon(
-                  // 没配对就点不动，而**为什么点不动**写在上面那行「配对」和
-                  // 那段说明里 —— 一个改了没反应的按钮和一句没头没尾的禁用一样糟
-                  // （踩坑 #13）。
-                  onPressed: (!paired || _uploading) ? null : () => _runUploads(manual: true),
-                  icon: _uploading
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.cloud_upload_outlined, size: 18),
-                  label: Text(_uploading ? '备份中…' : '立即备份'),
-                ),
-                TextButton(
-                  onPressed: identity == null ? null : _probeHost,
-                  child: const Text('重新搜索'),
-                ),
-                TextButton(
-                  onPressed: identity == null ? null : _pairHost,
-                  child: Text(paired ? '重新配对' : '配对电脑'),
-                ),
-                TextButton(
-                  onPressed: identity == null ? null : _editHost,
-                  child: Text(hasHost ? '改电脑端地址' : '填电脑端地址'),
-                ),
-                // 扫码连接：**主路径**（规格 §3.4.5 ①）。电脑端上点
-                // 【连接电脑/手机】弹出二维码，这里扫它 —— 用户不用手输任何东西。
-                TextButton(
-                  onPressed: identity == null ? null : _pairHost,
-                  child: const Text('扫码连接'),
-                ),
-              ],
             ),
             const Text(
               '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
@@ -2086,46 +2251,102 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  /// 连通状态小标，贴在「电脑备份」那一行的右端（2026-09-23 照草图从 IP 行挪上来的）。
+  /// 「已配对 / 未配对」，贴在「电脑备份」那一行的右端。
   ///
-  /// **没配对就说「未连接」，不说「离线」。** 「离线」会让人以为
+  /// ⚠️ 它与页面顶端那个「电脑端在线 / 离线」**不是一回事**，也不是重复：
+  /// 这个说的是**它认不认这台手机**（有没有凭据），那个说的是**它现在在不在**。
+  /// 合成一个的话，「在线但没配对」会显示成「在线」，而上传照样一条也传不上去。
+  ///
+  /// **没配对就说「未配对」，不说「离线」。** 「离线」会让人以为
   /// 「配对过、只是没连上」，而真实情况是**根本没配过对** ——
-  /// 这两件事要修的东西不一样。草图这里写的是「未连接」，正是这个意思，
-  /// 所以这个标从「什么都不显示」改成了照写。
-  Widget _hostBadge(bool hasHost, bool paired) {
-    if (!hasHost || !paired) {
-      return const Row(
+  /// 这两件事要修的东西不一样（改地址 vs 重新扫码）。
+  Widget _pairedPill({required bool hasHost, required bool paired}) {
+    final text = paired ? '已配对' : '未配对';
+    final color = paired ? Colors.green : Colors.grey;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.link_off, size: 14, color: Colors.grey),
-          SizedBox(width: 4),
-          Text('未连接', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Icon(paired ? Icons.link : Icons.link_off, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(text, style: TextStyle(fontSize: 12, color: color)),
         ],
-      );
-    }
-
-    if (_probingHost) {
-      return const Text('探测中…', style: TextStyle(fontSize: 12, color: Colors.black45));
-    }
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          _hostOnline ? Icons.link : Icons.link_off,
-          size: 14,
-          color: _hostOnline ? Colors.green : Colors.grey,
-        ),
-        const SizedBox(width: 4),
-        Text(
-          _hostOnline ? '连接' : '离线',
-          style: TextStyle(
-            fontSize: 12,
-            color: _hostOnline ? Colors.green : Colors.grey,
-          ),
-        ),
-      ],
+      ),
     );
+  }
+
+  /// 右上角那个垃圾桶 = **断开配对**（需求方 2026-09-27 照草图定的）。
+  ///
+  /// ⚠️ 没配过对、也没填过地址时**不显示** —— 没有关系可断，
+  /// 而一个点了没反应的图标和一句没头没尾的禁用一样糟（踩坑 #13）。
+  Widget _forgetButton({required bool hasHost, required bool paired}) {
+    if (!hasHost && !paired) return const SizedBox.shrink();
+
+    return IconButton(
+      key: const Key('host-forget'),
+      // tooltip 写「断开配对」而不是「删除」：这个图标离「删录像」太近了，
+      // 鼠标停上去（真机上是长按）必须看到它到底删的是什么。
+      tooltip: '断开配对',
+      visualDensity: VisualDensity.compact,
+      icon: const Icon(Icons.delete_outline, size: 20, color: Colors.black38),
+      onPressed: _forgetHost,
+    );
+  }
+
+  /// 忘掉这台电脑端。
+  ///
+  /// ⚠️ **一条录像都不碰。** 清掉的只是配对关系：地址 / 端口 / 名字 / 凭据
+  /// （见 `DeviceIdentity.forgetHost`）。这个图标离「删录像」太近了，
+  /// 所以弹窗第一句和确认按钮上的字都必须说着同一件事。
+  ///
+  /// ⚠️ 断开之后**必须重新走一遍入网**（契约 §1.1 步骤 4：凭据丢失 →
+  /// 重新入网，**不得降级为免凭据**）—— 所以弹窗里要写明「得重新扫码」，
+  /// 不然用户会以为断开只是「先歇一会儿」。
+  Future<void> _forgetHost() async {
+    final identity = _identity;
+    if (identity == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('断开和这台电脑端的配对？'),
+        content: const Text(
+          '只是让这台手机忘掉电脑端的地址和配对凭据。\n\n'
+          '手机上录的、电脑上存着的录像，一条都不动。\n\n'
+          '断开之后录像传不上去，要用的时候得重新扫一次电脑端的二维码。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            key: const Key('host-forget-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('断开配对'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    await identity.forgetHost();
+
+    // ⚠️ `Uploader` 与 `_client` 都是**照着地址和凭据造出来的**（见 `_buildUploader`）。
+    // 不重建的话它们还攥着刚被清掉的那份凭据 —— 界面上写着「未配对」，
+    // 而底下还在往那台电脑传，还是拿一个对方已经不该认的凭据。
+    _buildUploader();
+    _hostOnline = false;
+
+    _log('已断开与电脑端的配对（一条录像都没动）');
+    if (mounted) setState(() {});
   }
 
   /// 一条录像的备份状态。
@@ -2441,95 +2662,368 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  /// 备份页里的一行 —— **规格 §3.4.3 点名的七项**。
+  /// 打开这一条的详情页（需求方 2026-09-27 照草图定的）。
+  ///
+  /// 行上原来挤着三个操作（锁定 / 交付 / 删除），现在都收进这一页。
+  ///
+  /// ⚠️ 时间 / 时长 / 大小 / 分段四串**在这一层格式化好再传进去** ——
+  /// 详情页自己不格式化。两处各写一套的话，列表上写着 `9月16日` 而详情页
+  /// 写着 `09-16`，同一个东西两个样子（而搜索框是按屏幕上真有的字匹配的）。
+  Future<void> _openDetail(RecordingSession session) async {
+    final evidenceId = session.evidenceIds.first;
+    final look = _uploadLook(summarizeUploadState(session.evidenceIds, _archiveRecords));
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => RecordDetailPage(
+          title: session.waybill.value.isEmpty ? session.sessionId : session.waybill.value,
+          businessType: _businessTypeOf(session),
+          uploadText: look.text,
+          uploadColor: look.color,
+          timeText: _stamp(session.startedAt),
+          durationText: _durationLabel(session.duration),
+          sizeText: _sizeLabel(session.bytes),
+          segmentText: '${session.evidenceIds.length} 段',
+          location: _locationByEvidenceId[evidenceId] ?? '（索引里没记路径）',
+          locked: _isSessionLocked(session),
+          preview: _thumbImage(session),
+          onPlay: () => _play(
+            session,
+            '$_rootPath/${_locationByEvidenceId[evidenceId] ?? ''}',
+          ),
+          onToggleLock: () => _toggleLock(session),
+          onShare: () => _shareSession(session),
+          // ⚠️ **返回真删掉了才 pop**（见 `RecordDetailPage.onDelete`）——
+          // 删不成（回查没过、审计写不进去）时要留在原地，用户才看得到那句为什么。
+          //
+          // 判据是「录像真的少了一条」：`_askDelete` 在弹窗里点了取消时
+          // **什么都不做**，按返回值判的话「取消」会被当成删成功然后 pop 掉。
+          onDelete: () async {
+            final before = _sessions.length;
+            await _askDelete(session);
+            return _sessions.length < before;
+          },
+        ),
+      ),
+    );
+
+    // 回来之后重画一次：锁没锁、那条还在不在，列表上都要跟着变。
+    // （`_refreshDiagnostics` 自己会 setState，但**它不一定跑过** ——
+    // 用户可能只是在详情页里点了两下就返回。）
+    if (mounted) setState(() {});
+  }
+
+  /// 【扫码搜索】：扫一张面单，把单号填进搜索框（需求方 2026-09-27 照草图加）。
+  ///
+  /// ⚠️ **扫到只填搜索框** —— 不开始录像、不切到发货栏。用户在这一页扫，
+  /// 是为了**找一条录像**，不是为了录；悄悄把录制开起来是这一页最坏的一种
+  /// 反应（`ScanWaybillPage` 底部那句提示也是这么说的）。
+  Future<void> _scanToSearch() async {
+    final text = await ScanWaybillPage.open(
+      context,
+      gateway: _gateway,
+      // 相机在这一页之前就开着的话**不能关** —— 那可能是录制中，
+      // 或者发货栏的取景框还开着。关了就是掐掉别人的会话。
+      closeCameraWhenDone: _coordinator?.isCameraOpen != true,
+      // 那一页要按同一套规格摆画面，并且在**新开**相机时按它开 ——
+      // 否则扫完回来，留在会话上的是另一个分辨率。
+      spec: _coordinator?.effectiveSpec ?? _requestedSpec(),
+    );
+
+    if (text == null || !mounted) return; // 用户返回了，没扫
+
+    // ⚠️ 扫进来的是**面单上的原文**，可能带空格或换行。直接塞进搜索框的话，
+    // `matchesQuery` 里那个 `trim` 会把它们吃掉，看起来没差别；
+    // 但搜索框里显示着一段带换行的字，用户会以为是自己扫错了。
+    final waybill = text.trim();
+    if (waybill.isEmpty) return;
+
+    _applyFilter(() {
+      _recordsSearch.text = waybill;
+      _recordsQuery = waybill;
+    });
+  }
+
+  /// 批量锁定（需求方 2026-09-27 要的）。
+  ///
+  /// ⚠️ **只加锁、不解锁。** 一个按钮同时干两件事，用户按之前没法知道
+  /// 这一次是锁还是解 —— 而「把一条纠纷录像解锁了」是要命的（规格 §3.6.5：
+  /// 锁定是三条硬豁免之一，解了它保留期一到就会被清掉本机那份）。
+  /// 解锁仍然在详情页里**一条一条**做。
+  Future<void> _runBatchLock() async {
+    final targets = _selectedSessions;
+    if (targets.isEmpty) return;
+
+    final now = DateTime.now();
+
+    // ⚠️ 每一段都要写（与 `_toggleLock` 同一个理由）：清理的候选是按
+    // **分段**算的，只锁第一段的话后面几段照样会被清掉 ——
+    // 而界面上那一条看起来是「已锁定」。
+    for (final session in targets) {
+      for (final id in session.evidenceIds) {
+        await _labels.setLocked(evidenceId: id, locked: true, now: now);
+      }
+    }
+
+    await _refreshDiagnostics();
+    _log('已锁定 ${targets.length} 条（不会被自动清理）');
+
+    if (mounted) setState(() => _selected.clear());
+  }
+
+  /// 批量删除（需求方 2026-09-27 要的）。
+  ///
+  /// ⚠️ 规则是**只要有一条不能删，整批一条都不删**（`BatchDeletePlan`）——
+  /// 「删了 7 条、跳掉 3 条」这个结果用户很难核对，他记住的是「我删了 10 条」，
+  /// 而留在盘上那几条会变成他以为早就没了的东西。
+  ///
+  /// ⚠️ 顺序与单条那条路**逐字相同**（`_askDelete`）：**先回查、再弹窗** ——
+  /// 回查的结果决定了该不该弹那个「确认删除」。
+  Future<void> _runBatchDelete() async {
+    final client = _client;
+    final root = _rootPath;
+    final targets = _selectedSessions;
+
+    if (client == null) {
+      // 没凭据就没法逐段回查，而查不了 ⇒ 不许删（I8）。
+      _log('⚠️ 还不能删除：电脑端地址或凭据没准备好');
+      return;
+    }
+    if (targets.isEmpty) return;
+
+    // 已备份的那些才需要回查（未备份的没有那份可查）。
+    final verifyBySession = <String, Map<String, VerifyOutcome>>{};
+
+    for (final session in targets) {
+      final preliminary = planManualDelete(
+        session: session,
+        records: _archiveRecords,
+        verify: const {},
+      );
+      if (preliminary.needsUploadChoice) continue;
+
+      verifyBySession[session.sessionId] = await _verifyEachSegment(session, client);
+    }
+
+    if (!mounted) return;
+
+    final plan = planBatchDelete(
+      sessions: targets,
+      records: _archiveRecords,
+      verifyBySession: verifyBySession,
+    );
+
+    if (!plan.canDelete) {
+      // ⚠️ **不许删时不弹删除窗** —— 只把原因说清楚（与 `_askDelete` 同一个规矩）。
+      // 弹了就等于把一个系统已经知道不该做的动作交给用户去点。
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('这一批现在不能删'),
+          content: Text(batchDeletePreviewText(plan)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await _confirmBatchDelete(plan);
+    if (confirmed != true || !mounted) return;
+
+    await _deleteBatch(plan.items, root);
+  }
+
+  /// 批量删除那个确认窗。
+  ///
+  /// ⚠️ 与单条那条路**不是同一个窗**：单条那个按「备份了没有」分两种
+  /// （规格 §3.5.6②，**不许合并**）。一批里**可能两种都有**，所以是把
+  /// 「其中有几条是唯一一份」写在正文里（`batchDeletePreviewText`），
+  /// 而不是再分成两个窗 —— 分成两个窗的话，一次操作会被拆成两次，
+  /// 而用户以为他按的是一次。
+  ///
+  /// ⚠️ **不给【重新上传】**（单条那个窗有）：一批里可能只有几条未备份，
+  /// 「重新上传」对另外那些没有意义，点了却结束不了删除意图，
+  /// 很容易变成「我以为按了重新上传，结果它删了」。
+  /// 要传就退出管理、按上面那个【立即备份】。
+  Future<bool?> _confirmBatchDelete(BatchDeletePlan plan) => showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('删除这 ${plan.count} 条录像'),
+          content: Text(batchDeletePreviewText(plan)),
+          actions: [
+            TextButton(
+              key: const Key('batch-delete-cancel'),
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              key: const Key('batch-delete-confirm'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('确认删除'),
+            ),
+          ],
+        ),
+      );
+
+  /// 真去删这一批。**归档层那份不动**（规格 §3.5.6①）。
+  ///
+  /// ⚠️ 逐条走 `deleteSessionFiles`（**先写审计再删文件**，那是它的设计）——
+  /// 一条删不动不该让整批停下（与自动清理同一个取舍）。
+  ///
+  /// ⚠️ 与单条那条路的一处**不同**：这里可能删到一半抛（审计写不进去）。
+  /// 那时**前面那些已经删了、不恢复**，所以日志必须说清是「删到一半」，
+  /// 而不是笼统报错 —— 用户以为一条都没删，或者以为全删了，都会照错的信息做决定。
+  Future<void> _deleteBatch(List<BatchItem> items, String root) async {
+    var segments = 0;
+
+    try {
+      for (final item in items) {
+        final deleted = await deleteSessionFiles(
+          plan: item.plan,
+          locationByEvidenceId: _locationByEvidenceId,
+          rootDirectory: root,
+          audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+          now: DateTime.now(),
+        );
+        segments += deleted.length;
+      }
+
+      _log('🗑 删掉了 ${items.length} 条录像的本地副本（共 $segments 段）');
+    } on Object catch (error) {
+      _log('⚠️ 批量删除没能进行完（**已经删掉的那些不恢复**，剩下没删）：$error');
+    }
+
+    // 无论成败都刷一遍：删掉的那些要从列表和占用里消失。
+    await _refreshDiagnostics();
+    if (mounted) setState(() => _selected.clear());
+  }
+
+  /// 备份页里的一行 —— **规格 §3.4.3 点名的七项**（2026-09-27 照草图重排）。
   ///
   /// | # | 那一项 | 落点 |
   /// |---|---|---|
-  /// | ① | 标签（发货 / 退货） | 行首那个小胶囊 |
-  /// | ② | 缩略图 | 左边 48×48 的方块，抽帧失败时是占位图标 |
+  /// | ① | 标签（发货 / 退货） | 左边那道彩色竖条 + 副标题里那个「发货视频 / 退货视频」 |
+  /// | ② | 缩略图 | 左边 56×56 的方块，抽帧失败时是占位图标 |
   /// | ③ | 播放按钮 | 缩略图上那个 ▶ 覆盖层 |
-  /// | ④ | `快递单号.mp4` | 标题 |
+  /// | ④ | 单号 | 标题 |
   /// | ⑤ | 录制时间 | 副标题前半 |
   /// | ⑥ | 时长 | 副标题后半 |
-  /// | ⑦ | 已上传 / 未上传 | 右边那个状态小标（**与总览共用同一个归并规则**） |
+  /// | ⑦ | 已上传 / 未上传 | 右端那个状态小标（**与总览共用同一个归并规则**） |
   ///
   /// ⚠️ **④ 是「列表里显示的名字」，不是磁盘文件名** ——
   /// 磁盘名与归档路径**一律不动**（改了会波及索引、检索、归档回查，
   /// 还要迁移已经录好的那些）。
+  ///
+  /// ⚠️ 2026-09-27 标题从 `单号.mp4` 改成**光一个单号**（照草图）——
+  /// **这是一处需求变更**，记在母仓 `docs/01-行为规格书.md` §3.4.3。
+  /// 搜索框仍然认 `单号.mp4` 那种输入（见 `matchesQuery`）。
+  ///
+  /// ⚠️ 行上那三个操作（锁定 / 交付 / 删除）**搬去了详情页**（点整行进）。
+  /// 三个 20 像素的图标挤在右端，本来就是这一行上最挤的地方，而其中两个
+  /// 是不可逆或半不可逆的（删除；交付存进相册就收不回来）——
+  /// 搬进详情页意味着**按之前先看清这一条的完整信息**，可点区域也大了好几倍。
   Widget _recordTile(RecordingSession session) {
-    final label = _businessTypeOf(session);
+    final type = _businessTypeOf(session);
 
-    return ListTile(
-      dense: true,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      // ① 标签
-      leading: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (label != null) _typeBadge(label),
-          const SizedBox(width: 6),
-          _thumbnail(session),
-        ],
-      ),
-      // ④ 显示名
-      title: Text(
-        session.waybill.value.isEmpty
-            ? session.sessionId
-            : '${session.waybill.value}.mp4',
-        style: const TextStyle(fontWeight: FontWeight.w600),
-        overflow: TextOverflow.ellipsis,
-      ),
-      // ⑤ 时间 ⑥ 时长
-      subtitle: Text(
-        '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}'
-        '${session.bytes > 0 ? ' · ${_sizeLabel(session.bytes)}' : ''}',
-        style: const TextStyle(fontSize: 12),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // ⑦ 上传状态
-          _uploadChip(session),
-          // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
-          // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
-          // 这里只负责发起，判定与安全都在 `_askDelete` 里。
-          // 争议锁定（规格 §3.6.5：**锁定后永不被自动清理**）。
-          //
-          // ⚠️ 在本次之前，这条硬豁免是**结构性走不到**的：两端都读 `locked`
-          // 标签，而**两端都没有任何地方写它** —— 用户没有任何办法把一条
-          // 纠纷录像保住（保留期一到就会被清掉本机那份）。
-          // 写的那一半是本批补的（`LabelStore.setLocked`）。
-          IconButton(
-            key: Key('lock-${session.sessionId}'),
-            icon: Icon(
-              _isSessionLocked(session) ? Icons.lock : Icons.lock_open,
-              size: 20,
-              // 锁着的时候给点颜色 —— 这个状态**必须一眼看得见**：
-              // 用户要能分清「这条我锁过」和「这条只是还没到期」。
-              color: _isSessionLocked(session) ? Theme.of(context).colorScheme.primary : null,
+    return InkWell(
+      // 整行可点：管理模式是「挑一条」，平时是「看这一条」。
+      // ⚠️ 管理模式下**必须换成挑**，不能还是往详情页跳 ——
+      // 用户正在按顺序勾选，半路跳走再回来会把勾的进度打断。
+      onTap: _managing
+          ? () => setState(() {
+                if (!_selected.remove(session.sessionId)) {
+                  _selected.add(session.sessionId);
+                }
+              })
+          : () => _openDetail(session),
+      child: Container(
+        // ① 彩色竖条：发货蓝、退货橙、**判不出来时灰**。
+        // 判不出来是真的会发生的（标签认不出就不写），灰色说的是
+        // 「这一条我不知道是哪一类」，不是「它属于第三类」。
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: _typeColor(type), width: 3)),
+        ),
+        padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
+        child: Row(
+          children: [
+            if (_managing) ...[
+              // 勾选框是**另一个可点区域**（与整行分开）：整行可点时，
+              // 想取消勾选的人很容易点到行上、结果又把它勾回去了。
+              Checkbox(
+                key: Key('pick-${session.sessionId}'),
+                value: _selected.contains(session.sessionId),
+                onChanged: (value) => setState(() {
+                  if (value == true) {
+                    _selected.add(session.sessionId);
+                  } else {
+                    _selected.remove(session.sessionId);
+                  }
+                }),
+              ),
+              const SizedBox(width: 4),
+            ],
+            _thumbnail(session),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ④ 显示名
+                  Text(
+                    session.waybill.value.isEmpty
+                        ? session.sessionId
+                        : session.waybill.value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  // ① 标签 + ⑤ 时间 + ⑥ 时长
+                  //
+                  // `Wrap`：窄屏上那个胶囊和后面那串日期排不下一行时，
+                  // **换行**而不是把日期截掉 —— 日期是七项里的两项，不能少。
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      if (type != null) _typeBadge(type),
+                      Text(
+                        '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}',
+                        style: const TextStyle(fontSize: 12, color: Colors.black54),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-            tooltip: _isSessionLocked(session)
-                ? '已锁定：不会被自动清理'
-                : '锁定这一条（锁定后不会被自动清理）',
-            onPressed: _settingsReady ? () => _toggleLock(session) : null,
-          ),
-          // 交付原视频（规格 §3.7）：存进系统相册 + 弹系统分享面板。
-          IconButton(
-            key: Key('share-${session.sessionId}'),
-            icon: const Icon(Icons.ios_share, size: 20),
-            tooltip: '交付这一段（存相册并分享）',
-            onPressed: () => _shareSession(session),
-          ),
-          IconButton(
-            key: Key('delete-${session.sessionId}'),
-            icon: const Icon(Icons.delete_outline, size: 20),
-            tooltip: '删除这一条',
-            onPressed: _settingsReady ? () => _askDelete(session) : null,
-          ),
-        ],
+            const SizedBox(width: 6),
+            // ⑦ 上传状态
+            _uploadChip(session),
+            // `›`：它指向**详情页**（点整行就是那里），是个真的去处。
+            // 这一页上保留下来的每一个 `›` 都是这样 —— 一个点不动的箭头
+            // 正是踩坑 #13 说的那种「让用户猜」。
+            if (!_managing)
+              const Icon(Icons.chevron_right, size: 18, color: Colors.black26),
+          ],
+        ),
       ),
     );
   }
+
+  /// 这一类的颜色。**三处共用**（竖条、胶囊、详情页那颗胶囊）——
+  /// 各写一套的话，列表上是橙色、点进去变成红色，用户会以为换了类别。
+  Color _typeColor(BusinessType? type) => switch (type) {
+        BusinessType.outbound => Colors.blue,
+        BusinessType.returning => Colors.deepOrange,
+        // 判不出来：灰。**不是第三种业务类型**，是「不知道」。
+        null => Colors.black26,
+      };
 
   /// 这一条是发货还是退货。判不出来时为 null（**不猜**）。
   BusinessType? _businessTypeOf(RecordingSession session) {
@@ -2542,30 +3036,49 @@ class _RecorderPageState extends State<RecorderPage> {
     return null;
   }
 
+  /// ① 标签。**带图标**（照草图）。
+  ///
+  /// ⚠️ 文字与颜色都**不能省**：「发货视频 / 退货视频」这几个字是唯一
+  /// 分得清两类的东西 —— 只靠颜色的话，色弱的人分不出蓝和橙，
+  /// 而这两栏的录像在业务上完全不是一回事。
   Widget _typeBadge(BusinessType type) {
+    final color = _typeColor(type);
     final returning = type == BusinessType.returning;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: (returning ? Colors.orange : Colors.blue).withValues(alpha: 0.15),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(
-        returning ? '退货' : '发货',
-        style: TextStyle(
-          fontSize: 11,
-          color: returning ? Colors.deepOrange : Colors.blue.shade700,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            returning ? Icons.assignment_return_outlined : Icons.local_shipping_outlined,
+            size: 12,
+            color: color,
+          ),
+          const SizedBox(width: 3),
+          // 名字走 `BusinessType.displayName` —— 与详情页那个胶囊同一个字符串。
+          Text(
+            type.displayName,
+            style: TextStyle(fontSize: 11, color: color),
+          ),
+        ],
       ),
     );
   }
 
-  /// ② 缩略图 + ③ 播放按钮。
+  /// ② 缩略图那一张图**本身**（不定尺寸，撑满父级）。
   ///
-  /// ⚠️ **抽帧是异步的、而且会缓存**（规格：不得每次进页面都重新抽帧）——
-  /// 所以这里用 `FutureBuilder`：第一帧是占位，抽好了自动换成图。
-  Widget _thumbnail(RecordingSession session) {
+  /// ⚠️ 列表上的 56×56 和详情页上那一整块 16:9，**必须是同一帧、走同一个缓存**
+  /// （`_thumbnails`）—— 各写一套的话详情页会重新抽一次帧，而
+  /// 「不得每次进页面都重新抽帧」正是规格点名要防的。
+  ///
+  /// ⚠️ **抽帧是异步的、而且会缓存**，所以这里用 `FutureBuilder`：
+  /// 第一帧是占位，抽好了自动换成图。
+  Widget _thumbImage(RecordingSession session) {
     final evidenceId = session.evidenceIds.first;
     final videoPath = '$_rootPath/${_locationByEvidenceId[evidenceId] ?? ''}';
 
@@ -2574,35 +3087,49 @@ class _RecorderPageState extends State<RecorderPage> {
       builder: (context, snapshot) {
         final path = snapshot.data;
 
-        return InkWell(
-          // ③ 播放：交给**系统播放器**（不自己写播放器、不引 video_player）。
-          onTap: path == null ? null : () => _play(session, videoPath),
-          child: SizedBox(
-            width: 48,
-            height: 48,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: path == null
-                      ? Container(
-                          color: Colors.black12,
-                          child: const Icon(Icons.movie_outlined,
-                              size: 20, color: Colors.black38),
-                        )
-                      : Image.file(File(path), fit: BoxFit.cover),
-                ),
-                if (path != null)
-                  const Center(
-                    child: Icon(Icons.play_circle_fill,
-                        size: 20, color: Colors.white70),
-                  ),
-              ],
-            ),
-          ),
-        );
+        if (path == null) {
+          return Container(
+            color: Colors.black12,
+            child: const Icon(Icons.movie_outlined, size: 22, color: Colors.black38),
+          );
+        }
+
+        return Image.file(File(path), fit: BoxFit.cover);
       },
+    );
+  }
+
+  /// ② 缩略图 + ③ 播放按钮（列表里那一小块）。
+  ///
+  /// ⚠️ 2026-09-27 起**点一下就能播**，不再等抽帧成功 ——
+  /// 抽帧失败不该连带把播放也锁上（那是两件事，而用户看到的是
+  /// 「这行点了没反应」）。▶ 那个图标也**一直画着**，它才是「这里能点」的记号。
+  ///
+  /// 2026-09-27 从 48 放到 56（照草图）：48 那一档在副标题多一行时
+  /// 显得比整行矮一截，缩略图就成了一块「贴上去的小方块」而不是这一行的头。
+  Widget _thumbnail(RecordingSession session) {
+    final evidenceId = session.evidenceIds.first;
+    final videoPath = '$_rootPath/${_locationByEvidenceId[evidenceId] ?? ''}';
+
+    return InkWell(
+      // ③ 播放：交给**系统播放器**（不自己写播放器、不引 video_player）。
+      onTap: () => _play(session, videoPath),
+      child: SizedBox(
+        width: 56,
+        height: 56,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: _thumbImage(session),
+            ),
+            const Center(
+              child: Icon(Icons.play_circle_fill, size: 22, color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2696,27 +3223,30 @@ class _RecorderPageState extends State<RecorderPage> {
 
   // ── ④ 视频记录 ───────────────────────────────
 
-  /// 视频记录列表：搜索 + 筛选 + 分页。
+  /// 视频记录列表：搜索 + 筛选 + 分页 + 管理（批量）。
   ///
   /// 分页是需求方 2026-09-22 定的（每页 5/10/15，左右箭头换页）——
   /// 不是为了性能，是因为手机一屏放不下，而**总页数得看得见**。
+  /// 2026-09-27 照草图重做时需求方核过：它和「N 个未备份」**两样都留**。
   ///
   /// 列的是 `_sessions`（一次录制一条），**不是索引行** —— 索引是按分段记的，
   /// 一段 30 分钟的录制会列出 6 行来，用户数不出那个数字是哪来的。
   Widget _recordsCard() {
-    // 「今日」的判据与上面那个统计**共用 `isSameDay`** —— 两处各写一套，
-    // 迟早会出现「上面写 3 条、下面列 2 条」而用户无从判断谁对。
+    final query = _recordsQuery;
+
+    // ⚠️ **三条筛选（来源 / 日期 / 搜索词）的判定全在 `filterSessions` 里**
+    // —— 纯函数，有测试。写在这个 `build` 里的话这一页的筛选逻辑就没有覆盖了
+    // （widget 测试里 `_sessions` 恒空，构造不出「多条里有几条该留下」）。
     //
     // 搜索是**纯本地筛选**：不查网、不查许可（文档 §04 的 L8 ——
     // 未激活 / 试用到期 / 校验失败都不得挡住检索与回放）。
-    // 判定在 `recording_totals.dart` 的 `matchesQuery`，那里有测试。
-    final query = _recordsQuery.trim();
-    final filtered = [
-      for (final session in _sessions)
-        if ((!_recordsTodayOnly || isSameDay(session.startedAt, DateTime.now())) &&
-            matchesQuery(session, query))
-          session,
-    ];
+    final filtered = filterSessions(
+      _sessions,
+      day: _recordsDay,
+      source: _recordsSource,
+      query: query,
+      typeOf: _businessTypeOf,
+    );
 
     final pageCount = filtered.isEmpty
         ? 1
@@ -2735,7 +3265,7 @@ class _RecorderPageState extends State<RecorderPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 12, 8),
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
             child: Row(
               children: [
                 Expanded(
@@ -2744,28 +3274,23 @@ class _RecorderPageState extends State<RecorderPage> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('全部')),
-                    ButtonSegment(value: true, label: Text('今日')),
-                  ],
-                  selected: {_recordsTodayOnly},
-                  onSelectionChanged: (selection) => setState(() {
-                    _recordsTodayOnly = selection.first;
-                    // 换了筛选就必须回第一页 —— 停在第 7 页上多半是空的，
-                    // 看起来像「今天什么都没录」。
-                    _recordsPage = 0;
-                  }),
+                // 【管理】：批量选 + 批量锁定 + 批量删除（需求方 2026-09-27）。
+                //
+                // ⚠️ 一条录像都没有时**点不动** —— 进一个空的管理模式什么也做不了，
+                // 而用户会以为这个按钮坏了（踩坑 #13）。
+                TextButton(
+                  key: const Key('records-manage'),
+                  onPressed: _sessions.isEmpty ? null : _toggleManage,
+                  child: Text(_managing ? '完成' : '管理'),
                 ),
               ],
             ),
           ),
           // 搜索框（需求方 2026-09-23 照草图加）：单号或日期，**纯本地筛**。
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
             child: TextField(
+              key: const Key('records-search'),
               controller: _recordsSearch,
               style: const TextStyle(fontSize: 14),
               decoration: InputDecoration(
@@ -2773,42 +3298,66 @@ class _RecorderPageState extends State<RecorderPage> {
                 hintText: '搜索单号或日期',
                 hintStyle: const TextStyle(fontSize: 13),
                 prefixIcon: const Icon(Icons.search, size: 20),
-                suffixIcon: query.isEmpty
-                    ? null
-                    : IconButton(
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 【扫码搜索】（需求方 2026-09-27 照草图加）：
+                    // 一个箱子在手上时，**对着面单扫一下比手打单号快得多**，
+                    // 而单号打错一位就是「怎么搜不到」。
+                    IconButton(
+                      key: const Key('records-scan'),
+                      tooltip: '扫面单上的条码',
+                      icon: const Icon(Icons.qr_code_scanner, size: 20),
+                      onPressed: _scanToSearch,
+                    ),
+                    if (query.isNotEmpty)
+                      IconButton(
+                        key: const Key('records-clear'),
                         tooltip: '清空搜索',
                         icon: const Icon(Icons.clear, size: 18),
-                        onPressed: () => setState(() {
+                        onPressed: () => _applyFilter(() {
                           _recordsSearch.clear();
                           _recordsQuery = '';
-                          _recordsPage = 0;
                         }),
                       ),
+                  ],
+                ),
                 border: const OutlineInputBorder(),
               ),
-              onChanged: (value) => setState(() {
-                _recordsQuery = value;
-                // 和换筛选同一个理由：换了搜索词就回第一页。
-                _recordsPage = 0;
-              }),
+              onChanged: (value) => _applyFilter(() => _recordsQuery = value),
             ),
           ),
+          // 两个筛选胶囊（照草图）。**两个各管一维**：合成一个「全部」的话，
+          // 用户没法知道那个「全部」是不限时间还是不限来源。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [_sourceChip(), _dayChip()],
+            ),
+          ),
+          if (_managing) _manageBar(filtered),
           if (rows.isEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
               child: Text(
-                // 搜不到时**必须说出来搜的是什么**：一片空白看起来像这一页坏了，
-                // 而不是「手机上确实没有这个单号」（踩坑 #13）。
+                // 搜不到 / 筛没了时**必须说出来是什么条件把它筛没的**：
+                // 一片空白看起来像这一页坏了，而不是「手机上确实没有这个单号」，
+                // 而且用户得知道**怎么退回去**（踩坑 #13）。
                 query.isNotEmpty
                     ? '没有找到和「$query」有关的录像。'
-                    : (_recordsTodayOnly ? '今天还没有录完的录像。' : '本机还没有收尾入库的录像。'),
+                    : (_recordsDay == null && _recordsSource == null
+                        ? '本机还没有收尾入库的录像。'
+                        : '现在这个筛选下没有录像。点上面那两个胶囊，选「全部」就都在了。'),
                 style: const TextStyle(fontSize: 13, color: Colors.black54),
               ),
             )
           else
             for (final session in rows) ...[
               const Divider(height: 1),
-              // 规格 §3.4.3 的七项：标签 / 缩略图 / 播放 / `单号.mp4` / 时间 / 时长 / 上传状态。
+              // 规格 §3.4.3 的七项：标签 / 缩略图 / 播放 / 单号 / 时间 / 时长 / 上传状态。
               _recordTile(session),
             ],
           const Divider(height: 1),
@@ -2859,29 +3408,168 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  /// 标签 + 值的一行。用固定宽度的标签列，几行数字才对得齐。
+  /// 换筛选 / 换搜索词时**必须一起做**的那几件事。
   ///
-  /// [trailing] 贴右端（「连接 / 离线」那个小标在 IP 那一行）。
-  Widget _kv(String label, String value, {Widget? trailing}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            // 84 而不是 72：「局域网 IP」「电脑端名字」在 72 里会折行。
-            width: 84,
-            child: Text(
-              label,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-          ),
-          Expanded(child: Text(value)),
-          ?trailing,
-        ],
+  /// ⚠️ 三件，一件都不能漏：
+  /// 1. **回到第一页** —— 停在第 7 页上多半是空的，看起来像「一条都没有」；
+  /// 2. **清空选中** —— 这一条是安全相关：选中集是**看不见的**（被筛掉的那些
+  ///    不在屏幕上），留着它再按【批量删除】，删掉的会包含用户此刻根本
+  ///    看不到的录像。朝少删的那头落：宁可让他重选一次；
+  /// 3. `setState`（由调用方那次包住）。
+  ///
+  /// ⚠️ 管理员（`_selected`）只在 [filtered] 里挑，所以清空之后
+  /// 「已选 N 条」和屏幕上的勾**永远对得上**。
+  void _applyFilter(VoidCallback change) {
+    setState(() {
+      change();
+      _recordsPage = 0;
+      _selected.clear();
+    });
+  }
+
+  /// 「全部来源 / 发货视频 / 退货视频」那个胶囊。
+  ///
+  /// 用 `PopupMenuButton` 而不是 `DropdownButton`：下拉框要靠一个三角去认，
+  /// 而胶囊上**直接写着当前选的是什么**（照草图）。
+  Widget _sourceChip() {
+    final selected = _recordsSource;
+
+    return PopupMenuButton<BusinessType?>(
+      key: const Key('records-source'),
+      tooltip: '按来源筛选',
+      onSelected: (value) => _applyFilter(() => _recordsSource = value),
+      itemBuilder: (context) => [
+        const PopupMenuItem<BusinessType?>(value: null, child: Text('全部来源')),
+        for (final type in BusinessType.values)
+          PopupMenuItem<BusinessType?>(value: type, child: Text(type.displayName)),
+      ],
+      child: Chip(
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        label: Text(
+          '${selected == null ? '全部来源' : selected.displayName} ▾',
+          style: const TextStyle(fontSize: 12),
+        ),
       ),
     );
   }
+
+  /// 「全部日期 / 9月16日」那个胶囊。点开是系统日期选择器。
+  ///
+  /// ⚠️ 选中某一天之后，**退出这个筛选的出口是胶囊上那个 `×`**
+  /// （`onDeleted`）—— 系统日期选择器上没有「不限日期」这一项，
+  /// 不给出口的话，用户选了某一天就再也回不到全部了。
+  Widget _dayChip() {
+    final day = _recordsDay;
+
+    return InputChip(
+      key: const Key('records-day'),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      label: Text(
+        '${day == null ? '全部日期' : dayStamp(day)} ▾',
+        style: const TextStyle(fontSize: 12),
+      ),
+      onPressed: _pickDay,
+      onDeleted: day == null ? null : () => _applyFilter(() => _recordsDay = null),
+      deleteIcon: day == null ? null : const Icon(Icons.clear, size: 14),
+    );
+  }
+
+  /// 选某一天。
+  Future<void> _pickDay() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _recordsDay ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      // **今天之后选不出来** —— 还没到的日子不可能有录像，
+      // 选得到它只会让用户以为「录像丢了」。
+      lastDate: DateTime.now(),
+    );
+
+    if (picked == null || !mounted) return;
+    _applyFilter(() => _recordsDay = picked);
+  }
+
+  /// 管理模式底下那一行：全选 / 已选几条 + 两个批量按钮。
+  ///
+  /// ⚠️ 「全选」全的是**当前筛选出来的那些**（屏幕上这些），不是全部录像 ——
+  /// 用户看不见的东西被一起选上，再按【批量删除】就是灾难。
+  /// [visible] 就是当前筛选后的那一串。
+  Widget _manageBar(List<RecordingSession> visible) {
+    final all = visible.isNotEmpty && _selected.length == visible.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 2, 12, 2),
+          child: Row(
+            children: [
+              TextButton(
+                key: const Key('records-select-all'),
+                onPressed: () => setState(() {
+                  if (all) {
+                    _selected.clear();
+                  } else {
+                    _selected
+                      ..clear()
+                      ..addAll([for (final session in visible) session.sessionId]);
+                  }
+                }),
+                child: Text(all ? '取消全选' : '全选'),
+              ),
+              const Spacer(),
+              Text('已选 ${_selected.length} 条', style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('records-batch-lock'),
+                  onPressed:
+                      (_settingsReady && _selected.isNotEmpty) ? _runBatchLock : null,
+                  icon: const Icon(Icons.lock_outline, size: 18),
+                  label: const Text('批量锁定'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  key: const Key('records-batch-delete'),
+                  onPressed:
+                      (_settingsReady && _selected.isNotEmpty) ? _runBatchDelete : null,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('批量删除'),
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red.shade700),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 进 / 出管理模式。
+  ///
+  /// ⚠️ 出来时**清空选中**：留着的话下次进来会「上次勾的那些还勾着」，
+  /// 而用户以为那是新的一次挑选。
+  void _toggleManage() {
+    setState(() {
+      _managing = !_managing;
+      _selected.clear();
+    });
+  }
+
+  /// 选中那些录像，**按列表顺序**（弹窗里那一串要有稳定的顺序，
+  /// 跟着点击先后走的话，同一次选择在两台手机上列出来的次序都不一样）。
+  List<RecordingSession> get _selectedSessions =>
+      [for (final session in _sessions) if (_selected.contains(session.sessionId)) session];
 
   // ── 两处编辑弹窗 ──────────────────────────────
 
@@ -4604,6 +5292,26 @@ class _RecorderPageState extends State<RecorderPage> {
     if (bytes < mb) return '${(bytes / kb).toStringAsFixed(1)} KB';
     if (bytes < gb) return '${(bytes / mb).toStringAsFixed(1)} MB';
     return '${(bytes / gb).toStringAsFixed(2)} GB';
+  }
+
+  /// [\_sizeLabel] 拆成「数字」和「单位」两半，给上面那张统计卡用。
+  ///
+  /// ⚠️ **不是为了好看**：统计卡在窄屏上只有一百来像素宽，`6.90 GB`
+  /// 放不下 —— 会溢出，或者被省略号截成 `6.…`。而**数字被截断比难看糟得多**：
+  /// 用户会把它当成真的。拆开之后，缩的只有那个数字（`FittedBox`），
+  /// 单位照常显示，`GB` 这个量级信息不会丢。
+  ///
+  /// ⚠️ 判据与 [\_sizeLabel] **同一套**（同一个 1024 进制、同一批阈值）——
+  /// 各写一套的话会出现「上面写着 6.9 GB、点进去写着 6.90 GB」。
+  static ({String value, String unit}) _sizeParts(int bytes) {
+    final label = _sizeLabel(bytes);
+    final split = label.indexOf(' ');
+
+    // `_sizeLabel` 每一种输出都带一个空格（连 `123 B` 也是）。
+    // 切不开就说明那个函数被改过了 —— 退回整串当数字，不崩、不猜。
+    if (split < 0) return (value: label, unit: '');
+
+    return (value: label.substring(0, split), unit: label.substring(split + 1));
   }
 
   static String _modeLabel(WorkMode mode) => switch (mode) {
