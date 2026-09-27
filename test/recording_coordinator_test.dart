@@ -2112,6 +2112,16 @@ class FakeGateway implements RecorderGateway {
   @override
   Future<bool> generateThumbnail(String videoPath, String outputPath) async => false;
 
+  /// 成品校验（规格 §3.1.4）。
+  ///
+  /// ⚠️ 默认 **true**（= 解得开）：协调器那些用例验的是**编排**，
+  /// 不该因为「假原生不会解码」而集体红。要验「校验失败会怎样」的用例
+  /// 自己把这个字段置 false（见 `session_finalizer_test.dart`）。
+  bool playable = true;
+
+  @override
+  Future<bool> verifyPlayable(String videoPath) async => playable;
+
   @override
   Future<void> playVideo(String videoPath) async {}
 

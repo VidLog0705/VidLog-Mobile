@@ -219,6 +219,18 @@ abstract interface class RecorderGateway {
   /// `MediaMetadataRetriever`），**不引任何第三方包**。
   Future<bool> generateThumbnail(String videoPath, String outputPath);
 
+  /// 这一段成品**解不解得开**（规格 §3.1.4 的「实际解码校验」）。
+  ///
+  /// ⚠️ 它**不是**「文件在不在 / 大小对不对」—— 那些在收尾里已经查过了。
+  /// 这一条要的是**真解码一次**：解得出 ⇒ 容器与关键帧可读；
+  /// 解不出 ⇒ 那一段**不得当成正常入库**（规格原话）。
+  ///
+  /// 实现走**系统 API**（iOS `AVAssetImageGenerator` / 安卓
+  /// `MediaMetadataRetriever`）—— 那两个本来就是「真解一帧」，与抽帧同一套。
+  /// ⚠️ 解**首尾两处**：只解首帧的话，「录到一半编码器挂了」这种
+  /// （头部好、尾部坏）会漏过去。
+  Future<bool> verifyPlayable(String videoPath);
+
   /// 用**系统播放器**播放这一段（规格 §3.4.3 的「播放按钮」）。
   ///
   /// 手机端**不自己写播放器**：iOS 用 `AVPlayerViewController`、
@@ -324,6 +336,24 @@ class ChannelRecorderGateway implements RecorderGateway {
         'outputPath': outputPath,
       }) ??
       false;
+
+  @override
+  Future<bool> verifyPlayable(String videoPath) async {
+    try {
+      return await _methods.invokeMethod<bool>(
+            'verifyPlayable',
+            {'videoPath': videoPath},
+          ) ??
+          false;
+    } on Object {
+      // ⚠️ 原生那边没实现（老包）/ 平台异常 ⇒ **返回 false**（= 校验不过）✅
+      //
+      // 往哪边落是刻意的：**false 会让那一段不被当正常入库** ——
+      // 而 true 会让一个可能坏掉的成品进上传队列。
+      // 与「I3：失败必须可见」同一条方向：宁可多标一条异常，不要放过一条坏证据。
+      return false;
+    }
+  }
 
   @override
   Future<void> playVideo(String videoPath) =>

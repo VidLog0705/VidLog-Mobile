@@ -251,6 +251,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
             }
 
             "generateThumbnail" -> generateThumbnail(call, result)
+            "verifyPlayable" -> verifyPlayable(call, result)
             "playVideo" -> playVideo(call, result)
             "shareVideo" -> shareVideo(call, result)
 
@@ -450,6 +451,77 @@ class RecorderChannel(private val activity: FlutterActivity) :
      * ⚠️ **不能在主线程上做**：解一帧要几百毫秒，主线程卡住的话界面直接冻住
      * （一页十几条 = 好几秒）。所以扔到后台线程。
      */
+    /**
+     * 这一段成品**解不解得开**（规格 §3.1.4 的「实际解码校验」）。
+     *
+     * ⚠️ **不是**「文件在不在 / 大小对不对」—— 那些收尾里已经查过了。
+     * 这一条要的是**真解码一次**：`MediaMetadataRetriever` 拿得到帧，
+     * 就意味着解码器真的跑通了那一段的数据。
+     *
+     * ⚠️ 解**首尾两处**：只解首帧的话，「录到一半编码器挂了」（头部好、尾部坏）
+     * 会整个漏过去 —— 而那恰恰是最常见的坏法。
+     *
+     * ⚠️ 读不出时长也**算失败**：连 `METADATA_KEY_DURATION` 都没有，
+     * 说明容器本身就不对。
+     */
+    private fun verifyPlayable(call: MethodCall, result: MethodChannel.Result) {
+        val videoPath = call.argument<String>("videoPath")
+
+        if (videoPath.isNullOrBlank()) {
+            result.error("bad_args", "缺少 videoPath", null)
+            return
+        }
+
+        Thread {
+            val retriever = MediaMetadataRetriever()
+            var ok = false
+
+            try {
+                retriever.setDataSource(videoPath)
+
+                val durationMs = retriever
+                    .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()
+
+                if (durationMs != null && durationMs > 0) {
+                    // 首：1 秒处（第 0 秒常常还是黑的，与抽帧同一个理由）。
+                    // 短视频取一半的位置，别越过末尾。
+                    val headUs = minOf(1_000_000L, durationMs * 500)
+                    val head = retriever.getFrameAtTime(
+                        headUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+
+                    // 尾：最后 1 秒处（末尾那一帧未必是关键帧，留点余量）。
+                    val tail = retriever.getFrameAtTime(
+                        maxOf(0L, (durationMs - 1_000) * 1_000),
+                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+
+                    ok = head != null && tail != null
+
+                    if (!ok) {
+                        Log.w(TAG, "成品校验没过：解不出帧 $videoPath" +
+                            "（首=${head != null} 尾=${tail != null}）")
+                    }
+
+                    head?.recycle()
+                    tail?.recycle()
+                } else {
+                    Log.w(TAG, "成品校验没过：读不出时长 $videoPath")
+                }
+            } catch (error: Throwable) {
+                Log.w(TAG, "成品校验没过：$videoPath", error)
+                ok = false
+            } finally {
+                try {
+                    retriever.release()
+                } catch (ignored: Throwable) {
+                    // 释放失败无所谓。
+                }
+            }
+
+            activity.runOnUiThread { result.success(ok) }
+        }
+    }
+
     private fun generateThumbnail(call: MethodCall, result: MethodChannel.Result) {
         val videoPath = call.argument<String>("videoPath")
         val outputPath = call.argument<String>("outputPath")

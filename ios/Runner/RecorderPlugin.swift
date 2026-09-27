@@ -208,6 +208,9 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "generateThumbnail":
             generateThumbnail(call, result: result)
 
+        case "verifyPlayable":
+            verifyPlayable(call, result: result)
+
         case "playVideo":
             playVideo(call, result: result)
 
@@ -219,6 +222,79 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
         default:
             result(FlutterMethodNotImplemented)
+        }
+    }
+
+    /// 这一段成品**解不解得开**（规格 §3.1.4 的「实际解码校验」）。
+    ///
+    /// ⚠️ **不是**「文件在不在 / 大小对不对」—— 那些收尾里已经查过了。
+    /// 这一条要的是**真解码一次**：`AVAssetImageGenerator` 拿得到帧，
+    /// 就意味着解码器真的跑通了那一段的数据。
+    ///
+    /// ⚠️ 解**首尾两处**：只解首帧的话，「录到一半编码器挂了」（头部好、尾部坏）
+    /// 会整个漏过去 —— 而那恰恰是最常见的坏法。
+    ///
+    /// ⚠️ 时长读不出来也**算失败**：连时长都没有，说明容器本身就不对。
+    ///
+    /// 用 `load(.duration)`（iOS 15+ 的异步版）而不是 `asset.duration` ——
+    /// 后者从 iOS 16 起被 deprecate，而本仓的部署目标是 **15.0**
+    /// （见 `ios/Runner.xcodeproj` 的 `IPHONEOS_DEPLOYMENT_TARGET`）。
+    private func verifyPlayable(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let videoPath = args["videoPath"] as? String,
+              !videoPath.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 videoPath", details: nil))
+            return
+        }
+
+        let asset = AVURLAsset(url: URL(fileURLWithPath: videoPath))
+
+        Task {
+            let seconds: Double
+
+            do {
+                seconds = CMTimeGetSeconds(try await asset.load(.duration))
+            } catch {
+                NSLog("成品校验没过：读不出时长 \(videoPath)（\(error)）")
+                result(false)
+                return
+            }
+
+            guard seconds.isFinite, seconds > 0 else {
+                NSLog("成品校验没过：时长无效 \(videoPath)")
+                result(false)
+                return
+            }
+
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            // 只要「解得开」，不看画质 —— 缩到很小，省解码开销。
+            generator.maximumSize = CGSize(width: 64, height: 64)
+            // ⚠️ 校验**要精确**（与抽帧那条**相反**）：允许容差的话它会拿一个邻近的
+            // 关键帧糊弄过去，而那正是「尾部坏了却判成好」的那条路。
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+
+            // 首：1 秒处（第 0 秒常常还是黑的，与抽帧同一个理由）；短视频取一半。
+            // 尾：最后 1 秒处（末尾那一帧未必是关键帧，留点余量）。
+            let targets = [min(1.0, seconds / 2), max(0, seconds - 1)]
+
+            var ok = true
+
+            for target in targets {
+                do {
+                    _ = try generator.copyCGImage(
+                        at: CMTime(seconds: target, preferredTimescale: 600),
+                        actualTime: nil)
+                } catch {
+                    NSLog("成品校验没过：\(target)s 处解不出帧 \(videoPath)（\(error)）")
+                    ok = false
+                    break
+                }
+            }
+
+            result(ok)
         }
     }
 

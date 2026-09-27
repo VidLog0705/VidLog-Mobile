@@ -66,11 +66,20 @@ void main() {
         .toList();
   }
 
-  (SessionFinalizer, JsonLinesRecordingIndex) makeFinalizer({String suffix = ''}) {
+  (SessionFinalizer, JsonLinesRecordingIndex) makeFinalizer({
+    String suffix = '',
+    VerifyPlayable? verify,
+  }) {
     final index = JsonLinesRecordingIndex('$root/index$suffix.jsonl');
     labels = LabelStore('$root/labels$suffix.jsonl');
     return (
-      SessionFinalizer(rootDirectory: root, index: index, labels: labels),
+      SessionFinalizer(
+        rootDirectory: root,
+        index: index,
+        labels: labels,
+        // 实际解码校验（规格 §3.1.4）。不传 = 不校验（大多数用例走这条）。
+        verifyPlayable: verify,
+      ),
       index,
     );
   }
@@ -443,6 +452,77 @@ void main() {
 
       expect(outcome.state, RecordingSessionState.finalizeFailed);
       expect(outcome.failureReason, isNotNull);
+    });
+
+    test('★ 成品校验失败 ⇒ 不入库为「正常」（规格 §3.1.4）', () async {
+      // 规格原话：「停止录制后必须**实际解码校验**成品可播，
+      // 校验失败**不得入库为「正常」**」。这一条就是那个落点。
+      //
+      // ⚠️ 在此之前手机端**没有这一层**（`session_finalizer.dart` 里原来写着
+      // 「手机端没有 FFmpeg……这是一处已知的验证强度差异」）——
+      // 后果是：编码器收尾异常产出一个不可播的 MP4，会被当**正常**写进索引、
+      // 进上传队列，而用户要到需要证据那天才发现。
+      final (finalizer, index) = makeFinalizer(
+        suffix: '-verify-bad',
+        verify: (_) async => false,
+      );
+      final segment = makeSegment('s1', 0);
+
+      final outcome = await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [segment],
+        reason: StopTrigger.manual,
+      );
+
+      expect(outcome.state, RecordingSessionState.finalizeFailed);
+      expect(await index.loadAll(), isEmpty, reason: '解不开的成品不得入库');
+      expect(outcome.failureReason, contains('解不开'));
+
+      // ★ 而且**文件留着** —— 校验失败只是「不当作正常」，
+      // **绝不是删掉它**：它可能是用户唯一的一份，而「解不开」也可能是
+      // 我们这一侧的问题（解码器不支持某个 profile）。
+      expect(File(segment.filePath).existsSync(), isTrue,
+          reason: '校验失败绝不删文件 —— 宁可留一条可能坏的，也不要删掉可能是好的');
+    });
+
+    test('★ 前提：同一个分段落，校验通过就照常入库', () async {
+      // ⚠️ 少了这一条，上面那条可能**绿在一个巧合上**
+      // （比如索引本来就写不进去、或者分段落本身有问题）。
+      final (finalizer, index) = makeFinalizer(
+        suffix: '-verify-ok',
+        verify: (_) async => true,
+      );
+      final segment = makeSegment('s1', 0);
+
+      final outcome = await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [segment],
+        reason: StopTrigger.manual,
+      );
+
+      expect(outcome.state, RecordingSessionState.indexed);
+      expect(await index.loadAll(), hasLength(1));
+    });
+
+    test('不传校验时行为与从前一致', () async {
+      // 老路径（测试里大量用到）不该被这条新闸牵连 ——
+      // 「不传 = 不校验」是给那些不关心它的用例留的口子。
+      final (finalizer, index) = makeFinalizer(suffix: '-verify-none');
+
+      final outcome = await finalizer.finalize(
+        sessionId: 's1',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        segments: [makeSegment('s1', 0)],
+        reason: StopTrigger.manual,
+      );
+
+      expect(outcome.state, RecordingSessionState.indexed);
+      expect(await index.loadAll(), hasLength(1));
     });
 
     test('多分段里有一个坏的 → 整体不算成功', () async {

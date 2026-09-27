@@ -59,6 +59,14 @@ Future<ContentHash> hashFile(String path) async {
   return ContentHash.parse(digest.toString());
 }
 
+/// 实际解码校验：这一段成品**解不解得开**（规格 §3.1.4）。
+///
+/// 返回 `false` ⇒ **不得当成正常入库**。
+///
+/// ⚠️ 做成注入的函数而不是直接调原生：这一层要能在本机用假校验测到底
+/// （与电脑端 `DecodeVerifier` 的处置同形）。
+typedef VerifyPlayable = Future<bool> Function(String videoPath);
+
 /// 录制收尾 —— **不变量 I9 的唯一落点**。
 ///
 /// 规格 §4.1：任何进入「收尾中」的路径，都必须走**同一套收尾逻辑**
@@ -83,7 +91,13 @@ class SessionFinalizer {
     required this.rootDirectory,
     required this.index,
     required this.labels,
-  });
+    // 实际解码校验（规格 §3.1.4）。
+    //
+    // ⚠️ **可选**：不传 = 不校验，那是给**不需要它的测试**留的口子
+    // （与电脑端 `DecodeVerifier` 在测试里的处置同形）。生产路径由
+    // `recorder_page` 传真那个（原生 `verifyPlayable`）。
+    VerifyPlayable? verifyPlayable,
+  }) : _verifyPlayable = verifyPlayable;
 
   /// 本机数据的根目录；索引里的相对路径相对它。
   final String rootDirectory;
@@ -92,6 +106,9 @@ class SessionFinalizer {
 
   /// 标签表（`<root>/labels.jsonl`）。收尾时顺手把「发货 / 退货」写进去。
   final LabelStore labels;
+
+  /// 实际解码校验（规格 §3.1.4）。`null` = 不校验（测试路径）。
+  final VerifyPlayable? _verifyPlayable;
 
   Future<FinalizeOutcome> finalize({
     required String sessionId,
@@ -162,6 +179,34 @@ class SessionFinalizer {
       contentHash = await hashFile(segment.filePath);
     } on Object catch (error) {
       return FinalizedSegment(source: segment, failureReason: '算哈希失败：$error');
+    }
+
+    // ── 实际解码校验（规格 §3.1.4）──────────────────────────────────
+    //
+    // 规格原话：「停止录制后必须**实际解码校验**成品可播，校验失败**不得入库为
+    // 「正常」**」。
+    //
+    // ⚠️ 2026-09-27 补：在此之前手机端**没有这一层** —— 这个文件里原来写着
+    // 「手机端没有 FFmpeg，只能依赖原生录制器自己的收尾结果，**这是一处已知的
+    // 验证强度差异**」。后果很具体：编码器收尾异常、产出一个不可播的 MP4 时，
+    // 它会被当**正常**写进索引、进入上传队列 —— 而用户要到需要证据那天才发现。
+    //
+    // ⚠️ 手机端走**系统 API**（iOS `AVAssetImageGenerator` /
+    // 安卓 `MediaMetadataRetriever`）—— 那两个本来就是「**真解一帧**」。
+    // **能解出首尾两帧 ⇒ 容器与关键帧可读**。
+    // ⚠️ 它**不是全解**：电脑端 `ffmpeg -f null -` 是逐帧解完，这里只解两处
+    // —— 这个强度差别如实写在 `docs/实现决策.md` 里，不假装一样。
+    //
+    // ⚠️ 排在**写索引之前**：失败 ⇒ 这一段的 `isPublished` 为假 ⇒
+    // 会话不会被标成 `indexed`（下面那句「有一个分段没走完就不得标正常入库」）。
+    // 与「写索引失败」那条是同一个机制，不是新造一个。
+    if (_verifyPlayable != null && !await _verifyPlayable(segment.filePath)) {
+      return FinalizedSegment(
+        source: segment,
+        location: relativeLocation(segment.filePath),
+        contentHash: contentHash,
+        failureReason: '解不开这一段（成品校验失败）—— 不会被当成正常入库',
+      );
     }
 
     final location = relativeLocation(segment.filePath);

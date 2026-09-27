@@ -426,6 +426,16 @@ class _RecorderPageState extends State<RecorderPage> {
         rootDirectory: root.path,
         index: _index,
         labels: _labels,
+        // 实际解码校验（规格 §3.1.4：「停止录制后必须**实际解码校验**成品可播，
+        // 校验失败不得入库为「正常」」）。
+        //
+        // ⚠️ 走**原生系统 API**（iOS `AVAssetImageGenerator` /
+        // 安卓 `MediaMetadataRetriever`）—— 手机端没有 FFmpeg，
+        // 而那两个 API 本身就是「真解一帧」。
+        //
+        // ⚠️ 传的就是 `_gateway` 上那个方法（不是 lambda 包一层）——
+        // 少一层包装，将来换实现时不会漏改。
+        verifyPlayable: (path) => _gateway.verifyPlayable(path),
       );
       // 与电脑端同一个位置（`<root>/punches.jsonl`），键名也逐字相同 ——
       // 两端的打点日志是同一份形态。
