@@ -210,6 +210,271 @@ struct RecorderSpec {
     }
 }
 
+/// 把水印画进相机的帧里（规格 §3.6.2）。
+///
+/// ## 为什么在**采集这一层**画
+///
+/// 录下来的就是最终成品（原生直接写 MP4，没有 remux 那一步），
+/// 所以「烧进视频」只能发生在帧进编码器之前 —— 导出时再叠是做不到的
+/// （手机上没有 ffmpeg）。
+///
+/// ## 怎么画的
+///
+/// 相机的帧是 **NV12 双平面**（`420YpCbCr8BiPlanarFullRange`）：Y 平面是亮度、
+/// CbCr 平面是色度（每 2×2 像素共用一个）。
+///
+/// 1. 用 `UIGraphicsImageRenderer` 把两行字画进一张 **RGBA** 小图（只画一次/秒）；
+/// 2. 把那张小图转成 NV12，缓存在内存里；
+/// 3. 每帧按矩形往 Y 平面与 CbCr 平面各拷一段。
+///
+/// ⚠️ **红字要求动色度平面**：只改 Y 平面的话所有字都是灰的
+/// （规格明写第二行是**红色**，而且屏幕上的那一行也是红的 —— 所见即所得）。
+///
+/// ⚠️ **一次算、一秒钟重画一次**：字每秒才变一次，而帧是每秒 30 张。
+/// 每帧重画一次文字会把录制的算力吃掉一大块（性能是规格 §3.1 的硬要求）。
+///
+/// ⚠️ **这份代码没有在真机上跑过**（开发机是 Windows、没有 Xcode 也没有 iPhone）：
+/// 只过了 CI 的 macOS 编译。真机验收见 `docs/真机验收清单.md` §1.26。
+final class WatermarkOverlay {
+
+    /// 第一行：走时（北京时间）。
+    private(set) var startDate = Date()
+
+    /// 第二行：完整单号。空串 = 不画那一行（没在录时不出现）。
+    private(set) var renderWaybill = ""
+
+    /// 第一帧的时间戳 —— 会话时间的原点。到第一帧才知道，所以是可选的。
+    var firstPresentationTime: CMTime?
+
+    /// 已经渲染好的那一秒（缓存键）。
+    var cachedSecond: Int?
+
+    /// 缓存：Y 与 CbCr 的字节，以及它该贴在哪儿。
+    private var cachedY: [UInt8] = []
+    private var cachedCbCr: [UInt8] = []
+    private var cachedRect = CGRect.zero
+    private var cachedBufferWidth = 0
+
+    /// 北京时间（UTC+8）。规格：「与设备本地时区无关，用户改时区不影响水印」。
+    private static let beijing = TimeZone(secondsFromGMT: 8 * 3600)!
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = WatermarkOverlay.beijing
+        formatter.dateFormat = "yyyy/MM/dd HH:mm:ss"
+        return formatter
+    }()
+
+    /// 与 Dart 侧 `watermarkClockLine` **逐字相同**的格式。
+    static func ClockLine(_ moment: Date) -> String {
+        clockFormatter.string(from: moment)
+    }
+
+    /// 与 Dart 侧 `watermarkWaybillLine` **逐字相同**：只 trim，不截断。
+    static func WaybillLine(_ waybill: String) -> String {
+        waybill.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 把水印画进这一帧。**失败就什么都不做** —— 采集绝不能因为水印出错（I4 的精神）。
+    func draw(into pixelBuffer: CVPixelBuffer, at presentationTime: CMTime) {
+        if firstPresentationTime == nil {
+            firstPresentationTime = presentationTime
+        }
+        guard let origin = firstPresentationTime else { return }
+
+        let seconds = CMTimeGetSeconds(presentationTime - origin)
+        guard seconds.isFinite, seconds >= 0 else { return }
+
+        let moment = startDate.addingTimeInterval(seconds)
+        let second = Int(seconds)
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+
+        if cachedSecond != second || cachedBufferWidth != width {
+            render(moment: moment, width: width, height: height)
+        }
+
+        guard !cachedY.isEmpty, cachedRect.width > 0 else { return }
+
+        blit(into: pixelBuffer, width: width, height: height)
+    }
+
+    /// 把两行字画成 RGBA，再转成 NV12 缓存起来。
+    private func render(moment: Date, width: Int, height: Int) {
+        // 字号按画面高度取比例 —— 与电脑端同一个口径（换分辨率不用另配一套）。
+        let clockSize = max(10, (Double(height) * 0.040).rounded())
+        let waybillSize = max(10, (Double(height) * 0.050).rounded())
+        let margin = max(6, (Double(height) * 0.02).rounded())
+
+        let clockText = WatermarkOverlay.ClockLine(moment)
+        let waybillText = renderWaybill
+
+        let attributesClock: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: clockSize),
+            .foregroundColor: UIColor.white,
+            // 黑描边：白字压在**白面单**上时没有它就完全看不见
+            // （与界面上那四角括号同一个理由）。
+            .strokeColor: UIColor.black,
+            .strokeWidth: -3.0,
+        ]
+
+        let attributesWaybill: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: waybillSize),
+            .foregroundColor: UIColor.red,
+            .strokeColor: UIColor.black,
+            .strokeWidth: -3.0,
+        ]
+
+        let clockString = NSAttributedString(string: clockText, attributes: attributesClock)
+        let waybillString = NSAttributedString(
+            string: waybillText, attributes: attributesWaybill)
+
+        let clockSizePx = clockString.size()
+        let waybillSizePx = waybillText.isEmpty ? .zero : waybillString.size()
+
+        let stripWidth = Int(max(clockSizePx.width, waybillSizePx.width).rounded(.up)) + 8
+        let stripHeight = Int(clockSizePx.height.rounded(.up))
+            + (waybillText.isEmpty ? 0 : Int(waybillSizePx.height.rounded(.up)))
+            + 8
+
+        // 顶部居中：**不得遮挡取景框**（规格 §3.6.2）—— 取景框在画面中间，
+        // 水印在最上方那一条里。
+        let originX = max(0, (width - stripWidth) / 2)
+        let originY = Int(margin)
+
+        let renderer = UIGraphicsImageRenderer(
+            size: CGSize(width: stripWidth, height: stripHeight))
+
+        let image = renderer.image { _ in
+            clockString.draw(at: CGPoint(x: 4, y: 4))
+
+            if !waybillText.isEmpty {
+                waybillString.draw(
+                    at: CGPoint(x: 4, y: 4 + clockSizePx.height))
+            }
+        }
+
+        guard let cgImage = image.cgImage else { return }
+
+        let (yBytes, cbcrBytes, rect) = WatermarkOverlay.toNV12(
+            cgImage, at: CGPoint(x: originX, y: originY), canvasWidth: width)
+
+        cachedY = yBytes
+        cachedCbCr = cbcrBytes
+        cachedRect = rect
+        cachedBufferWidth = width
+        cachedSecond = Int(moment.timeIntervalSince1970)
+    }
+
+    /// RGBA → NV12 的字节（Y 每像素一个，CbCr 每 2×2 一个）。
+    ///
+    /// ⚠️ 小图按 **16 的倍数**对齐：NV12 的色度平面是 2×2 下采样的，
+    /// 宽高不是偶数的话，贴上去会**整体错位一列/一行**（画面看起来像花屏）。
+    private static func toNV12(
+        _ image: CGImage, at origin: CGPoint, canvasWidth: Int
+    ) -> ([UInt8], [UInt8], CGRect) {
+        let rawWidth = image.width
+        let rawHeight = image.height
+
+        // 宽高各补到偶数。
+        let width = rawWidth + (rawWidth % 2)
+        let height = rawHeight + (rawHeight % 2)
+
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        rgba.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4, space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return }
+
+            context.draw(
+                image,
+                in: CGRect(x: 0, y: 0, width: rawWidth, height: rawHeight))
+        }
+
+        var y = [UInt8](repeating: 0, count: width * height)
+        var cbcr = [UInt8](repeating: 128, count: width * height / 2)
+
+        // BT.601 全范围（与 `420YpCbCr8BiPlanarFullRange` 对应）。
+        for row in 0..<height {
+            for column in 0..<width {
+                let index = (row * width + column) * 4
+                let r = Double(rgba[index])
+                let g = Double(rgba[index + 1])
+                let b = Double(rgba[index + 2])
+                let a = Double(rgba[index + 3]) / 255.0
+
+                // ⚠️ 半透明像素要**与底下的画面混合**吗？——不，这里画的是
+                // 「盖上去」的那一层；描边本身不透明，而字与描边已经把这一条
+                // 铺满了。所以直接按不透明度加权到「黑底」上。
+                let luma = (0.299 * r + 0.587 * g + 0.114 * b) * a
+                y[row * width + column] = UInt8(max(0, min(255, luma)).rounded())
+
+                // 色度只在偶数行列上采一次（每 2×2 共用）。
+                if row % 2 == 0 && column % 2 == 0 {
+                    let cb = (-0.169 * r - 0.331 * g + 0.5 * b) * a + 128
+                    let cr = (0.5 * r - 0.419 * g - 0.081 * b) * a + 128
+                    let chroma = ((row / 2) * width + (column / 2) * 2)
+
+                    cbcr[chroma] = UInt8(max(0, min(255, cb)).rounded())
+                    cbcr[chroma + 1] = UInt8(max(0, min(255, cr)).rounded())
+                }
+            }
+        }
+
+        return (y, cbcr, CGRect(x: origin.x, y: origin.y, width: CGFloat(width), height: CGFloat(height)))
+    }
+
+    /// 把缓存的 NV12 字节贴到这一帧上。
+    private func blit(into pixelBuffer: CVPixelBuffer, width: Int, height: Int) {
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        let patchWidth = Int(cachedRect.width)
+        let patchHeight = Int(cachedRect.height)
+        let originX = Int(cachedRect.minX)
+        let originY = Int(cachedRect.minY)
+
+        guard originX + patchWidth <= width, originY + patchHeight <= height else { return }
+
+        if let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) {
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+            let destination = base.assumingMemoryBound(to: UInt8.self)
+
+            for row in 0..<patchHeight {
+                let from = row * patchWidth
+                let to = (originY + row) * stride + originX
+
+                cachedY.withUnsafeBufferPointer { source in
+                    memcpy(destination + to, source.baseAddress! + from, patchWidth)
+                }
+            }
+        }
+
+        if CVPixelBufferGetPlaneCount(pixelBuffer) > 1,
+           let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) {
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+            let destination = base.assumingMemoryBound(to: UInt8.self)
+
+            // 色度是 2×2 下采样：行列都减半。
+            for row in stride(from: 0, to: patchHeight / 2, by: 1) {
+                let from = row * patchWidth
+                let to = ((originY / 2) + row) * stride + (originX / 2) * 2
+
+                cachedCbCr.withUnsafeBufferPointer { source in
+                    memcpy(destination + to, source.baseAddress! + from, patchWidth)
+                }
+            }
+        }
+    }
+}
+
 final class CameraSegmentRecorder: NSObject {
 
     // MARK: - 配置
@@ -287,6 +552,9 @@ final class CameraSegmentRecorder: NSObject {
     /// 本次会话用的录制规格。**只在 [openCamera] 里定一次** ——
     /// 改了它要重开会话（Dart 那边就是这么做的：规格变了先关相机再开）。
     private var spec: RecorderSpec = .standard
+
+    /// 水印（规格 §3.6.2）。
+    private let watermark = WatermarkOverlay()
 
     /// 相机是否已打开（**不等于正在录**）。
     ///
@@ -436,7 +704,15 @@ final class CameraSegmentRecorder: NSObject {
     ///
     /// 与 [openCamera] 分开是刻意的 —— 见那边的说明。
     /// [directory] 是这一段（= 一个会话）的落盘位置。
-    func startRecording(directory: URL, segmentDuration: TimeInterval) -> Bool {
+    /// <param name="trustedStartMs">
+    /// **可信时钟**给的开录时刻（epoch 毫秒，规格 §3.6.4）。
+    /// 水印上那行时间就从它推 —— 规格 §3.6.3：「水印与时长都不得取自墙钟」。
+    /// 传 nil 时退回墙钟（老调用方 / 测试路径）。
+    /// </param>
+    func startRecording(
+        directory: URL, segmentDuration: TimeInterval, waybill: String = "",
+        trustedStartMs: Double? = nil
+    ) -> Bool {
         guard cameraOpen, !isRecording else { return false }
 
         outputDirectory = directory
@@ -451,6 +727,16 @@ final class CameraSegmentRecorder: NSObject {
         currentWriter = nil
         previousLuma = nil
         lastReportedStatic = nil
+
+        // ── 水印（规格 §3.6.2）────────────────────────────────────────
+        //
+        // ⚠️ 起算点是**可信时钟**给的那个时刻（`trustedStartMs`），不是 Date()：
+        // 用户改系统时间不得改变视频里的时间。
+        watermark.renderWaybill = WatermarkOverlay.WaybillLine(waybill)
+        watermark.startDate = trustedStartMs
+            .map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+        watermark.firstPresentationTime = nil
+        watermark.cachedSecond = nil
 
         stateLock.lock()
         running = true
@@ -1065,6 +1351,10 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
         stateLock.unlock()
 
         guard ready, let active = writer else { return }
+
+        // 水印（规格 §3.6.2）：**帧进编码器之前**画上去。
+        // ⚠️ 失败绝不打断采集 —— 那一段没有水印是遗憾，录不出来是事故。
+        watermark.draw(into: imageBuffer, at: presentationTime)
 
         // 写入会话要在这里开 —— 因为**起始时间只能是第一帧的时刻**，
         // 而那个时刻到 append 之前才知道。

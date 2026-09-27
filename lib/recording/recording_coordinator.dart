@@ -515,6 +515,11 @@ class RecordingCoordinator {
     await _gateway.startRecording(
       directory: _workspace.sessionDirectory(_sessionId!),
       segmentDuration: _segmentDuration,
+      // 水印要的两样（规格 §3.6.2）：完整单号 + **可信时钟**给的开录时刻。
+      // ⚠️ 第二个必须是 `trustedClock.now`，不是墙钟 —— 用户改系统时间
+      // 不得改变视频里的时间（§3.6.3）。
+      waybill: waybill.value,
+      trustedStartMs: trustedClock?.now.millisecondsSinceEpoch,
     );
 
     // 开录用的这个单号此刻就在画面里/操作员手上。**必须标记成「刚见过」**，

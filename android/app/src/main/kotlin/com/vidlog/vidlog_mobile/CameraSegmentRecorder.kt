@@ -432,6 +432,24 @@ class CameraSegmentRecorder(
     private var captureSession: CameraCaptureSession? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
+
+    /**
+     * 水印（规格 §3.6.2）。为 null 表示**这一段没有水印**（建不起来或还没开相机）——
+     * 那时相机直接写编码器的 Surface，与改动前完全一致。
+     */
+    private var watermarkRenderer: WatermarkGlRenderer? = null
+
+    /// 水印第二行要的单号（一段一个，规格：一段只用一个单号）。
+    private var watermarkWaybill: String = ""
+
+    /// 水印的起算时刻（**可信时钟**给的 epoch 毫秒）。
+    private var watermarkStartEpochMs: Double = 0.0
+
+    /// 本段第一帧的时间戳 —— 帧偏移的原点。
+    private var watermarkFirstFrameNanos: Long = 0L
+
+    /// 画失败只报一次（真机上一秒 30 次会把日志刷爆）。
+    private val watermarkDrawFailed = java.util.concurrent.atomic.AtomicBoolean(false)
     private var muxer: MediaMuxer? = null
     private var analysisReader: ImageReader? = null
 
@@ -624,12 +642,26 @@ class CameraSegmentRecorder(
      * 与 [openCamera] 分开是刻意的 —— 见类注释。
      * 返回 false 表示相机还没开、或已经在录了。
      */
-    fun startRecording(directory: File, segmentDurationMs: Long): Boolean {
+    fun startRecording(
+        directory: File,
+        segmentDurationMs: Long,
+        waybill: String = "",
+        trustedStartMs: Double? = null,
+    ): Boolean {
         if (!cameraOpen || running) return false
 
         outputDirectory = directory
         this.segmentDurationMs = segmentDurationMs
         outputDirectory.mkdirs()
+
+        // ── 水印（规格 §3.6.2）────────────────────────────────────────
+        //
+        // ⚠️ 起算点是**可信时钟**给的开录时刻，不是 `System.currentTimeMillis()`：
+        // 用户改系统时间不得改变视频里的时间（规格 §3.6.3）。
+        // 没给时退回墙钟（老调用方 / 测试路径）。
+        watermarkWaybill = waybill
+        watermarkStartEpochMs = trustedStartMs ?: System.currentTimeMillis().toDouble()
+        watermarkFirstFrameNanos = 0L
 
         sessionStartedAtMs = SystemClock.elapsedRealtime()
         segmentSequence = -1
@@ -813,6 +845,13 @@ class CameraSegmentRecorder(
         }
         encoder = null
 
+        // ⚠️ **先拆 GL 那一层，再放编码器的 Surface。**
+        // 顺序反了的话，GL 的 EGLSurface 指着一块已经释放的 Surface ——
+        // 真机上的表现是下一次开会话时黑屏或直接崩（这类顺序问题本仓踩过）。
+        watermarkRenderer?.release()
+        watermarkRenderer = null
+        watermarkDrawFailed.set(false)
+
         inputSurface?.release()
         inputSurface = null
 
@@ -932,6 +971,27 @@ class CameraSegmentRecorder(
         codec.start()
         encoder = codec
 
+        // ── 水印那一层 GL 通路（规格 §3.6.2）─────────────────────────
+        //
+        // 相机原本**直接**写进编码器的输入 Surface —— 那样没有任何地方能改像素。
+        // 要叠字就得在中间插一层 GL：相机 → 外部纹理 → GL（画面 + 水印）→ 编码器。
+        //
+        // ⚠️ **建不起来就退回直连通路**（`watermarkRenderer` 留 null）：
+        // 那一段没有水印是遗憾，**录不出来是事故**（I2 的同一条精神）。
+        // 真机上「一块黑屏 / 一帧不出」是这条路的典型症状，见到就先看这里的降级日志。
+        watermarkRenderer = try {
+            WatermarkGlRenderer(
+                outputSurface = inputSurface!!,
+                videoWidth = videoSize.width,
+                videoHeight = videoSize.height,
+                onFrame = { texture -> onWatermarkFrame(texture) },
+            ).also { it.setup() }
+        } catch (error: Throwable) {
+            logGlFailure("水印 GL 通路建不起来，已退回无水印的直连录制", error)
+            onEvent(RecorderEvent.Failed("水印没启用（画面合成起不来），录像照常。"))
+            null
+        }
+
         startEncoderLoop()
 
         // 静止检测与识码用一路单独的输出，不影响录制。
@@ -972,10 +1032,17 @@ class CameraSegmentRecorder(
         }, cameraHandler)
     }
 
-    /** 当前会话要喂哪几路输出。预览是可选的那一路。 */
+    /// 当前会话要喂哪几路输出。预览是可选的那一路。
+    ///
+    /// ⚠️ **有水印时相机不再直接写编码器的 Surface** —— 它写 GL 那条路的
+    /// 外部纹理，由 GL 合成之后送进编码器（见 [openDevice]）。
+    /// 两路同时挂上会让画面被写两次（编码器里就成了两帧）。
     private fun sessionTargets(): List<Surface> {
         val targets = mutableListOf<Surface>()
-        inputSurface?.let { targets.add(it) }
+
+        val sink = watermarkRenderer?.inputSurface() ?: inputSurface
+        sink?.let { targets.add(it) }
+
         analysisReader?.let { targets.add(it.surface) }
         previewSurface?.let { targets.add(it) }
         return targets
@@ -1033,9 +1100,37 @@ class CameraSegmentRecorder(
     }
 
     private fun applyTargets(builder: CaptureRequest.Builder) {
-        inputSurface?.let { builder.addTarget(it) }
+        (watermarkRenderer?.inputSurface() ?: inputSurface)?.let { builder.addTarget(it) }
         analysisReader?.let { builder.addTarget(it.surface) }
         previewSurface?.let { builder.addTarget(it) }
+    }
+
+    /// GL 那一层画完一帧的回调（相机每来一帧调一次）。
+    ///
+    /// ⚠️ 时刻 = **可信起录时刻 + 帧自己的时间戳偏移**。
+    /// `SurfaceTexture.getTimestamp()` 是这套管道自己的单调时基，
+    /// 所以帧间隔不会被用户改系统时间影响（规格 §3.6.3）。
+    private fun onWatermarkFrame(texture: android.graphics.SurfaceTexture) {
+        val renderer = watermarkRenderer ?: return
+
+        val nanos = texture.timestamp
+
+        if (watermarkFirstFrameNanos == 0L) {
+            watermarkFirstFrameNanos = nanos
+        }
+
+        val elapsedMs = (nanos - watermarkFirstFrameNanos) / 1_000_000.0
+        val epochMs = (watermarkStartEpochMs + elapsedMs).toLong()
+
+        try {
+            renderer.drawFrame(epochMs, watermarkWaybill)
+        } catch (error: Throwable) {
+            // ⚠️ 画不动就**别再画了**，但采集照旧 —— 没有水印是遗憾，
+            // 录不出来是事故。这里只记一次，免得刷屏。
+            if (watermarkDrawFailed.compareAndSet(false, true)) {
+                logGlFailure("水印画不上去，这一段没有水印（录像照常）", error)
+            }
+        }
     }
 
     /** 预览的 Surface。缓冲区尺寸必须按**画面尺寸**设，否则相机输出会被拉伸。 */

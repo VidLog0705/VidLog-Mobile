@@ -331,7 +331,13 @@ class RecorderChannel(private val activity: FlutterActivity) :
             call.argument<Number>("segmentDurationMs")?.toLong()
                 ?: CameraSegmentRecorder.DEFAULT_SEGMENT_DURATION_MS
 
-        val started = current.startRecording(File(directory), segmentDurationMs)
+        // 水印（规格 §3.6.2）：单号 + **可信时钟**给的开录时刻。
+        // 缺参数时退回「没有单号 + 墙钟」——老版本 Dart 不带它们时行为与从前一致。
+        val waybill = call.argument<String>("waybill") ?: ""
+        val trustedStartMs = call.argument<Number>("trustedStartMs")?.toDouble()
+
+        val started = current.startRecording(
+            File(directory), segmentDurationMs, waybill, trustedStartMs)
         if (started) {
             result.success(null)
         } else {

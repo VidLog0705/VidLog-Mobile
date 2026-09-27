@@ -2047,13 +2047,21 @@ class FakeGateway implements RecorderGateway {
   Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
+    String? waybill,
+    int? trustedStartMs,
   }) async {
     if (onStartRecording != null) await onStartRecording!();
 
     started = true;
     this.directory = directory;
     this.segmentDuration = segmentDuration;
+    startedWaybill = waybill;
+    startedTrustedMs = trustedStartMs;
   }
+
+  /// 开录时带过去的单号与**可信**起录时刻（水印要用，规格 §3.6.2）。
+  String? startedWaybill;
+  int? startedTrustedMs;
 
   /// 停止时补投一个分段事件 —— 模拟原生层「停止时才封完最后一段」的行为。
   SegmentClosedEvent? emitOnStop;

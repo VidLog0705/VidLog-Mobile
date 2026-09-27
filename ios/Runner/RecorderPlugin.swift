@@ -323,9 +323,17 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         let durationMs = (args["segmentDurationMs"] as? NSNumber)?.doubleValue
             ?? CameraSegmentRecorder.defaultSegmentDuration * 1000
 
+        // 水印（规格 §3.6.2）：单号 + **可信时钟**给的开录时刻。
+        // ⚠️ 缺参数时退回「没有单号 + 墙钟」——老版本 Dart 不带它们时
+        // 行为与从前一致（水印仍会画，只是那行单号是空的）。
+        let waybill = args["waybill"] as? String ?? ""
+        let trustedStartMs = (args["trustedStartMs"] as? NSNumber)?.doubleValue
+
         let started = recorder.startRecording(
             directory: URL(fileURLWithPath: directory),
-            segmentDuration: durationMs / 1000)
+            segmentDuration: durationMs / 1000,
+            waybill: waybill,
+            trustedStartMs: trustedStartMs)
 
         if started {
             result(nil)

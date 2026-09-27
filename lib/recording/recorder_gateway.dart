@@ -118,9 +118,18 @@ abstract interface class RecorderGateway {
   ///
   /// [directory] 是这一段（= 一个会话）的落盘位置；
   /// [segmentDuration] 决定单段时长 —— 掉电最多丢这么多。
+  ///
+  /// [waybill] 与 [trustedStartMs] 是**水印**要的两样（规格 §3.6.2）：
+  /// 完整单号，以及**可信时钟**给的开录时刻（epoch 毫秒）。
+  /// ⚠️ 第二个**不能**是墙钟 —— 规格 §3.6.3：「水印与时长都不得取自墙钟 ——
+  /// 用户改系统时间**不得**改变视频里的时间」。
+  ///
+  /// 两者都可空：不传时原生仍会画时间那一行（退回墙钟起算、单号为空）。
   Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
+    String? waybill,
+    int? trustedStartMs,
   });
 
   /// 停止录制。**相机保持开着**，取景框还在，下件包裹接着扫。
@@ -241,10 +250,14 @@ class ChannelRecorderGateway implements RecorderGateway {
   Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
+    String? waybill,
+    int? trustedStartMs,
   }) =>
       _methods.invokeMethod<void>('startRecording', {
         'directory': directory,
         'segmentDurationMs': segmentDuration.inMilliseconds,
+        if (waybill != null) 'waybill': waybill,
+        if (trustedStartMs != null) 'trustedStartMs': trustedStartMs,
       });
 
   @override
