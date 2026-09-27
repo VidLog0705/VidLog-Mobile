@@ -11,10 +11,12 @@ import '../diagnostics/error_handlers.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
 import '../recording/cleanup_audit.dart';
+import '../recording/cleanup_executor.dart';
 import '../recording/clock_calibration.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart';
+import '../recording/lifecycle.dart';
 import '../recording/manual_delete.dart';
 import '../recording/punch_log.dart';
 import '../recording/scan_error_log.dart';
@@ -521,6 +523,14 @@ class _RecorderPageState extends State<RecorderPage> {
     if (!mounted) return;
 
     await _probeHost();
+    if (!mounted) return;
+
+    // ── 启动时算一次清理计划，**给用户看过才动手**（规格 §3.5.5）──────
+    //
+    // ⚠️ 放在 `_probeHost()` **之后**：清理要逐条回查电脑端（§3.5.4），
+    // 而回查要走 `_client`（地址与凭据在探主机那一步才备齐）。
+    // ⚠️ 也放在所有「读盘」之后：计划要索引 / 标签 / 归档记录三样都在手。
+    await _offerCleanup();
   }
 
   /// 探一次电脑端在不在线上。
@@ -2091,6 +2101,102 @@ class _RecorderPageState extends State<RecorderPage> {
   ///                  ⇒ 有查不到 / 查不了 ⇒ **不弹删除窗**，只告诉他为什么不能删
   /// 未备份 ⇒ 三选一窗（没有那份可查，需求方裁决过：这种也给删）
   /// ```
+  /// 自动清理的**预告 + 执行**（规格 §3.5.4 / §3.5.5）。
+  ///
+  /// ⚠️ **禁止静默清理**（规格原话：「清理前必须给出预告（将删除多少条、
+  /// 多少容量）」）—— 所以是「先算 → 给用户看过 → 他点了才删」，
+  /// 与电脑端 `MainWindow.RunStartupCleanupAsync` **同一个形状**。
+  ///
+  /// ⚠️ 排在 `_bootstrap` 的**最后**（`_probeHost()` 之后）：清理要**逐条回查
+  /// 电脑端**（§3.5.4），而那条路要先知道地址与凭据（`_client`）。
+  ///
+  /// ⚠️ 没有候选时**不打扰**：每次开 App 弹一句「没什么要清的」是噪音，
+  /// 而噪音会把真正该看的那一次淹掉。
+  ///
+  /// ⚠️ **未备份那一列永不自动删**（§3.5.2.1）在判定层是**结构性**保证的
+  /// （它们落在 `nudges` 而不是 `candidates`）—— 这里不重复判，也不该判。
+  Future<void> _offerCleanup() async {
+    final settings = _settings;
+    final client = _client;
+
+    // 设置没读出来、或电脑端的地址/凭据还没准备好 —— 这次不清理。
+    // 回查是**硬要求**（查不了就不许删），所以没有 client 就整件事做不了。
+    if (settings == null || client == null) return;
+
+    final plan = planCleanup(
+      entries: _entries,
+      labels: _labelsByEvidence,
+      archive: _archiveRecords,
+      retentionArchivedOutbound: settings.retentionArchivedOutbound,
+      retentionArchivedReturn: settings.retentionArchivedReturn,
+      retentionUnarchivedOutbound: settings.retentionUnarchivedOutbound,
+      retentionUnarchivedReturn: settings.retentionUnarchivedReturn,
+      now: DateTime.now(),
+    );
+
+    if (plan.candidates.isEmpty) return; // 不打扰
+    if (!mounted) return;
+
+    final answer = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清理手机上的录像'),
+        content: Text(cleanupPreviewText(plan)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('现在清理'),
+          ),
+        ],
+      ),
+    );
+
+    if (answer != true || !mounted) return;
+
+    final root = _rootPath;
+
+    final outcome = await runCleanup(
+      plan: plan,
+      locationByEvidenceId: _locationByEvidenceId,
+      rootDirectory: root,
+      // 与手动删除**同一个文件、同一个形状**（审计是同一份流水）。
+      audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+      now: DateTime.now(),
+      verify: (evidenceId) async {
+        final location = _locationByEvidenceId[evidenceId];
+
+        if (location == null || location.isEmpty) {
+          // 老索引行可能没有路径 —— 没法回查，那就是「查不了」。
+          return const VerifyOutcome(
+            exists: false,
+            couldNotVerify: true,
+            reason: '索引里没有这一段的相对路径',
+          );
+        }
+
+        try {
+          return await client.verifyLocation(location);
+        } on Object catch (error) {
+          // 连不上 / 超时 / 电脑端没开 —— 一律「查不了」，
+          // **绝不当成「在」**（§3.5.4：删掉的可能就是最后一份）。
+          return VerifyOutcome(exists: false, couldNotVerify: true, reason: '$error');
+        }
+      },
+    );
+
+    _log(
+      '清理完成：删了 ${outcome.deleted.length} 段，'
+      '归档层上查不到（因此没删）${outcome.refused.length} 段，'
+      '删不动 ${outcome.failed.length} 段。',
+    );
+
+    await _refreshDiagnostics();
+  }
+
   Future<void> _askDelete(RecordingSession session) async {
     final client = _client;
     final root = _rootPath;
