@@ -10,9 +10,11 @@ import '../diagnostics/diagnostics_package.dart';
 import '../diagnostics/error_handlers.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
+import '../recording/cleanup_audit.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart';
+import '../recording/manual_delete.dart';
 import '../recording/punch_log.dart';
 import '../recording/scan_error_log.dart';
 import '../recording/recorder_config.dart';
@@ -286,6 +288,9 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 盘上的归档状态（`archive.jsonl` 读回来，按 `evidenceId`）。
   Map<String, ArchiveRecord> _archiveRecords = const {};
 
+  /// `evidenceId → 索引里那个相对路径`。手动删除要拿它定位磁盘文件。
+  Map<String, String> _locationByEvidenceId = const {};
+
   /// 正在跑一趟上传。用来禁用按钮、不让两趟叠在一起。
   bool _uploading = false;
 
@@ -539,7 +544,7 @@ class _RecorderPageState extends State<RecorderPage> {
       punchLog: _punchLog,
       labels: _labels,
       archive: _archive,
-      client: UploadClient(
+      client: _client = UploadClient(
         address: identity.hostAddress,
         // 端口来自**二维码里那一串**（`hostPort`），默认 8720 ——
         // 不传的话，扫码连进来的那台电脑端只要不是默认端口，
@@ -549,6 +554,12 @@ class _RecorderPageState extends State<RecorderPage> {
       ),
     );
   }
+
+  /// 当前那个客户端。**手动删除要拿它回查归档层**（规格 §3.5.6③）。
+  ///
+  /// 与 `_uploader` 同时建、同时换 —— 拿它自己再 new 一个的话，
+  /// 地址或凭据一改就会出现「上传用的是新的、回查用的是旧的」那种错位。
+  UploadClient? _client;
 
   /// 跑一趟上传队列。
   ///
@@ -1480,6 +1491,10 @@ class _RecorderPageState extends State<RecorderPage> {
         _archiveRecords = archiveRecords;
         _todayCount = countToday(merged, DateTime.now());
         _videoBytes = videoBytes;
+        // 手动删除要按 evidenceId 找到磁盘位置 —— 索引里那个相对路径就在这里。
+        _locationByEvidenceId = {
+          for (final entry in entries) entry.evidenceId: entry.location.value,
+        };
       });
     } on Object catch (error) {
       if (mounted) setState(() => _status = '读取工作区失败：$error');
@@ -1977,6 +1992,167 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  /// 手动删除这一条（规格 §3.5.6）。
+  ///
+  /// ## 顺序是刻意的：**先回查，再弹窗**
+  ///
+  /// 规格 ③ 要求「删之前必须回查归档层」，而回查的结果**决定了**弹哪一种窗：
+  /// 查不到 / 查不了时**根本不该弹「确认删除」** —— 弹了就等于把一个
+  /// 系统已经知道不该做的动作交给用户去点。所以顺序是：
+  ///
+  /// ```
+  /// 已备份 ⇒ 逐段回查 ⇒ 都还在 ⇒ 两选一窗
+  ///                  ⇒ 有查不到 / 查不了 ⇒ **不弹删除窗**，只告诉他为什么不能删
+  /// 未备份 ⇒ 三选一窗（没有那份可查，需求方裁决过：这种也给删）
+  /// ```
+  Future<void> _askDelete(RecordingSession session) async {
+    final client = _client;
+    final root = _rootPath;
+
+    if (client == null) {
+      _log('⚠️ 还不能删除：电脑端地址或凭据没准备好');
+      return;
+    }
+
+    // 先按本地记录判一遍「备份了没有」—— 未备份的那些不用回查。
+    final preliminary = planManualDelete(
+      session: session,
+      records: _archiveRecords,
+      verify: const {},
+    );
+
+    var verify = const <String, VerifyOutcome>{};
+
+    if (!preliminary.needsUploadChoice) {
+      verify = await _verifyEachSegment(session, client);
+    }
+
+    if (!mounted) return;
+
+    final plan = planManualDelete(
+      session: session,
+      records: _archiveRecords,
+      verify: verify,
+    );
+
+    if (!plan.deletionAllowed) {
+      // ⚠️ **不许删时不弹删除窗** —— 只把原因说清楚。
+      // 弹了就等于把这个动作交给用户去点，而系统已经知道它不该做。
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('这条现在不能删'),
+          content: Text(plan.reason),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await _confirmDelete(session, plan);
+    if (confirmed != true || !mounted) return;
+
+    await _deleteNow(session, plan, root);
+  }
+
+  /// 逐段回查归档层。**问不到就当查不了**，绝不当成「在」。
+  Future<Map<String, VerifyOutcome>> _verifyEachSegment(
+    RecordingSession session,
+    UploadClient client,
+  ) async {
+    final results = <String, VerifyOutcome>{};
+
+    for (final evidenceId in session.evidenceIds) {
+      final location = _locationByEvidenceId[evidenceId];
+      if (location == null || location.isEmpty) continue;
+
+      try {
+        results[evidenceId] = await client.verifyLocation(location);
+      } on Object catch (error) {
+        // 连不上 / 超时 / 电脑端没开 —— 一律「查不了」。
+        results[evidenceId] = VerifyOutcome(
+          exists: false,
+          couldNotVerify: true,
+          reason: '$error',
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /// 按「备份了没有」弹那两种窗（规格 ②：**不许合成一个**）。
+  Future<bool?> _confirmDelete(RecordingSession session, DeletePlan plan) async {
+    final unarchived = plan.needsUploadChoice;
+
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(unarchived ? '这一条还没备份' : '删除这一条录像'),
+        content: Text(
+          unarchived
+              ? '${plan.reason}\n\n可以点【重新上传】先把这一条传上去（那就不会删），'
+                  '或者仍然删掉它。'
+              : plan.reason,
+        ),
+        actions: [
+          if (unarchived)
+            TextButton(
+              key: const Key('delete-upload-instead'),
+              onPressed: () {
+                // 「重新上传」与「删除」是**互斥的两个意图** ——
+                // 点完它还把文件删了，是最不该发生的一种。
+                Navigator.of(context).pop(false);
+                unawaited(_runUploads(manual: true));
+              },
+              child: const Text('重新上传'),
+            ),
+          TextButton(
+            key: const Key('delete-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(unarchived ? '取消删除' : '取消'),
+          ),
+          TextButton(
+            key: const Key('delete-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 真删：先写审计，再删文件（规格 §3.5.6④）。
+  Future<void> _deleteNow(RecordingSession session, DeletePlan plan, String root) async {
+    try {
+      final deleted = await deleteSessionFiles(
+        plan: plan,
+        locationByEvidenceId: _locationByEvidenceId,
+        rootDirectory: root,
+        audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+        now: DateTime.now(),
+      );
+
+      _log('🗑 删掉了 ${session.waybill.value} 的 ${deleted.length} 段本地副本');
+
+      // 删完刷新备份页：列表、未备份计数、占用都要跟着变
+      // （占用那一项走盘、不走索引，所以必须重读）。
+      await _refreshDiagnostics();
+      if (mounted) setState(() {});
+    } on Object catch (error) {
+      // ⚠️ 审计写不进去 ⇒ `deleteSessionFiles` 抛 ⇒ **这一条没删**（那是它的设计）。
+      // 所以这里要说清楚「没删」，而不是笼统报错 —— 用户以为删了而其实没删，
+      // 或者反过来，都是他会照着做决定的信息。
+      _log('⚠️ 删除没能进行（没有文件被删）：$error');
+      if (mounted) setState(() {});
+    }
+  }
+
   /// 归档状态 → 那一格的字与色。
   ///
   /// 用词与 `ArchiveRecord` 的状态名**一一对应**，不另起一套：
@@ -2115,7 +2291,21 @@ class _RecorderPageState extends State<RecorderPage> {
                   '${_durationLabel(session.duration)} · '
                   '${session.bytes > 0 ? _sizeLabel(session.bytes) : '大小未知'}',
                 ),
-                trailing: _uploadChip(session),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _uploadChip(session),
+                    // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
+                    // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
+                    // 这里只负责发起，判定与安全都在 `_askDelete` 里。
+                    IconButton(
+                      key: Key('delete-${session.sessionId}'),
+                      icon: const Icon(Icons.delete_outline, size: 20),
+                      tooltip: '删除这一条',
+                      onPressed: _settingsReady ? () => _askDelete(session) : null,
+                    ),
+                  ],
+                ),
               ),
             ],
           const Divider(height: 1),
@@ -3530,8 +3720,9 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             const SizedBox(height: 4),
             const Text(
-              '⚠️ 现在这里只是记下你的选择 —— 真正开删要等清理执行层接通（M6）。'
-              '今天不会有任何文件被删。另外【被锁定】的证据永远不清。',
+              '⚠️ 这一块记的是**到期之后该怎么做**，而手机端的自动清理还没接通 —— '
+              '今天不会有任何文件**自动**被删。想现在删就用备份页每一条右边的垃圾桶图标'
+              '（那会先跟电脑端核对，核对不上就不删）。另外【被锁定】的证据永远不清。',
               style: TextStyle(fontSize: 12),
             ),
           ],

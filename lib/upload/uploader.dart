@@ -26,6 +26,7 @@ import '../diagnostics/app_log.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart' show defaultHostPort;
+import '../recording/manual_delete.dart' show VerifyOutcome;
 import '../recording/punch_log.dart';
 import '../recording/recording_index.dart';
 import '../states.dart';
@@ -231,6 +232,24 @@ class UploadClient {
     }
 
     return EnrollOutcome(status);
+  }
+
+  /// 回查归档层：这一份还在不在（规格 §3.5.4 / §3.5.6③）。
+  ///
+  /// 手动删除的**前置闸**：不能只看手机上那条「已备份」的记录 ——
+  /// 用户可能已经把电脑端那份删掉了。
+  ///
+  /// ⚠️ **「查不了」与「不存在」是两件事**（`05-上传接口形状.md` §2.7）：
+  /// 服务端把它们分成两个字段回，因为**两者都导致不删**，但说给用户的是两句话。
+  /// 这里不把异常折成「不在」—— 抛出去，由调用方按「查不了」处理。
+  Future<VerifyOutcome> verifyLocation(String location) async {
+    final json = await _send('POST', 'archive/verify', body: {'location': location});
+
+    return VerifyOutcome(
+      exists: json['exists'] == true,
+      couldNotVerify: json['couldNotVerify'] == true,
+      reason: json['reason'] as String?,
+    );
   }
 
   Future<ProbeResult> probe({
