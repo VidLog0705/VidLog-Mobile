@@ -172,5 +172,53 @@ void main() {
       expect(RecordingSpec.bytesPerSecondOf('h264', 'uhd4K'),
           greaterThan(3 * RecordingSpec.bytesPerSecondOf('h264', 'p1080')));
     });
+
+    test('★ 表比我们自己的目标码率小约两倍 —— 这是**已知偏差**，不是没注意', () {
+      // ⚠️ 这条**不是在验正确**，是在**钉住一个已知偏差**（见 `bytesPerSecondOf`
+      // 的文档注释）：那张表是照**电脑端**（CRF，真实码率低）标定的，
+      // 而我们是**固定码率**、比它大。
+      //
+      // 钉它的理由：这个偏差的后果是**按空间清理会多删条数**（不可逆），
+      // 而它今天只影响预告数字、所以很容易被忘掉。把比值钉住之后，
+      // **哪一头变了它都会红** —— 改 `bitRate` 公式会红、改容量表也会红。
+      // 红的时候**两件事必须一起看**，别只把这个比值改掉。
+      //
+      // 真要去掉这条断言的做法只有一个：拿两端**真录的文件**实测标定，
+      // 然后把表和这条一起换掉。
+      const specs = <(String, String)>[
+        ('h264', 'p720'),
+        ('h264', 'p1080'),
+        ('h264', 'uhd4K'),
+        ('h265', 'p720'),
+        ('h265', 'p1080'),
+        ('h265', 'uhd4K'),
+      ];
+
+      for (final (codec, resolution) in specs) {
+        final spec = RecordingSpec(
+          codec: VideoCodec.fromConfig(codec),
+          resolution: VideoResolution.fromConfig(resolution),
+        );
+
+        // ⚠️ **单位**：`bitRate` 是 **bit/s**，而 `bytesPerSecondOf` 返的是
+        // **字节/s**（它内部那个表才是 KB/s）。所以这里只除 8，**别再除 1024**
+        // —— 多除一次会算出「表比目标大 1000 倍」那种胡话
+        // （这条断言第一次跑就是这么红的）。
+        final target = spec.bitRate / 8;
+        final table = RecordingSpec.bytesPerSecondOf(codec, resolution);
+
+        expect(
+          table,
+          lessThan(target),
+          reason: '${spec.label} 的容量系数（$table）比目标码率（$target）还大 —— '
+              '说明容量表被改过了，先回去看 `bytesPerSecondOf` 上面那段说明',
+        );
+        expect(
+          table / target,
+          greaterThan(0.4),
+          reason: '${spec.label} 偏小超过 2.5 倍，比记录的「约 2 倍」离谱得多',
+        );
+      }
+    });
   });
 }

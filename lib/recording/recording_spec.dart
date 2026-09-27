@@ -196,6 +196,22 @@ class RecordingSpec {
   /// ⚠️ **两端同一张表、同一个单位**（电脑端
   /// `CleanupPlanner.BytesPerSecond`）。对不上的话，两端的「将腾出多少」
   /// 会给出不同的数 —— 而用户会以为其中一个在骗他。
+  /// **改一处必须改两处。**
+  ///
+  /// ⚠️⚠️ **但这张表是照电脑端标定的，对我们偏小约 2 倍**（2026-09-27 查清）：
+  /// 两端的码率本来就不一样 —— 电脑端 ffmpeg 命令行里**一个码率参数都没有**
+  /// （CRF，随画面走），而我们**显式设了码率**（见 [bitRate]，Android 走
+  /// `KEY_BIT_RATE`、iOS 走 `AVVideoAverageBitRateKey`，都是硬目标）。
+  ///
+  /// 照 [bitRate] 算：1080P H.264 目标是 **18 Mbps**（表里按 1100 KB/s ≈ 8.8 Mbps 估）、
+  /// 4K H.264 是 **72 Mbps**（表里 32 Mbps）—— 每一格都偏小 1.8~2.25 倍。
+  ///
+  /// **偏小为什么危险**：按空间清理是「攒到够为止」，以为每条更小就会**删更多条**，
+  /// 而删的是不可逆的证据。（偏大那头才安全：少删。）
+  ///
+  /// ⚠️ **今天先不改数值**：两端的真实码率**都没有实测过**（上面那个 18 Mbps
+  /// 是纸面推导，电脑端 CRF 下的真实码率更没测过）。拿一组推导换掉另一组推导，
+  /// 只是把「已知偏小」变成「未知」。**接上按空间清理那一档之前必须实测标定。**
   ///
   /// 认不出的规格（老索引行没这两个字段、被人手改坏的值）一律走默认档那一格，
   /// 与设置层「越界回落默认值」同一条规矩。
@@ -203,7 +219,8 @@ class RecordingSpec {
     final codec = VideoCodec.fromConfig(codecName);
     final resolution = VideoResolution.fromConfig(resolutionName);
 
-    // 单位 KB/s（偏大估）。
+    // 单位 KB/s。⚠️ 这几个数是照**电脑端**（CRF，真实码率低）标定的 ——
+    // 我们是固定码率、比这些大，见方法注释里那段说明。
     final kilobytesPerSecond = switch ((codec, resolution)) {
       (VideoCodec.h265, VideoResolution.uhd4K) => 2500,
       (VideoCodec.h265, VideoResolution.p1080) => 700,
