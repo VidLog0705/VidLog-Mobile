@@ -162,6 +162,33 @@ void main() {
   // ══════════════════════════════════════════════════════════════════
 
   group('机位名上限 12 格（汉字算 2）', () {
+    test('★★ 跨仓固定向量 —— 与电脑端逐字同一组', () {
+      // ⚠️ 规格 §3.4.3 ② 点名「上限属于**这个字段**……从**任何路径**写进来的
+      // 名字都得是**同一把尺子**」，§3.4.5 ③ 又说「**两端必须用同一套换算**」——
+      // 而两个仓没法共享代码。
+      //
+      // 所以两端各写一份**同样输入 → 同样输出**的样例：只在一端改了换算，
+      // **那一端会红**，而另一端的同名测试仍然绿 —— 那时就说明两端不再同向。
+      //
+      // ⚠️ 另一端在 `VidLog-Desktop` 的
+      // `tests/VidLog.Desktop.Core.Tests/DeviceNameRulesTests.cs`
+      // 的 `宽度与截断_跟跨仓向量一致`。**改这一组要两边一起改。**
+      const vectors = <(String, int, String)>[
+        ('打包手机-1', 10, '打包手机-1'),        // 4 汉字(8) + '-' + '1'
+        ('abcdefghijkl', 12, 'abcdefghijkl'),    // 12 个字母正好
+        ('abcdefghijklm', 13, 'abcdefghijkl'),   // 第 13 个被丢掉
+        ('未命名机位', 10, '未命名机位'),          // 5 个汉字 = 10 格
+        ('未命名机位abc', 13, '未命名机位ab'),     // 10 + a + b = 12，c 超了
+        ('🎬录像', 6, '🎬录像'),                 // emoji 算 2
+        ('', 0, ''),
+      ];
+
+      for (final (input, width, clamped) in vectors) {
+        expect(deviceNameWidth(input), width, reason: '宽度对不上：$input');
+        expect(clampDeviceName(input), clamped, reason: '截断对不上：$input');
+      }
+    });
+
     test('★ 12 个字母正好用完，6 个汉字也一样', () {
       expect(deviceNameWidth('abcdefghijkl'), 12, reason: '12 个字母 = 12 格，正好');
       expect(deviceNameWidth('三号仓打包台'), 12, reason: '6 个汉字 = 12 格，正好');
