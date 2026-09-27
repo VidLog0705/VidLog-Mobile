@@ -276,6 +276,27 @@ final class WatermarkOverlay {
         waybill.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// 开一段之前把两行字设好。
+    ///
+    /// ⚠️ **两个字段只能一起设**（所以没有各自的 setter）：时间原点与单号
+    /// 是同一次开录的两个事实，分开设的话「换了单号但时间原点还是上一段的」
+    /// 会录出一段水印时间对不上的视频 —— 而画面上看不出来那是错的。
+    ///
+    /// ⚠️ 起算点是 **`trustedStartMs`（可信时钟给的毫秒）**，不是 `Date()`：
+    /// 用户改系统时间不得改变视频里的时间（规格 §3.6.3）。
+    /// 取不到时**回落到 `Date()`** —— 那一段的时间就不可信了，但**录不出来是事故**
+    /// （与「写水印失败不让采集失败」同一条精神）。
+    func configure(waybill: String, trustedStartMs: Double?) {
+        renderWaybill = WatermarkOverlay.WaybillLine(waybill)
+        startDate = trustedStartMs
+            .map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+
+        // 新的一段 = 新的原点：缓存与第一帧时间戳都必须清掉，
+        // 否则第二段会接着上一段的那一秒往下画。
+        firstPresentationTime = nil
+        cachedSecond = nil
+    }
+
     /// 把水印画进这一帧。**失败就什么都不做** —— 采集绝不能因为水印出错（I4 的精神）。
     func draw(into pixelBuffer: CVPixelBuffer, at presentationTime: CMTime) {
         if firstPresentationTime == nil {
@@ -341,7 +362,12 @@ final class WatermarkOverlay {
 
         // 顶部居中：**不得遮挡取景框**（规格 §3.6.2）—— 取景框在画面中间，
         // 水印在最上方那一条里。
-        let originX = max(0, (width - stripWidth) / 2)
+        //
+        // ⚠️ **横坐标要取偶**（`/ 2 * 2`）：色度平面是 2×2 下采样的，贴的时候
+        // 按 `(originX / 2) * 2` 算偏移 —— 奇数原点会被它舍掉一个像素，
+        // 于是**色度整体错开一列**（画面看着像在字边上蒙了一层彩边）。
+        // 尺寸那边的对齐见 `toNV12`；位置这边同样要对齐，只是不那么显眼。
+        let originX = max(0, (width - stripWidth) / 2) / 2 * 2
         let originY = Int(margin)
 
         let renderer = UIGraphicsImageRenderer(
@@ -444,12 +470,12 @@ final class WatermarkOverlay {
         guard originX + patchWidth <= width, originY + patchHeight <= height else { return }
 
         if let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) {
-            let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+            let planeStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
             let destination = base.assumingMemoryBound(to: UInt8.self)
 
             for row in 0..<patchHeight {
                 let from = row * patchWidth
-                let to = (originY + row) * stride + originX
+                let to = (originY + row) * planeStride + originX
 
                 cachedY.withUnsafeBufferPointer { source in
                     memcpy(destination + to, source.baseAddress! + from, patchWidth)
@@ -459,13 +485,17 @@ final class WatermarkOverlay {
 
         if CVPixelBufferGetPlaneCount(pixelBuffer) > 1,
            let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) {
-            let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+            // ⚠️ **别把这个局部变量叫 `stride`** —— 那会遮蔽同名的全局函数
+            // `stride(from:to:by:)`，于是下面那个循环报一句
+            // 「Cannot call value of non-function type 'Int'」，
+            // 而错的地方看起来完全不像这里（2026-09-27 CI 上就是这么红的）。
+            let planeStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
             let destination = base.assumingMemoryBound(to: UInt8.self)
 
             // 色度是 2×2 下采样：行列都减半。
-            for row in stride(from: 0, to: patchHeight / 2, by: 1) {
+            for row in 0..<(patchHeight / 2) {
                 let from = row * patchWidth
-                let to = ((originY / 2) + row) * stride + (originX / 2) * 2
+                let to = ((originY / 2) + row) * planeStride + (originX / 2) * 2
 
                 cachedCbCr.withUnsafeBufferPointer { source in
                     memcpy(destination + to, source.baseAddress! + from, patchWidth)
@@ -732,11 +762,7 @@ final class CameraSegmentRecorder: NSObject {
         //
         // ⚠️ 起算点是**可信时钟**给的那个时刻（`trustedStartMs`），不是 Date()：
         // 用户改系统时间不得改变视频里的时间。
-        watermark.renderWaybill = WatermarkOverlay.WaybillLine(waybill)
-        watermark.startDate = trustedStartMs
-            .map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
-        watermark.firstPresentationTime = nil
-        watermark.cachedSecond = nil
+        watermark.configure(waybill: waybill, trustedStartMs: trustedStartMs)
 
         stateLock.lock()
         running = true
