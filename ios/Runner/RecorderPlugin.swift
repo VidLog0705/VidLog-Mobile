@@ -211,6 +211,9 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "verifyPlayable":
             verifyPlayable(call, result: result)
 
+        case "readResources":
+            readResources(call, result: result)
+
         case "playVideo":
             playVideo(call, result: result)
 
@@ -223,6 +226,62 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// 读三个资源信号：剩余存储 / 电量 / 热度（规格 §3.1.1）。
+    ///
+    /// ⚠️ **三个各自独立地读**，任何一个读不到就**不放那个键** ——
+    /// Dart 那边对缺失的语义是「**这一项不参与判定**」
+    /// （见 `StopController._onResource`），所以少一项 = 少一重保护，
+    /// **不是**「那一项正常」。
+    private func readResources(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        var payload: [String: Any] = [:]
+
+        // ① 剩余存储：用 `volumeAvailableCapacityForImportantUsage` —— 它是
+        // **给应用用的**那个余量（系统在空间紧张时会先清缓存腾地方），
+        // 比 `volumeAvailableCapacity` 更接近「还能录多久」。录像写在 documents 下。
+        if let documents = try? FileManager.default.url(
+            for: .documentDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false),
+           let values = try? documents.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let free = values.volumeAvailableCapacityForImportantUsage {
+            payload["freeStorageBytes"] = free
+        }
+
+        // ② 电量：⚠️ **必须先开** `isBatteryMonitoringEnabled`，否则 `batteryLevel`
+        // 永远是 -1 —— 而那是个**读不到**，不是「电量 0」。
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let level = UIDevice.current.batteryLevel
+        if level >= 0 {
+            payload["batteryPercent"] = Int((level * 100).rounded())
+        }
+
+        // ③ 热度：iOS 只有**四档**，映射到我们那六档（与安卓同一套，都由轻到重）：
+        //
+        //      .nominal  → 0 nominal
+        //      .fair     → 1 light      （轻微，不到阈值）
+        //      .serious  → 3 severe     ← 阈值就是这一档 ⇒ **从这里开始停录**
+        //      .critical → 4 critical
+        //
+        // ⚠️ **跳过 2（moderate）是刻意的**：iOS 没有对应档，而把 `.serious`
+        // 说成 `moderate` 会让它**够不到阈值**（`reaches(severe)` 为假）——
+        // 那等于把最该停的那一档降级了。
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal:
+            payload["thermal"] = 0
+        case .fair:
+            payload["thermal"] = 1
+        case .serious:
+            payload["thermal"] = 3
+        case .critical:
+            payload["thermal"] = 4
+        @unknown default:
+            // 将来加了档 ⇒ **不判定、不猜**（缺键的语义就是「这一项不参与判定」）。
+            break
+        }
+
+        result(payload)
     }
 
     /// 这一段成品**解不解得开**（规格 §3.1.4 的「实际解码校验」）。

@@ -231,6 +231,15 @@ abstract interface class RecorderGateway {
   /// （头部好、尾部坏）会漏过去。
   Future<bool> verifyPlayable(String videoPath);
 
+  /// 读三个资源信号：剩余存储 / 电量 / 热度（规格 §3.1.1）。
+  ///
+  /// ⚠️ **读不到的那一项根本不在返回的 Map 里**（而不是给 0）——
+  /// 状态机对缺失的语义是「**这一项不参与判定**」（`StopController._onResource`）。
+  /// 给 0 的话，「读不到电池」会变成「电量 0%」⇒ **那台设备永远录不了**。
+  ///
+  /// ⚠️ 三个各自独立地读（原生那边一项失败不影响另两项）。
+  Future<Map<Object?, Object?>> readResources();
+
   /// 用**系统播放器**播放这一段（规格 §3.4.3 的「播放按钮」）。
   ///
   /// 手机端**不自己写播放器**：iOS 用 `AVPlayerViewController`、
@@ -336,6 +345,19 @@ class ChannelRecorderGateway implements RecorderGateway {
         'outputPath': outputPath,
       }) ??
       false;
+
+  @override
+  Future<Map<Object?, Object?>> readResources() async {
+    try {
+      return await _methods.invokeMethod<Map<Object?, Object?>>('readResources') ??
+          const {};
+    } on Object {
+      // ⚠️ 读不到就回**空 Map**（= 三项都不参与判定）——
+      // **不是**回 `{0, 0, 0}`。那会让「读不到」变成「电量耗尽 + 存储满了」，
+      // 于是一台好机器每次开录都被立刻停掉。老包（没有这个方法）走的也是这条。
+      return const {};
+    }
+  }
 
   @override
   Future<bool> verifyPlayable(String videoPath) async {

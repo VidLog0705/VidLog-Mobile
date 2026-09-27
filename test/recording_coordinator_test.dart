@@ -2122,6 +2122,15 @@ class FakeGateway implements RecorderGateway {
   @override
   Future<bool> verifyPlayable(String videoPath) async => playable;
 
+  /// 资源信号（规格 §3.1.1）。
+  ///
+  /// ⚠️ 默认**空 Map**（= 三项都不参与判定）—— 协调器那些用例不该被
+  /// 「假原生报了个假电量」牵连。要验资源告警的用例自己设这个字段。
+  Map<Object?, Object?> resources = const {};
+
+  @override
+  Future<Map<Object?, Object?>> readResources() async => resources;
+
   @override
   Future<void> playVideo(String videoPath) async {}
 

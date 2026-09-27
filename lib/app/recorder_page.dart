@@ -1175,6 +1175,15 @@ class _RecorderPageState extends State<RecorderPage> {
         // 刷出来的是收尾前的旧数字，随后 `_onFinalized` 还会再刷一次
         // （那次才是对的）。留着只会让人误读。
 
+      case WarnResource(:final reason):
+        // 设备资源告警（规格 §3.1.1）—— 让用户看见「为什么突然停了」。
+        //
+        // ⚠️ 与 `Speak` 那条**不是一回事**：语音说过就没了，而这一条要在屏幕上
+        // **留着**（它是 `_status`，会一直显示到下一次状态变化）——
+        // 操作员错过那一句语音时，至少能从界面上看出是过热/电量/存储。
+        setState(() => _status = '资源告警（$reason）· 正在收尾');
+        _log('⚠️ 资源告警 · $reason');
+
       case Speak(:final prompt):
         // 播报本身在编排层里发给原生（`VoicePrompt.spokenText` 是唯一措辞来源），
         // 这里只留一条可见的日志。
@@ -1520,7 +1529,54 @@ class _RecorderPageState extends State<RecorderPage> {
         // 时长从编排器取 —— 它用单调时钟，墙钟在这儿算不出正确的值。
         setState(() => _elapsed = elapsed);
       }
+
+      // 资源告警（规格 §3.1.1）：存储将满 / 低电量 / 过热 ⇒ 提前告警 + 主动收尾。
+      //
+      // ⚠️ **节流到 30 秒一次**：心跳是每秒的，而这三样变化的时间尺度是**分钟**
+      // （电量、剩余空间、温度都不会一秒一变）。每秒过一趟原生通道是白花钱 ——
+      // 而这个仓已经因为「白跑的定时器」吃过一次亏（§39.4 那条 flake）。
+      final now = DateTime.now();
+      final last = _resourcesReadAt;
+      if (last == null || now.difference(last) >= _resourcePollInterval) {
+        _resourcesReadAt = now;
+        unawaited(_readResources());
+      }
     });
+  }
+
+  /// 上一次读资源的时间（规格 §3.1.1）。见 `_startHeartbeat` 里的节流理由。
+  DateTime? _resourcesReadAt;
+
+  /// 资源读取的间隔。**30 秒**是本仓标定的（规格没给数）：
+  /// 够快（电量从阈值掉到关机不止 30 秒），又不至于每秒过一趟通道。
+  static const _resourcePollInterval = Duration(seconds: 30);
+
+  /// 读一次资源并喂给状态机（规格 §3.1.1）。
+  ///
+  /// ⚠️ **缺失的项不填 0**：原生回的空 Map 或少数几项就是「那些项不参与判定」。
+  /// 判据在 `StopController._onResource`（那里逐个判 `!= null`）。
+  Future<void> _readResources() async {
+    final Map<Object?, Object?> raw;
+
+    try {
+      raw = await _gateway.readResources();
+    } on Object catch (error) {
+      // 读不到不是错误（老包没有这个方法、平台异常）—— 这一轮就不喂。
+      _log('读资源失败：$error');
+      return;
+    }
+
+    if (!mounted) return;
+
+    final thermal = raw['thermal'];
+
+    await _coordinator?.onResourceReported(
+      freeStorageBytes: raw['freeStorageBytes'] as int?,
+      batteryPercent: raw['batteryPercent'] as int?,
+      // ⚠️ 原生报的是**档位序号**（与 `ThermalLevel` 一一对齐，两边都由轻到重）。
+      // 用 `fromConfig` 解析：它认得 int 与名字两种写法，越界回落 `nominal`。
+      thermal: thermal == null ? null : ThermalLevel.fromConfig(thermal),
+    );
   }
 
   /// 模拟一次扫码。

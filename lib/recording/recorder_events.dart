@@ -1,4 +1,5 @@
 import '../primitives.dart';
+import 'recorder_config.dart';
 
 /// 喂给停录状态机的事件。
 ///
@@ -58,6 +59,27 @@ final class ManualStopRequested extends RecorderEvent {
   const ManualStopRequested(super.monotonicMs);
 }
 
+/// 设备资源状况上报（规格 §3.1.1）。
+///
+/// 三个量**都可空**：原生那边可能只读得出其中几个（比如模拟器没有电池、
+/// 某些设备读不到热状态）。**缺的那个不参与判定** —— 不是「当成 0」，
+/// 那会让「读不到」变成「告警」或「永远不告警」。
+///
+/// ⚠️ 它 2026-09-21 被删过（「原生从没上报过电量/温度/存储」，整条链不可达），
+/// 2026-09-27 连同原生生产者一起恢复 —— 见 `实现决策.md` §44。
+final class ResourceReported extends RecorderEvent {
+  const ResourceReported(
+    super.monotonicMs, {
+    this.freeStorageBytes,
+    this.batteryPercent,
+    this.thermal,
+  });
+
+  final int? freeStorageBytes;
+  final int? batteryPercent;
+  final ThermalLevel? thermal;
+}
+
 /// 停录的原因。与电脑端的 `StopReason` 对应（母仓 `docs/02-数据模型.md` §3.1）。
 enum StopTrigger {
   /// 用户主动停止。
@@ -100,6 +122,13 @@ enum VoicePrompt {
 
   /// 规格 §3.3.4：「录制时间即将超时，是否需要停止录制？」
   durationTimeout('录制时间即将超时，是否需要停止录制？'),
+
+  /// 规格 §3.1.1：存储将满 / 低电量 / 过热（提前告警，并主动安全收尾）。
+  ///
+  /// ⚠️ 措辞说「已停止」而不是「即将停止」：这一句是在**收尾动作之后**播的
+  /// （见 `StopController._onResource` 那个动作序列），说「即将」会让操作员
+  /// 以为还有时间去看一眼屏幕 —— 而那时已经在收了。
+  resourceWarning('设备资源告警，已停止录像'),
 
   /// 规格 §3.3.6：识别到单号开录、以及连续扫换段时开下一段。
   ///
@@ -176,5 +205,20 @@ final class ShowDurationPrompt extends RecorderAction {
 
 final class HideDurationPrompt extends RecorderAction {
   const HideDurationPrompt();
+}
+
+/// 设备资源告警（规格 §3.1.1）：让用户看见「为什么突然停了」。
+///
+/// ⚠️ 它与 [Speak] 是**两件事**：语音说过就没了，而这一条要在**屏幕上留着**
+/// —— 操作员错过那一句语音时，至少能从界面上看出「刚才是因为过热停的」。
+///
+/// ⚠️ 它原来叫 `WarnResource`（2026-09-21 那次审计里被 `onNativeFailure` 取代，
+/// 而 `onNativeFailure` 是给**原生失败**用的另一件事）。2026-09-27 恢复资源告警
+/// 时按原样重建 —— 名字、字段（`reason`）都与当初一致。
+final class WarnResource extends RecorderAction {
+  const WarnResource(this.reason);
+
+  /// 「存储将满 / 电量过低 / 设备过热」里命中的那几个，用「、」连起来。
+  final String reason;
 }
 

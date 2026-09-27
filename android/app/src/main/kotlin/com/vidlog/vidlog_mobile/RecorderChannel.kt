@@ -1,6 +1,7 @@
 package com.vidlog.vidlog_mobile
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -8,8 +9,12 @@ import android.graphics.SurfaceTexture
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.ToneGenerator
+import android.os.BatteryManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.os.StatFs
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.SoundEffectConstants
@@ -252,6 +257,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
 
             "generateThumbnail" -> generateThumbnail(call, result)
             "verifyPlayable" -> verifyPlayable(call, result)
+            "readResources" -> readResources(call, result)
             "playVideo" -> playVideo(call, result)
             "shareVideo" -> shareVideo(call, result)
 
@@ -451,6 +457,65 @@ class RecorderChannel(private val activity: FlutterActivity) :
      * ⚠️ **不能在主线程上做**：解一帧要几百毫秒，主线程卡住的话界面直接冻住
      * （一页十几条 = 好几秒）。所以扔到后台线程。
      */
+    /**
+     * 读三个资源信号：剩余存储 / 电量 / 热度（规格 §3.1.1）。
+     *
+     * ⚠️ **三个各自独立地读**，任何一个失败都只让它自己是 `null` ——
+     * 一起失败的话（比如热状态那一路抛异常），电量和存储也被连累成 null，
+     * 而那两个本来是好的。Dart 那边对 `null` 的语义是「**这一项不参与判定**」
+     * （见 `StopController._onResource`），所以少一项 = 少一重保护。
+     *
+     * ⚠️ **热度档位与 Dart 的 `ThermalLevel` 一一对齐**（两边的顺序都由轻到重）——
+     * 而 Android 还多一档 `THERMAL_STATUS_SHUTDOWN`（6），Dart 只有 0~5。
+     * 所以这里 **coerceAtMost(5)**：把「要关机了」并进最重那一档，
+     * 而不是让 Dart 那边收到一个越界值（`ThermalLevel.fromConfig` 对越界值
+     * 会回落 `nominal` —— 那等于**最热的一档被当成不热**）。
+     */
+    private fun readResources(call: MethodCall, result: MethodChannel.Result) {
+        val context = activity.applicationContext
+
+        // ① 剩余存储：`StatFs` 读数据目录所在分区 —— 录像就写在它下面。
+        val freeStorageBytes: Long? = try {
+            StatFs(context.filesDir.path).availableBytes
+        } catch (error: Throwable) {
+            Log.w(TAG, "读不到剩余存储", error)
+            null
+        }
+
+        // ② 电量百分比。
+        val batteryPercent: Int? = try {
+            val manager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+            manager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                // ⚠️ 读不到时它回 -1（而不是抛），所以还要过一遍范围。
+                ?.takeIf { it in 0..100 }
+        } catch (error: Throwable) {
+            Log.w(TAG, "读不到电量", error)
+            null
+        }
+
+        // ③ 热度：`currentThermalStatus` 要 API 29+。
+        // 低版本读不到 ⇒ null（= 这一项不参与判定），**不猜**。
+        val thermal: Int? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                power?.currentThermalStatus?.takeIf { it >= 0 }?.coerceAtMost(5)
+            } catch (error: Throwable) {
+                Log.w(TAG, "读不到热状态", error)
+                null
+            }
+        } else {
+            null
+        }
+
+        result.success(
+            mapOf(
+                "freeStorageBytes" to freeStorageBytes,
+                "batteryPercent" to batteryPercent,
+                "thermal" to thermal,
+            )
+        )
+    }
+
     /**
      * 这一段成品**解不解得开**（规格 §3.1.4 的「实际解码校验」）。
      *

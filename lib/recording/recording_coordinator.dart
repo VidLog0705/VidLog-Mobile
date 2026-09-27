@@ -682,6 +682,33 @@ class RecordingCoordinator {
   ///
   /// **必须由界面层按固定间隔调用**（建议 1 秒）。没有它，画面完全不动时
   /// 就没有任何事件，静止超时与时长兜底永远不会触发。
+  /// 原生报上来的资源状况（规格 §3.1.1）。
+  ///
+  /// ⚠️ **三项都可空**，而且缺失的那一项**不参与判定**（不是当成 0）——
+  /// 原生在模拟器上读不到电池、老设备读不到热状态，把「读不到」当成 0
+  /// 会让那些机器**永远停录**。判据在 `StopController._onResource`。
+  ///
+  /// ⚠️ 时间戳用 [handleHeartbeat] 同一个时钟（单调毫秒）—— 状态机只吃单调毫秒，
+  /// 它压根没有墙钟入参（I11 的结构保证）。
+  Future<void> onResourceReported({
+    int? freeStorageBytes,
+    int? batteryPercent,
+    ThermalLevel? thermal,
+  }) async {
+    if (!_stopController.isRecording) {
+      return;
+    }
+
+    await _dispatch([
+      ResourceReported(
+        _clock(),
+        freeStorageBytes: freeStorageBytes,
+        batteryPercent: batteryPercent,
+        thermal: thermal,
+      ),
+    ]);
+  }
+
   Future<void> handleHeartbeat() async {
     if (!_stopController.isRecording) return;
 

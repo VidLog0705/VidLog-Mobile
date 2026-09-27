@@ -895,4 +895,102 @@ void main() {
       expect(controller.elapsedMs(t0 + 5 * minute), 5 * minute);
     });
   });
+
+  // ─────────────────────────────────────────────
+  // 资源告警（规格 §3.1.1）
+  // ─────────────────────────────────────────────
+  //
+  // 存储将满 / 电量过低 / 设备过热 → **提前告警，并主动安全收尾**
+  // （正常关闭当前分段、写指纹、入库），而不是等崩溃。
+  //
+  // ⚠️ 这一组是**从 git 历史恢复的**（2026-09-21 那次「过度设计审计」把整条链
+  // 连同三个阈值一起删了，理由是「原生从没上报过电量/温度/存储」）。
+  // 2026-09-27 连原生生产者一起补上，这几条照原样恢复 —— 它们定义的是**行为**，
+  // 而行为没变。
+
+  group('资源告警', () {
+    test('资源告警优先于其它机制（它不等时间）', () {
+      // ⚠️ 那三条都是「再录下去要出事」的信号 —— 不等任何计时器。
+      final controller = durationOnly();
+      start(controller);
+
+      final actions = controller.handle(ResourceReported(t0 + 1000, batteryPercent: 3));
+
+      expect(stops(actions).single.trigger, StopTrigger.resourceCritical);
+    });
+
+    test('存储将满 → 告警并主动收尾', () {
+      final controller = durationOnly();
+      start(controller);
+
+      final actions = controller.handle(
+          ResourceReported(t0 + minute, freeStorageBytes: 100 * 1024 * 1024));
+
+      expect(actions.whereType<Speak>().single.prompt, VoicePrompt.resourceWarning);
+      expect(actions.whereType<WarnResource>().single.reason, contains('存储将满'));
+      expect(stops(actions).single.trigger, StopTrigger.resourceCritical);
+    });
+
+    test('电量过低 → 告警并主动收尾', () {
+      final controller = durationOnly();
+      start(controller);
+
+      final actions = controller.handle(ResourceReported(t0 + minute, batteryPercent: 5));
+
+      expect(actions.whereType<WarnResource>().single.reason, contains('电量过低'));
+      expect(stops(actions), hasLength(1));
+    });
+
+    test('过热 → 告警并主动收尾', () {
+      final controller = durationOnly();
+      start(controller);
+
+      final actions =
+          controller.handle(ResourceReported(t0 + minute, thermal: ThermalLevel.critical));
+
+      expect(actions.whereType<WarnResource>().single.reason, contains('过热'));
+      expect(stops(actions), hasLength(1));
+    });
+
+    test('资源正常时不受影响', () {
+      // ⚠️ 这一条是**对照**：少了它，上面四条可能绿在一个巧合上
+      // （比如「收尾」是别的机制触发的，与资源无关）。
+      final controller = durationOnly();
+      start(controller);
+
+      final actions = controller.handle(ResourceReported(t0 + minute,
+          freeStorageBytes: 50 * 1024 * 1024 * 1024,
+          batteryPercent: 90,
+          thermal: ThermalLevel.nominal));
+
+      expect(actions, isEmpty);
+      expect(controller.isRecording, isTrue);
+    });
+
+    test('★ 读不到的项**不参与判定**（不是当成 0）', () {
+      // ⚠️ 原生可能只读得出其中几个（模拟器没电池、某些设备读不到热状态）。
+      // 把「读不到」当成 0 的话，那台设备会**永远停录** —— 而用户毫无头绪。
+      // 这一条钉住：三个都是 null ⇒ 什么都不做。
+      final controller = durationOnly();
+      start(controller);
+
+      expect(controller.handle(ResourceReported(t0 + minute)), isEmpty);
+      expect(controller.isRecording, isTrue);
+    });
+
+    test('★ 三个信号里命中任一个就停', () {
+      // 它们是三种独立的危险，任何一种继续录下去都会留下不可播的半截文件。
+      for (final report in [
+        ResourceReported(t0 + minute, freeStorageBytes: 1024),
+        ResourceReported(t0 + minute, batteryPercent: 1),
+        ResourceReported(t0 + minute, thermal: ThermalLevel.emergency),
+      ]) {
+        final controller = durationOnly();
+        start(controller);
+
+        expect(stops(controller.handle(report)), hasLength(1),
+            reason: '任一个到阈值就该收尾');
+      }
+    });
+  });
 }

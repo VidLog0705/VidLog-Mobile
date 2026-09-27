@@ -105,6 +105,15 @@ class RecorderConfig {
     this.promptAfterOverride,
     this.durationPromptRepeatEvery = const Duration(minutes: 5),
     this.durationPromptGrace = const Duration(minutes: 1),
+    // 资源告警的三个阈值（规格 §3.1.1）。⚠️ **这是本地硬兜底值** ——
+    // 规格说这类阈值「由配置下发，**且必须有本地硬兜底值**」，
+    // 而配置下发（M6）还没做，所以今天走的就是这三个。
+    //
+    // ⚠️ 这三个数是**照历史恢复的**（2026-09-21 那次审计删掉了整条链，
+    // 2026-09-27 恢复），不是重新拍的 —— 原值见 `实现决策.md` §7.2 与 §44。
+    this.storageFreeWarningBytes = 2 * 1024 * 1024 * 1024,
+    this.batteryWarningPercent = 15,
+    this.thermalWarning = ThermalLevel.severe,
   });
 
   /// 静止停录档位（§3.3.3）。
@@ -130,6 +139,65 @@ class RecorderConfig {
   /// 问了之后多久没操作就默认继续（并随即停止）。
   final Duration durationPromptGrace;
 
+  /// 剩余存储低于此值就告警并主动收尾（规格 §3.1.1）。
+  ///
+  /// **2 GB**：一段 1080P 录像约 8 Mbps ≈ 1 MB/s，2 GB 够录半个多小时 ——
+  /// 留这些余量是为了「**主动安全收尾**」那一半真的做得完
+  /// （收尾要写索引、算哈希、可能还要 remux，都得占地方）。
+  final int storageFreeWarningBytes;
+
+  /// 电量低于此百分比就告警并主动收尾（规格 §3.1.1）。
+  ///
+  /// **15%**：够跑完一次收尾加一次上传重试，又不至于等到系统自己关机
+  /// —— 那才会留下不可播的半截文件（规格那句「而不是等崩溃」）。
+  final int batteryWarningPercent;
+
+  /// 温度达到此级别就告警并主动收尾（规格 §3.1.1）。
+  final ThermalLevel thermalWarning;
+
   /// 全部回落到硬兜底值。
   static const hardFallback = RecorderConfig();
+}
+
+/// 设备热度等级（规格 §3.1.1）。
+///
+/// ⚠️ 顺序**必须**由轻到重 —— [reaches] 靠 [index] 比较。
+/// 档位与 Android 的 `PowerManager.THERMAL_STATUS_*` **一一对齐**，
+/// 原生报上来的就是那个整数。
+///
+/// ⚠️ iOS 那边只有四档（`ProcessInfo.ThermalState`），映射见
+/// `RecorderPlugin.swift` 的 `readResources` —— 两端的档位是**同一套**，
+/// 这样判定层不必知道报告的是哪个平台。
+enum ThermalLevel {
+  nominal,
+  light,
+  moderate,
+  severe,
+  critical,
+  emergency;
+
+  /// 是否达到或超过 [limit]。
+  bool reaches(ThermalLevel limit) => index >= limit.index;
+
+  /// 从远端配置解析，非法输入回落到 [nominal]（即「不因此告警」）。
+  ///
+  /// ⚠️ 往**轻**的那头落，与别处「朝少删/朝保守落」相反 —— 这里是对的：
+  /// 认不出的热度当成「过热」会让每一台机器都停录，而那是**误停**。
+  /// （与 §3.1.1 的意图也不冲突：热到真有危险时原生一定会报得出一个**合法**档。）
+  static ThermalLevel fromConfig(Object? raw) {
+    if (raw is ThermalLevel) return raw;
+
+    if (raw is int && raw >= 0 && raw < ThermalLevel.values.length) {
+      return ThermalLevel.values[raw];
+    }
+
+    if (raw is String) {
+      final name = raw.trim().toLowerCase();
+      for (final level in ThermalLevel.values) {
+        if (level.name == name) return level;
+      }
+    }
+
+    return ThermalLevel.nominal;
+  }
 }

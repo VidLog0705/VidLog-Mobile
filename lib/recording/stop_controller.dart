@@ -124,6 +124,16 @@ class StopController {
           }
         }
 
+      // 资源告警（规格 §3.1.1）—— 存储将满 / 低电量 / 过热。
+      //
+      // ⚠️ 它**不等时间**：那三条都是「再录下去要出事」的信号，
+      // 所以进了这个分支就直接收尾（测试里有一条专门钉这一点：
+      // 「资源告警优先于其它机制（它不等时间）」）。
+      case ResourceReported():
+        if (_recording) {
+          actions.addAll(_onResource(event));
+        }
+
       case Heartbeat():
         break;
     }
@@ -191,6 +201,55 @@ class StopController {
     return mode.stopsOnSameWaybillRescan
         ? _stop(StopTrigger.sameWaybillRescan)
         : const [];
+  }
+
+  /// 三个资源信号里有没有到阈值的（规格 §3.1.1）。
+  ///
+  /// ⚠️ **缺的那个不参与判定**：原生可能只读得出其中几个（模拟器没电池、
+  /// 某些设备读不到热状态）。把它当成 0 的话「读不到」会变成「告警」，
+  /// 而那会让那台设备**永远停录**。
+  ///
+  /// ⚠️ 三个都到才停、还是任一到就停：**任一**。它们是三种独立的危险，
+  /// 任何一种继续录下去都会留下不可播的半截文件（规格那句「而不是等崩溃」）。
+  ///
+  /// ⚠️ 这个方法是 2026-09-21 那次审计里删掉的（连同三个阈值与事件一起），
+  /// 2026-09-27 恢复 —— **照原样**，包括三个阈值与动作序列。
+  List<RecorderAction> _onResource(ResourceReported report) {
+    final reasons = <String>[];
+
+    final free = report.freeStorageBytes;
+    if (free != null && free < config.storageFreeWarningBytes) {
+      reasons.add('存储将满');
+    }
+
+    final battery = report.batteryPercent;
+    if (battery != null && battery < config.batteryWarningPercent) {
+      reasons.add('电量过低');
+    }
+
+    final thermal = report.thermal;
+    if (thermal != null && thermal.reaches(config.thermalWarning)) {
+      reasons.add('设备过热');
+    }
+
+    if (reasons.isEmpty) {
+      return const [];
+    }
+
+    // 规格 §3.1.1：**提前告警，并主动安全收尾**（正常关闭当前分段、写指纹、入库），
+    // 而不是等崩溃。
+    //
+    // ⚠️ 动作序列（语音 → 标记 → 收尾）**照历史原样恢复**。
+    // 当初那份实现里没有写为什么是这个顺序，所以这里也**不替它编**一个 ——
+    // 要改它的话，先想清楚它是不是有意的（那三样会不会互相影响，
+    // 只有真机跑一遍才知道）。
+    final stopActions = _stop(StopTrigger.resourceCritical);
+
+    return [
+      Speak(VoicePrompt.resourceWarning),
+      WarnResource(reasons.join('、')),
+      ...stopActions,
+    ];
   }
 
   List<RecorderAction> _evaluateTimers(int nowMs) {
