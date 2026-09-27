@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/clock_calibration.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
 import 'package:vidlog_mobile/recording/label_store.dart';
 import 'package:vidlog_mobile/recording/package_tracker.dart';
@@ -58,6 +59,7 @@ void main() {
     WorkMode mode = WorkMode.sameWaybillStop,
     RecorderConfig config = const RecorderConfig(staticStop: StaticStopSetting.off),
     bool cameraAlreadyOpen = false,
+    TrustedClock? trustedClock,
   }) {
     // 必须先建列表再构造 —— `actions.add` 是构造时就捕获的，
     // 之后再给 actions 赋值就捕获不到了。
@@ -83,6 +85,7 @@ void main() {
       clock: clock,
       packageTracker: tracker,
       cameraAlreadyOpen: cameraAlreadyOpen,
+      trustedClock: trustedClock,
       onAction: actions.add,
     );
   }
@@ -134,6 +137,80 @@ void main() {
     // 事件处理里有**真实文件 I/O**，必须等编排器把在途事件处理完。
     await coordinator.waitForPendingEvents();
   }
+
+  // ─────────────────────────────────────────────
+  // 未校准不得开始录制（规格 §3.6.4）
+  // ─────────────────────────────────────────────
+
+  group('未校准不得录制', () {
+    /// 一台没校准过的可信时钟。
+    TrustedClock uncalibrated() => TrustedClock(
+          initialState: CalibrationState.empty,
+          store: CalibrationStore('$root/calibration.json'),
+        );
+
+    test('★ 未校准时 startWorking 直接拒绝，而且说得出为什么', () async {
+      final coordinator = make(trustedClock: uncalibrated());
+
+      await expectLater(
+        coordinator.startWorking(sourceDeviceId: 'device-1'),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('★ 工作途中发现时间被改过，扫码开录那条路也进不去（第二道闸）', () async {
+      // ⚠️ 只挡 startWorking 是不够的：扫码开录是**另一条路**，
+      // 而相机一直在连续识码 —— 少这一道，闸门只在「点按钮」那一下有效。
+      //
+      // 这条模拟的现实场景：已经开工了，之后某一次核对发现**时间被改过**
+      // （`checkStartup` 把 `needsRecalibration` 置真），而工作还没停。
+      // 这只时钟**此刻是校准过的**，而且它的「上次见到」在 30 分钟之后 ——
+      // 也就是说：下一次核对必然会判出「时间被调回去了」。
+      final clock = TrustedClock(
+        initialState: CalibrationState(
+          anchorUtc: DateTime.now(),
+          monotonicAtAnchor: 0,
+          lastSeenWallClockUtc: DateTime.now().add(const Duration(minutes: 30)),
+          lastSeenMonotonic: 3600,
+        ),
+        store: CalibrationStore('$root/calibration.json'),
+      );
+
+      final coordinator = make(trustedClock: clock);
+      nowMs = 1000;
+
+      // 先正常开工（此刻闸门是通的）。
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+      expect(coordinator.isWorking, isTrue);
+
+      // 核对发现时间被改过 ⇒ 这只时钟**自己**变成「要求重新校准」，而工作没停。
+      expect(await clock.checkStartup(), isTrue);
+      expect(clock.isCalibrated, isFalse);
+
+      final failures = <String>[];
+      coordinator.onNativeFailure = failures.add;
+
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.sessionId, isNull, reason: '一条都不该开');
+      expect(failures, isNotEmpty, reason: '而且要说出来 —— 不然用户只看到「扫了没反应」');
+    });
+
+    test('校准过就照常开录', () async {
+      final clock = uncalibrated();
+      await clock.calibrate(DateTime.now(), CalibrationSource.publicTime);
+
+      final coordinator = make(trustedClock: clock);
+      nowMs = 1000;
+
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+      await coordinator.onWaybillDetected(waybill);
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.sessionId, isNotNull);
+    });
+  });
 
   // ─────────────────────────────────────────────
   // 录制规格（规格 §3.1.7）

@@ -8,6 +8,7 @@ import '../scanning/scan_gate.dart';
 import 'business_type.dart';
 import 'package_tracker.dart';
 import 'punch_log.dart';
+import 'clock_calibration.dart';
 import 'recorder_config.dart';
 import 'recording_spec.dart';
 import 'recording_spec_probe.dart';
@@ -51,6 +52,7 @@ class RecordingCoordinator {
     PackageTracker? packageTracker,
     ScanErrorLog? scanErrors,
     RecordingSpec? spec,
+    this.trustedClock,
     this.onAction,
     bool cameraAlreadyOpen = false,
   })  : _gateway = gateway,
@@ -107,6 +109,16 @@ class RecordingCoordinator {
     final watch = Stopwatch()..start();
     return () => watch.elapsedMilliseconds;
   }
+
+  /// 可信时钟（规格 §3.6.4）。
+  ///
+  /// ⚠️ `null` = **不设闸**。这是给那些不关心校时的测试留的口子 ——
+  /// 加闸不该顺带把几十条不相干的用例改成「必先校准」。
+  /// 生产路径由录制页传真那个（见 `recorder_page._buildCoordinator`）。
+  final TrustedClock? trustedClock;
+
+  /// 现在允不允许开始录制。
+  bool get calibrationAllowsRecording => trustedClock?.isCalibrated ?? true;
 
   final RecorderGateway _gateway;
   final RecordingWorkspace _workspace;
@@ -373,6 +385,15 @@ class RecordingCoordinator {
     Duration? segmentDuration,
     RecordingSpec? spec,
   }) async {
+    // ⚠️ **未校准不得开始录制**（规格 §3.6.4）。
+    //
+    // 这道闸在这里、以及下面 `_beginRecording()` 里各有一道：
+    // 前者是为了**当场告诉用户**（不然他只会看到「点了没反应」），
+    // 后者是为了**绕不过去** —— 扫码开录是另一条路（规格点名的）。
+    if (!calibrationAllowsRecording) {
+      throw StateError(trustedClock?.blockedReason ?? '这台手机还没有过一次可信的时间校准。');
+    }
+
     _sourceDeviceId = sourceDeviceId;
     _segmentDuration = segmentDuration ?? defaultSegmentDuration;
 
@@ -456,6 +477,19 @@ class RecordingCoordinator {
   /// 收尾之后相机还开着，下件包裹接着扫。
   Future<void> _beginRecording(WaybillNumber waybill, PunchSource source) async {
     if (!_armed || _stopController.isRecording) return;
+
+    // ⚠️ **未校准不得开始录制**（规格 §3.6.4）—— 这道闸必须在这里。
+    //
+    // 只挡 `startWorking()` 是不够的：扫码开录是**另一条路**，
+    // 而相机一直在连续识码 —— 少这一道的话，绕开闸门只需要「把面单放进框里」。
+    // 规格对手机端明确要求「`startWorking()` **以及扫码开录那条路**」两道都要有。
+    if (!calibrationAllowsRecording) {
+      final reason = trustedClock?.blockedReason ?? '这台手机还没有过一次可信的时间校准。';
+
+      _lastError = reason;
+      onNativeFailure?.call(reason);
+      return;
+    }
 
     _waybill = waybill;
     _segments.clear();

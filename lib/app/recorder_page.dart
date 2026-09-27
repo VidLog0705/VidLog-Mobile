@@ -11,6 +11,7 @@ import '../diagnostics/error_handlers.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
 import '../recording/cleanup_audit.dart';
+import '../recording/clock_calibration.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart';
@@ -291,6 +292,9 @@ class _RecorderPageState extends State<RecorderPage> {
   /// `evidenceId → 索引里那个相对路径`。手动删除要拿它定位磁盘文件。
   Map<String, String> _locationByEvidenceId = const {};
 
+  /// 可信时钟（规格 §3.6.4）。`null` = 还没装配好（`_bootstrap` 之前）。
+  TrustedClock? _clock;
+
   /// 正在跑一趟上传。用来禁用按钮、不让两趟叠在一起。
   bool _uploading = false;
 
@@ -419,6 +423,29 @@ class _RecorderPageState extends State<RecorderPage> {
       // 归档状态与索引同构（追加写 JSON Lines）—— 键名是 PascalCase，
       // 与 `labels.jsonl` / `punches.jsonl` 一致（见 `archive_store.dart`）。
       _archive = ArchiveStore('${root.path}/archive.jsonl');
+
+      // ── 校时（规格 §3.6.3 / §3.6.4）──────────────────────────────
+      //
+      // ⚠️ 顺序：**先核对跳变，再（需要时）取公网时间**。
+      // 核对是本地读盘，很快；取公网时间可能几秒 —— 排在后面不挡启动。
+      final calibration = CalibrationStore('${root.path}/calibration.json');
+      _clock = TrustedClock(
+        initialState: await calibration.load(),
+        store: calibration,
+        publicSource: HttpDateClockSource(),
+        log: AppLog.instance,
+      );
+
+      final jumped = await _clock!.checkStartup();
+      if (jumped) {
+        _log('⚠️ ${_clock!.blockedReason}');
+      }
+
+      if (!_clock!.isCalibrated) {
+        // 取不到就保持「未校准」—— 而那是**会挡住录制**的状态，
+        // 所以下面 `_startWorking` 会把原因说出来（I3：不存在静默失败）。
+        await _clock!.tryCalibrateFromPublicTime();
+      }
 
       // 本机身份要在 `_buildCoordinator` **之前**读出来 ——
       // 编排器建的时候就要把设备标识接进去（它写进每条录像索引的 sourceDeviceId）。
@@ -580,6 +607,24 @@ class _RecorderPageState extends State<RecorderPage> {
 
       setState(() => _uploading = false);
       _armRetry(pass.nextRetryAt);
+
+      // ── 归档回执里的时间锚 = 第二个校准来源（规格 §3.6.4）──────────
+      //
+      // 「取到过任何一个即算校准」，而这一条**局域网即可、不需要公网** ——
+      // 对一台在仓库里、联不上公网但能连上电脑端的手机，这是唯一拿得到的锚。
+      //
+      // ⚠️ 用一个**新归档成功**的那条（`timeAnchor` 是电脑端盖的，用户改不了）。
+      // `calibrateFromReceipt` 自己会拒绝「已经校准过」的情况 —— 换锚会让
+      // 时间线在两条线之间跳一下，而那正是跳变检测要防的事。
+      for (final outcome in pass.outcomes) {
+        final anchor = outcome.record.timeAnchor;
+        if (anchor == null) continue;
+
+        if (await _clock?.calibrateFromReceipt(anchor) ?? false) {
+          _log('✅ 已按电脑端回执的时间锚完成校准');
+          break;
+        }
+      }
 
       // ⚠️ 失败要**说出来**（不变量 I3，规格 §3.4.3 ★ 来自一次真实故障：
       // 原系统上传失败后进终态、永不重试，用户完全不知道数据没传上去）。
@@ -967,6 +1012,9 @@ class _RecorderPageState extends State<RecorderPage> {
       mode: _mode,
       config: _config,
       cameraAlreadyOpen: cameraWasOpen,
+      // ⚠️ 可信时钟（规格 §3.6.4）——**未校准不得开始录制**。
+      // 传真的那个（不是 null）：`null` 是给测试留的「不设闸」。
+      trustedClock: _clock,
       // 录制规格也在这里交给编排器 —— **必须在它开相机之前**：
       // 相机会话的分辨率是开会话时定死的（iOS 的 preset / 安卓选出来的
       // 输出尺寸），开着的时候改不了。进栏就自动开的那台相机也要按这一档开，
@@ -1280,6 +1328,24 @@ class _RecorderPageState extends State<RecorderPage> {
     } finally {
       if (mounted) setState(() => _starting = false);
     }
+  }
+
+  /// 现在能不能录 —— 不能的话把原因说清楚（规格 §3.6.4 的界面三件事之一）。
+  ///
+  /// 说得清的是三件：**为什么不能录 / 怎么办 / 已有录像照常**。
+  String? get _clockBlockedReason => _clock?.blockedReason;
+
+  /// 点【重新校准】：先取公网时间，取不到就提示可以跟电脑端备份一次。
+  Future<void> _recalibrate() async {
+    setState(() => _status = '正在取公网时间…');
+
+    final ok = await _clock?.tryCalibrateFromPublicTime() ?? false;
+
+    if (!mounted) return;
+
+    setState(() => _status = ok
+        ? '已校准，可以开始录制'
+        : '取不到公网时间。连上电脑端成功备份一次也能校准（那条路不需要公网）');
   }
 
   /// 问一次设备支持的变焦范围，用来定表盘两端（规格 §3.1.2）。
@@ -2585,7 +2651,10 @@ class _RecorderPageState extends State<RecorderPage> {
                     // 与取景框同一份来源，两者才不会各自歪一点。
                     aspectRatio: _coordinator!.effectiveSpec.aspectRatio,
                   )
-                : _idleScreen(),
+                // ⚠️ 未校准时**换掉整块画面**（规格 §3.6.4）。
+                // 只把那句「相机还没开」留在原地的话，用户看到的是一个
+                // **看着一切正常**的界面，而按【开始】什么都不发生。
+                : (_clockBlockedReason != null ? _clockBlockedScreen() : _idleScreen()),
           ),
 
           // ── ② 顶部浮层：状态与诊断计数 ──
@@ -2630,6 +2699,50 @@ class _RecorderPageState extends State<RecorderPage> {
             '相机还没开。\n点下面的【开始】重试。',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white54, fontSize: 14, height: 1.6),
+          ),
+        ),
+      );
+
+  /// 未校准时的整块画面（规格 §3.6.4）。
+  ///
+  /// **说清三件事**（规格对界面的要求）：为什么不能录 / 怎么办 /
+  /// **已有的录像照常**（检索、回放、导出、交付都不受影响）——
+  /// 最后那句不能省：不说的话，用户会以为「整个应用废了」，
+  /// 而其实只是**不能再录新的**。
+  Widget _clockBlockedScreen() => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.schedule, color: Colors.orangeAccent, size: 40),
+              const SizedBox(height: 12),
+              Text(
+                _clockBlockedReason!,
+                key: const Key('clock-blocked-reason'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.6),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '视频里的时间必须能追溯到本机之外的某个来源 —— 否则改一下系统时间就能伪造'
+                '「更早的证据」。联一次网取到时间之后，以后一直断网也能照常录。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.6),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '⚠️ 只挡住**新录**：已有的录像照常可以检索、回放、导出、交付。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.6),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                key: const Key('clock-recalibrate'),
+                onPressed: _starting ? null : _recalibrate,
+                child: const Text('重新校准'),
+              ),
+            ],
           ),
         ),
       );
