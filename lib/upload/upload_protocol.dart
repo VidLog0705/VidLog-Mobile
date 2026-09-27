@@ -229,6 +229,15 @@ abstract final class UploadErrorCodes {
   /// 电脑端屏幕上那张码已经没了（超时、被领走、或者被新生成的一张顶掉）。
   static const noPendingRequest = 'no_pending_request';
 
+  /// 电脑端的机位满了，这台手机接不进来（`04-许可设计.md` §5.1）。
+  ///
+  /// ⚠️ 它**不是**「链接坏了」也不是「电脑端出错」：这台手机和那张码都没问题，
+  /// 是电脑端手上的激活码只够接那么几台。所以提示里要说的是**下一步去哪做什么**
+  /// ——「去电脑端的【许可】里激活或升级」——而不是「再试一次」。
+  ///
+  /// ⚠️ 已经在录的手机**不受影响**：许可只挡**新的接入**（L5）。
+  static const seatLimit = 'seat_limit';
+
   /// 本地合成的码：根本没连上（拒绝连接 / 超时 / 解析不了地址）。
   static const network = 'network';
 
@@ -334,6 +343,11 @@ class UploadFailure implements Exception {
           '这张二维码已经不能用了（过期、或者已经被用掉）。请在电脑端重新生成一张，再扫一次。',
         UploadErrorCodes.noPendingRequest =>
           '电脑端屏幕上那张二维码已经不在了。请在电脑端重新生成一张，再扫一次。',
+        // 提示里必须带上**下一步**：用户这时多半以为是自己手机的问题，
+        // 而真正要动的是电脑端那个激活码。
+        UploadErrorCodes.seatLimit =>
+          '电脑端的机位已经满了，这台手机接不进去。请在电脑端的【许可】里激活或升级，'
+              '或者联系提供方加机位。已经在用的手机不受影响。',
         UploadErrorCodes.unplayable =>
           '电脑端打不开这段录像。**别删手机上的原文件**，重新录一次这一件。',
         UploadErrorCodes.alreadyPublished => '电脑上已经有一份同名但内容不同的录像，请找管理员核对。',
