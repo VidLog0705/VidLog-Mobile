@@ -22,10 +22,20 @@ class RecordingLabel {
 
   /// 落盘形态。键名与电脑端 `LabelDto` **逐字一致（PascalCase）**。
   ///
-  /// ⚠️ 这里是 PascalCase，而本仓 `index.jsonl` / `session.json` 用的是
-  /// camelCase。**不是笔误**，是两边各自的历史约定：打点日志（`punches.jsonl`）
-  /// 与标签表是**两端已经对齐过的**格式，索引与清单还没有。详见
-  /// `docs/实现决策.md` §19。
+  /// ⚠️ 这里是 PascalCase，而本仓 `index.jsonl` 用的是 camelCase。
+  /// **不是笔误**，是两边各自的历史约定：打点日志（`punches.jsonl`）与标签表
+  /// 是**两端逐字对齐过的**格式。详见 `docs/实现决策.md` §19。
+  ///
+  /// ⚠️ **2026-09-27 更新**（原来这里写的是「索引与清单还没有【对齐】」）：
+  ///
+  /// - **索引那一半已经收口了**，但**不是靠统一字段名** —— 电脑端
+  ///   `JsonLinesRecordingIndex` 改成了**宽容读**（候选字段名表 + 大小写不敏感），
+  ///   于是 `waybill` / `Waybill` / `WaybillNumber` 三种写法都认。
+  ///   ⚠️ 写端**维持原样**：两端的 `index.jsonl` 都已经在真机的盘上了，
+  ///   改读端才是唯一可行的方向。
+  /// - **`session.json` 根本不在这个话题里**：它是**各自工作区里的本机临时状态**
+  ///   （孤儿判定用，`<root>/<sessionId>/session.json`），**两端从不交换它**。
+  ///   原来把它和索引并列，是把它误当成了跨端格式。
   Map<String, Object?> toJson() => {
         'EvidenceId': evidenceId,
         'Key': key,
