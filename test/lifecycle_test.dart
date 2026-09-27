@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/primitives.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
+import 'package:vidlog_mobile/recording/label_store.dart';
 import 'package:vidlog_mobile/recording/lifecycle.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/recording/retention_setting.dart';

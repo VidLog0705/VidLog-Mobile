@@ -2101,6 +2101,36 @@ class _RecorderPageState extends State<RecorderPage> {
   ///                  ⇒ 有查不到 / 查不了 ⇒ **不弹删除窗**，只告诉他为什么不能删
   /// 未备份 ⇒ 三选一窗（没有那份可查，需求方裁决过：这种也给删）
   /// ```
+  /// 这一次录制锁着没有（规格 §3.6.5）。
+  ///
+  /// ⚠️ 判据用 `label_store.isEvidenceLocked` —— **与清理判定同一个函数**。
+  /// 在界面里另写一个（比如直接比 `== 'true'`）会漏掉判据里的第三条
+  /// 「**认不出来的值当锁着**」，于是出现「界面显示没锁、清理却把它保留了」
+  /// —— 那个状态用户没机会理解。
+  bool _isSessionLocked(RecordingSession session) =>
+      session.evidenceIds.any((id) => isEvidenceLocked(_labelsByEvidence[id]));
+
+  /// 锁定 / 解锁这一条（规格 §3.6.5）。
+  ///
+  /// ⚠️ **每一段都要写**：清理的候选是按**分段**算的（`planCleanup` 吃的是
+  /// `RecordingEntry`），只锁第一段的话后面几段照样会被清掉 ——
+  /// 而界面上那一条看起来是「已锁定」。这种不一致比没有锁定更糟。
+  Future<void> _toggleLock(RecordingSession session) async {
+    final locked = _isSessionLocked(session);
+    final now = DateTime.now();
+
+    for (final id in session.evidenceIds) {
+      await _labels.setLocked(evidenceId: id, locked: !locked, now: now);
+    }
+
+    // 重新读一遍标签 —— 界面上的图标与 tooltip 才会跟着变。
+    await _refreshDiagnostics();
+
+    _log(locked
+        ? '已解锁 ${session.waybill.value}'
+        : '已锁定 ${session.waybill.value}（不会被自动清理）');
+  }
+
   /// 自动清理的**预告 + 执行**（规格 §3.5.4 / §3.5.5）。
   ///
   /// ⚠️ **禁止静默清理**（规格原话：「清理前必须给出预告（将删除多少条、
@@ -2397,6 +2427,26 @@ class _RecorderPageState extends State<RecorderPage> {
           // 手动删除（规格 §3.5.6，需求方 2026-09-24 要的）。
           // ⚠️ 删之前要回查归档层，所以它是个**异步**动作 ——
           // 这里只负责发起，判定与安全都在 `_askDelete` 里。
+          // 争议锁定（规格 §3.6.5：**锁定后永不被自动清理**）。
+          //
+          // ⚠️ 在本次之前，这条硬豁免是**结构性走不到**的：两端都读 `locked`
+          // 标签，而**两端都没有任何地方写它** —— 用户没有任何办法把一条
+          // 纠纷录像保住（保留期一到就会被清掉本机那份）。
+          // 写的那一半是本批补的（`LabelStore.setLocked`）。
+          IconButton(
+            key: Key('lock-${session.sessionId}'),
+            icon: Icon(
+              _isSessionLocked(session) ? Icons.lock : Icons.lock_open,
+              size: 20,
+              // 锁着的时候给点颜色 —— 这个状态**必须一眼看得见**：
+              // 用户要能分清「这条我锁过」和「这条只是还没到期」。
+              color: _isSessionLocked(session) ? Theme.of(context).colorScheme.primary : null,
+            ),
+            tooltip: _isSessionLocked(session)
+                ? '已锁定：不会被自动清理'
+                : '锁定这一条（锁定后不会被自动清理）',
+            onPressed: _settingsReady ? () => _toggleLock(session) : null,
+          ),
           // 交付原视频（规格 §3.7）：存进系统相册 + 弹系统分享面板。
           IconButton(
             key: Key('share-${session.sessionId}'),

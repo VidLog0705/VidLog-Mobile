@@ -134,4 +134,57 @@ class LabelStore {
 
     return byKey.values.toList();
   }
+
+  /// 锁定 / 解锁一条证据（规格 §3.6.5）。
+  ///
+  /// 锁定后**永不被自动清理**（§3.5.3② 的硬豁免）—— 而那条豁免在两边都是
+  /// 靠**读这个标签**实现的（本机 `lifecycle._isLocked`、
+  /// 电脑端 `CleanupPolicy.IsLocked`），所以这个方法是那条豁免的**唯一开关**。
+  ///
+  /// ⚠️ **值只写 `'true'` / `'false'`**：两端的判据都是先 `bool.TryParse`，
+  /// **认不出来就当锁着**（朝少删的那头落）。写 `'1'` / `'yes'` 之类
+  /// 会变成「永远锁着」—— 用户解不开，而界面上看不出为什么。
+  ///
+  /// ⚠️ 解锁**不是删那一行**，是再追加一条 `false`（标签表追加写、
+  /// 后者胜出）。母仓 §6.2：数据删除必须极度克制。
+  Future<void> setLocked({
+    required String evidenceId,
+    required bool locked,
+    required DateTime now,
+  }) =>
+      append(RecordingLabel(
+        evidenceId: evidenceId,
+        key: lockedLabelKey,
+        value: locked ? 'true' : 'false',
+        updatedAt: now,
+      ));
 }
+
+/// 某一条证据锁着没有（规格 §3.6.5）。
+///
+/// ⚠️ **判据只有这一处**：`lifecycle._isLocked`（清理判定）与界面上的锁定图标
+/// 都调它。分成两份的话会出现「界面显示没锁、清理却把它保留了」
+/// —— 用户没机会理解那个状态。
+///
+/// 判据三条（与电脑端 `CleanupPolicy.IsLocked` **同向**）：
+/// 1. **没打过这个标签 = 没锁**（绝大多数证据的常态）；
+/// 2. 打过了、值也认得出 ⇒ 按那个值；
+/// 3. 打过了但**认不出来** ⇒ **当锁着** —— 朝**少删**的那头落。
+///    ⚠️ 第 1 条必须单独判：少了它，「认不出来就当锁着」会把整个库永久锁死。
+bool isEvidenceLocked(Map<String, String>? labelsForEvidence) {
+  final raw = labelsForEvidence?[lockedLabelKey];
+
+  if (raw == null) return false;
+
+  return bool.tryParse(raw.trim()) ?? true;
+}
+
+/// 锁定标记的标签键。**与电脑端 `LabelKeys.Locked` 逐字一致。**
+///
+/// ⚠️ 它原来定义在 `lifecycle.dart` 里，2026-09-27 挪到这儿 ——
+/// 理由是**位置该与另一端同构**：电脑端那个常量就在 `Labels/LabelStore.cs` 里。
+/// 放在判定层的话，「写」与「读」两半各在一个文件，改一处容易漏另一处。
+///
+/// ⚠️ 写错的代价**是静默的**：电脑端按 `locked` 去查，查不到就当「没打过这个
+/// 标签」—— 一条锁好的证据会被当成没锁。与 `BusinessType.labelKey` 同一个坑。
+const String lockedLabelKey = 'locked';

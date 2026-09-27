@@ -28,6 +28,7 @@ library;
 
 import '../upload/archive_store.dart';
 import 'business_type.dart';
+import 'label_store.dart';
 import 'recording_index.dart';
 import 'recording_spec.dart';
 import 'retention_setting.dart';
@@ -275,29 +276,14 @@ BusinessType? _businessTypeOf(
 bool _isLocked(
   RecordingEntry entry,
   Map<String, Map<String, String>> labels,
-) {
-  final raw = labels[entry.evidenceId]?[lockedLabelKey];
-
-  // 没打过这个标签 = 没锁。**这一条必须单独判**：它是绝大多数证据的常态，
-  // 少了它，「认不出来就当锁着」会把整个库永久锁死、永远清不掉任何东西。
-  if (raw == null) return false;
-
-  // 认不出来的写法（`'1'` / `''` / 被人手改坏的值）**一律当锁着** ——
-  // 朝**少删**的那头落。与 `RetentionSetting.fromConfig` 解析失败回落到
-  // 「全部保留」、`ArchiveRecord._stateFromWire` 认不出当 `pending`
-  // 同一条规矩，理由也一样：**把锁读丢了的代价是删掉用户锁上的证据**，
-  // 而反过来只是少清一条、占点地方（而且它在豁免列表里看得见）。
-  //
-  // ⚠️ 电脑端 `CleanupPlanner.IsLocked` 必须与这里**同向**，
-  // 否则两端对同一条录像的锁判定会不一致。
-  return bool.tryParse(raw.trim()) ?? true;
-}
-
-/// 锁定标记的标签键。与电脑端 `LabelKeys.Locked` 逐字一致。
-///
-/// ⚠️ 写错的代价**是静默的**：电脑端按 `locked` 去查，查不到就当「没打过这个
-/// 标签」—— 一条锁好的证据会被当成没锁。与 `BusinessType.labelKey` 同一个坑。
-const String lockedLabelKey = 'locked';
+) =>
+    // ⚠️ 判据**只有一处**（`label_store.isEvidenceLocked`）—— 界面上的锁定图标
+    // 也调它。分成两份的话会出现「界面显示没锁、清理却把它保留了」，
+    // 而用户没机会理解那个状态。
+    //
+    // 那三条判据（没标签 = 没锁；认得出按值；**认不出当锁着**）的完整理由
+    // 现在写在 `isEvidenceLocked` 的文档注释里。
+    isEvidenceLocked(labels[entry.evidenceId]);
 
 String _stamp(DateTime time) =>
     '${time.year}-${_two(time.month)}-${_two(time.day)}';
