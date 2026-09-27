@@ -54,7 +54,12 @@ jobs:
         with:
           name: app-debug-apk
           path: build/app/outputs/flutter-apk/*.apk
-          retention-days: 7
+          # ⚠️ 3 天，不是 7 天（2026-09-27 改）。这个 APK 有 70 MB，
+          # 而它**每次推 main 都产一个** —— 7 天 × 一天几次推送会把
+          # GitHub 的 artifact 配额吃光（那天真实发生：50 个 APK 堆了 3.5 GB，
+          # 于是**两端 CI 都红在「产物传不上去」**那一步，看起来像代码坏了）。
+          # 它是**随时能重跑出来的东西**，留 3 天够真机测下载用了。
+          retention-days: 3
           if-no-files-found: ignore
 
   # ─────────────────────────────────────────────
