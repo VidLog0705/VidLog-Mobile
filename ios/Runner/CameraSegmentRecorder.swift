@@ -1531,7 +1531,16 @@ final class CameraSegmentRecorder: NSObject {
 
 // MARK: - 帧处理
 
-extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
+// ⚠️ **两个协议都要声明。** 视频与音频那两路输出（[videoOutput] /
+// [audioOutput]）的 delegate 都是 `self`，而它们是**两个不同的协议**
+// —— 只写视频那个的话，`setSampleBufferDelegate(self, ...)` 那一行
+// 直接编译不过（"does not conform to expected type
+// AVCaptureAudioDataOutputSampleBufferDelegate"）。
+//
+// 下面的 `captureOutput` **一个实现同时满足两个协议**：两个协议要求的
+// 方法签名逐字相同，所以不用写两份。哪一路进来靠 `output ===` 分流。
+extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
+                                AVCaptureAudioDataOutputSampleBufferDelegate {
 
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
