@@ -425,4 +425,66 @@ void main() {
       expect(idsOf(query: '   '), ['a', 'b', 'c', 'd']);
     });
   });
+
+  /// ★ 删掉的录像必须从列表上消失（需求方 2026-09-28 报的「删不掉」）。
+  ///
+  /// ⚠️ 这一组挡的是一个**用户看得见、而单测一直没盖到**的洞：
+  /// 索引是**追加写**的（§6.2），而 `deleteSessionFiles` 删的是**文件**、
+  /// 一行索引都不碰。列表 / 「本机全部」/「N 个未备份」全是从索引领出来的 ——
+  /// 于是「确认删除」之后文件真没了，**界面上却什么都不变**：
+  /// 列表还在、数字不变、详情页因为 `_sessions.length` 没少而不 pop。
+  /// 用户看到的就是「删不掉」，再点几次也一样。
+  ///
+  /// 页面上这条测不到（`_sessions` 恒空），所以判据落在这个纯函数上。
+  group('★ 删掉的录像要从列表上消失（删文件不动索引）', () {
+    final entries = [
+      entry(evidenceId: 'sess-1000-42-001'),
+      entry(evidenceId: 'sess-1000-42-002'),
+    ];
+
+    test('★ 确认真不在盘上的被滤掉 —— 整条录像也就不在列表上了', () {
+      // 两段都删了。⚠️ 磁带里那两条索引行**还在** —— 删文件不碰索引。
+      final gone = {'sess-1000-42-001', 'sess-1000-42-002'};
+
+      final sessions = toSessions(dropGoneSegments(entries, gone), const {});
+
+      expect(sessions, isEmpty,
+          reason: '两段都删干净了，列表上不该还有这一条 —— 留着就是'
+              '「确认删除后录像还在列表里」那个 bug');
+    });
+
+    test('★ 删掉一段 ⇒ 这一条的段数跟着少，不是整条消失', () {
+      // 一次录制分段记（`recording_totals.dart` 开头那段），所以删掉的是**段**，
+      // 列表上那一行的「N 段」该跟着变小。
+      final sessions = toSessions(
+        dropGoneSegments(entries, {'sess-1000-42-002'}),
+        const {'sess-1000-42-001': 100},
+      );
+
+      expect(sessions, hasLength(1));
+      expect(sessions.single.segmentCount, 1);
+      expect(sessions.single.evidenceIds, ['sess-1000-42-001']);
+      expect(sessions.single.bytes, 100, reason: '只剩那一段的大小');
+    });
+
+    test('⚠️ 「在盘上、但量不出大小」的**不许**当成没了', () {
+      // `_refreshDiagnostics` 里 `bytes` 缺一条有**两种**原因：文件没了、
+      // 或者文件在但 `length()` 抛了（读不动、权限不对）。只有前一种才进 `gone`。
+      // 把后者当没了的话，一条录像会从界面上**静默消失**，而它其实好端端
+      // 躺在盘上 —— 那比一个数字不准坏得多。
+      final sessions = toSessions(
+        dropGoneSegments(entries, const {}), // 一个都不在 gone 里
+        const {},                            // 但也一个都量不出大小
+      );
+
+      expect(sessions, hasLength(1), reason: '量不出大小 ≠ 没了');
+      expect(sessions.single.segmentCount, 2, reason: '两段都还在');
+      expect(sessions.single.bytes, 0, reason: '大小确实是 0（未知）');
+    });
+
+    test('空表、空 gone 都不炸', () {
+      expect(dropGoneSegments(const [], const {}), isEmpty);
+      expect(dropGoneSegments(const [], {'x'}), isEmpty);
+    });
+  });
 }

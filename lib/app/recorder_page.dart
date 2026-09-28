@@ -1657,17 +1657,38 @@ class _RecorderPageState extends State<RecorderPage> {
       // 宁可少一个数字，也不要显示一个算不出来、但看起来很像真的的值 ——
       // 这个项目已经因为「界面上的假数字被当成真的」吃过一次亏。
       final bytes = <String, int>{};
+
+      // 「确认真不在盘上」的那些 evidenceId。
+      //
+      // ⚠️ **它与「`bytes` 里没有这一条」不是一回事**：`bytes` 缺一条有两种原因
+      // —— 文件没了、或者文件在但这次量不出大小。只有**前一种**才进这里。
+      final gone = <String>{};
+
       for (final entry in entries) {
         final file = File('$_rootPath/${entry.location.value}');
         try {
-          if (await file.exists()) bytes[entry.evidenceId] = await file.length();
+          if (await file.exists()) {
+            bytes[entry.evidenceId] = await file.length();
+          } else {
+            gone.add(entry.evidenceId);
+          }
         } on Object {
+          // ⚠️ **不往 `gone` 里放。** 它在盘上，只是这次量不出来（读不动、权限不对）。
+          // 当成「没了」会让一条录像从界面上**静默消失** —— 那比一个数字不准坏得多，
+          // 也正是上面那段「宁可少一个数字」要防的事。
           continue;
         }
       }
 
+      // ⚠️ **索引只增不减**（追加写，§6.2），删掉的分段仍然留在里面 ——
+      // 而下面 `_sessions` / `_entries` / `_locationByEvidenceId` 三样都是拿它算的。
+      // 所以**必须在这儿滤一道**，否则删掉的录像会永远留在列表上：
+      // 文件真没了，而列表还在、数字不变、详情页也不 pop
+      // —— 用户看到的就是「删不掉」（需求方 2026-09-28 报的）。
+      final present = dropGoneSegments(entries, gone);
+
       // 归并成「一次录制」（需求方 2026-09-22 的口径：一个单号从开始到结束为一条）。
-      final merged = toSessions(entries, bytes);
+      final merged = toSessions(present, bytes);
 
       // 总占用走盘，不走索引 —— 需求方要的是「实际存储到手机的视频大小总量，
       // 上传后删掉就按删除后的算」。索引只增不减，拿它求和永远降不下来。
@@ -1688,16 +1709,22 @@ class _RecorderPageState extends State<RecorderPage> {
       setState(() {
         _sessionCount = sessions;
         _pendingCount = pending;
+        // ⚠️ 这个**故意**是索引的原始行数，不跟着 `present` 缩 ——
+        // 面板上那一行写的是「索引 N 条」，它要回答的是「收尾有没有把行写进索引」，
+        // 而索引本来就是只增不减的。跟着缩就没法回答那个问题了。
+        // 用户在列表上看到的条数是 `_sessions`（= `present` 归并出来的），
+        // 两个数字不一样是**正常的**。
         _entryCount = entries.length;
         _punchCount = punches;
         _sessions = merged;
-        _entries = entries;
+        _entries = present;
         _archiveRecords = archiveRecords;
         _todayCount = countToday(merged, DateTime.now());
         _videoBytes = videoBytes;
         // 手动删除要按 evidenceId 找到磁盘位置 —— 索引里那个相对路径就在这里。
+        // 同样只装盘上还在的那些：删掉的那几段没有文件可删了。
         _locationByEvidenceId = {
-          for (final entry in entries) entry.evidenceId: entry.location.value,
+          for (final entry in present) entry.evidenceId: entry.location.value,
         };
         _labelsByEvidence = labels;
       });
@@ -2593,19 +2620,56 @@ class _RecorderPageState extends State<RecorderPage> {
     if (!plan.deletionAllowed) {
       // ⚠️ **不许删时不弹删除窗** —— 只把原因说清楚。
       // 弹了就等于把这个动作交给用户去点，而系统已经知道它不该做。
-      await showDialog<void>(
+      //
+      // 例外只有一种：「查不了」多给一条出路（需求方 2026-09-28 裁决，见
+      // `DeletePlan.canOverrideUnverified`）。即便走那条路，**默认方向仍然是
+      // 拒绝** —— 它不在这颗窗里删任何东西，只是让用户能明确地说
+      // 「我知道没核对上，但电脑上确实有」。
+      final confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('这条现在不能删'),
-          content: Text(plan.reason),
+          content: Text(
+            plan.canOverrideUnverified
+                // 这句必须说清「我们没能替你核对」这件事本身 ——
+                // 用户要能分辨「电脑上真没有」与「我们问不到电脑」，
+                // 否则他会以为自己看到的是一个确定的结论。
+                ? '${plan.reason}\n\n'
+                    '如果你确定那台电脑上还留着这一份（能自己去上面看到它），'
+                    '也可以仍然删掉手机上这一条。**这一步没人能替你核对** —— '
+                    '万一电脑上那份也没了，删掉就是永久没了。'
+                : plan.reason,
+          ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(),
+              key: const Key('delete-refusal-ok'),
+              onPressed: () => Navigator.of(context).pop(false),
               child: const Text('知道了'),
             ),
+            // ⚠️ 措辞**不能与另一个窗里的「确认删除」长得一样** ——
+            // 那两个窗是「删一条已经核对过的」与「删一条没备份的」，
+            // 这一个的前提完全不同（我们**没**核对上）。同一句话会让用户
+            // 以为自己按的是那个普通的确认删除（§3.5.6② 不许合并的同一个理由）。
+            if (plan.canOverrideUnverified)
+              TextButton(
+                key: const Key('delete-override'),
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('我确认电脑上有，仍然删除'),
+              ),
           ],
         ),
       );
+
+      if (confirm != true || !mounted) return;
+
+      final forced = overrideUnverifiedRefusal(session: session, plan: plan);
+
+      // `canOverrideUnverified` 为真时它必定非空。真为空就是判定层与这里脱节了
+      // —— 那时**什么都不做**，绝不拿一颗空 `evidenceIds` 的 plan 往下走：
+      // 那会「一段都没删，界面上却走完了删除成功的整条路」。
+      if (forced == null) return;
+
+      await _deleteNow(session, forced, root);
       return;
     }
 

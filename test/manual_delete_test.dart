@@ -142,6 +142,97 @@ void main() {
     });
   });
 
+  /// ★ 需求方 2026-09-28 裁决的那条出路。
+  ///
+  /// 起因：试用到期后电脑端不再接受接入，那些**已经备份过**的录像会因为
+  /// 「回查查不了」而一律不许删 —— 手机空间一点都腾不出来。
+  /// 所以留一条出口。但**只给「查不了」**，而且默认方向仍然是拒绝。
+  ///
+  /// ⚠️ 这是对规格 §3.5.6③ 原话（「回查查不到（或查不了）⇒ 不许删」）的
+  /// 一次**需求变更**，不是把那条读松了：改判必须由用户明确确认，
+  /// 而且审计要留痕（§3.5.6④）。
+  group('★ 「我确认电脑上有，仍然删除」—— 只给「查不了」那一种', () {
+    DeletePlan couldNotVerify() => planManualDelete(
+          session: session(['e1', 'e2']),
+          records: {'e1': archived('e1'), 'e2': archived('e2')},
+          verify: {
+            'e1': VerifyOutcome.ok,
+            'e2': const VerifyOutcome(
+                exists: false, couldNotVerify: true, reason: '连不上电脑端'),
+          },
+        );
+
+    test('★ 「查不了」给这条路', () {
+      expect(couldNotVerify().canOverrideUnverified, isTrue);
+    });
+
+    test('★ 「归档层上找不到这一份」**不给** —— 那是问到了的答案', () {
+      // ⚠️ 这一条是这一组的重点。`refusedMissingCopy` 是电脑端**明确回答**
+      // 「没有这一份」——那种情况下手机上这条就真是最后一份，
+      // 让用户凭一句「我确认」跨过去，删掉的就是 I2 里那个不可逆的损失。
+      // 与「查不了」的差别不是措辞，是**知不知道**。
+      final plan = planManualDelete(
+        session: session(['e1']),
+        records: {'e1': archived('e1')},
+        verify: {'e1': VerifyOutcome.missing},
+      );
+
+      expect(plan.decision, DeleteDecision.refusedMissingCopy);
+      expect(plan.canOverrideUnverified, isFalse);
+      expect(
+        overrideUnverifiedRefusal(session: session(['e1']), plan: plan),
+        isNull,
+        reason: '不给改判 —— 返回 null 才是「这条路不存在」',
+      );
+    });
+
+    test('两种 confirm 也不给（它们本来就能删，用不着这条路）', () {
+      final unarchived = planManualDelete(
+        session: session(['e1']),
+        records: {'e1': pending('e1')},
+        verify: const {},
+      );
+      final ok = planManualDelete(
+        session: session(['e1']),
+        records: {'e1': archived('e1')},
+        verify: {'e1': VerifyOutcome.ok},
+      );
+
+      expect(unarchived.canOverrideUnverified, isFalse);
+      expect(ok.canOverrideUnverified, isFalse);
+    });
+
+    test('★ 改判之后能删，而且删的是 **session 的那几段**', () {
+      // ⚠️ 拒绝那两颗 plan 的 `evidenceIds` 是**空的**（`const []`）。
+      // 照抄它的话 `deleteSessionFiles` 一段都删不着，而界面上却走完了
+      // 「删除成功」的整条路 —— 用户以为删了，文件还在盘上。
+      final target = session(['e1', 'e2']);
+      final forced = overrideUnverifiedRefusal(
+        session: target,
+        plan: couldNotVerify(),
+      );
+
+      expect(forced, isNotNull);
+      expect(forced!.deletionAllowed, isTrue);
+      expect(forced.evidenceIds, ['e1', 'e2'],
+          reason: '必须从 session 重新取 —— 拒绝那颗 plan 的 evidenceIds 是空的');
+    });
+
+    test('★ 改判的理由要写明「是用户自己确认的」', () {
+      // §3.5.5/④：事后要答得出「这条录像是什么时候没的、为什么没的」。
+      // 理由里不写这件事的话，审计看上去就是一次**普通的**删除 ——
+      // 而它其实是一次**没核对上**的删除，两者的性质不一样。
+      final forced = overrideUnverifiedRefusal(
+        session: session(['e1']),
+        plan: couldNotVerify(),
+      );
+
+      expect(forced!.reason, contains('用户确认'));
+      expect(forced.reason, contains('没能回查'),
+          reason: '要留下「当时没核对上」这个事实');
+    });
+  });
+
   group('真删：先写审计，再删文件', () {
     late Directory temp;
 

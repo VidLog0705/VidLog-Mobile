@@ -70,6 +70,47 @@ class DeletePlan {
   bool get deletionAllowed =>
       decision == DeleteDecision.confirmArchived ||
       decision == DeleteDecision.confirmUnarchived;
+
+  /// 能不能走那条「**我确认电脑上有，仍然删除**」的出路。
+  ///
+  /// ⚠️ **只有「查不了」给这条路**（[DeleteDecision.refusedCouldNotVerify]）。
+  /// [DeleteDecision.refusedMissingCopy] **不给** —— 那一个是**问到了**的答案：
+  /// 归档层明确说没有这一份。那种情况下手机上这条就真是最后一份，
+  /// 删掉就是 I2 里那个不可逆的损失，不该让用户凭一句「我确认」就跨过去。
+  ///
+  /// 需求方 2026-09-28 裁决：试用到期后电脑端不再接受接入，已备份的录像会
+  /// 因为回查不了而一律不许删，空间**一点都腾不出来**。所以留一条出口 ——
+  /// 但默认方向仍然是拒绝，退出路必须由用户自己明确确认（见
+  /// [overrideUnverifiedRefusal]），而且审计要留痕（§3.5.6④）。
+  bool get canOverrideUnverified =>
+      decision == DeleteDecision.refusedCouldNotVerify;
+}
+
+/// 用户点了「我确认电脑上有，仍然删除」之后，把那个拒绝**改判成可删**。
+///
+/// ⚠️ **只对 [DeleteDecision.refusedCouldNotVerify] 有效**，别的拒绝一律返回
+/// `null`（= 不给改）。理由见 [DeletePlan.canOverrideUnverified]：
+/// 「归档层上找不到这一份」是问到了的答案，不是问不到。
+///
+/// ⚠️ **必须从 [session] 重新取 `evidenceIds`，不能拿 [plan] 的** ——
+/// 拒绝那两颗 plan 的 `evidenceIds` 是**空的**（`const []`，见 `planManualDelete`
+/// 里那两处）。照抄的话 `deleteSessionFiles` 会一段都删不着，
+/// 而界面上却走完了「删除成功」的整条路：用户以为删了，文件还在盘上。
+///
+/// 返回的那颗 plan 带**它自己的 `reason`**，而那句话会进审计流水 ——
+/// §3.5.5/④ 要求事后答得出「这条为什么没了」。所以理由里必须写明
+/// **是用户自己在没能核对的情况下确认的**，不能写成一句普通的删除理由。
+DeletePlan? overrideUnverifiedRefusal({
+  required RecordingSession session,
+  required DeletePlan plan,
+}) {
+  if (!plan.canOverrideUnverified) return null;
+
+  return DeletePlan(
+    DeleteDecision.confirmArchived,
+    '用户确认电脑端上还有这一份，在没能回查核对的情况下自行决定删除（${plan.reason}）',
+    List.of(session.evidenceIds),
+  );
 }
 
 /// 一次回查的结果（由调用方从归档层问来）。
