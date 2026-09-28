@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/app/palette.dart';
 import 'package:vidlog_mobile/app/recorder_page.dart';
 import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/main.dart';
@@ -17,6 +18,41 @@ void main() {
     // 默认落在**备份**栏。**不去断言数据目录初始化完成** ——
     // 那要走平台通道，widget 测试里没有实现；页面自己会把它降级成一条错误状态。
     expect(find.text('备份'), findsWidgets);
+  });
+
+  /// 压在实景画面上的控件**不跟新配色走**（`实现决策.md` §47）。
+  ///
+  /// ⚠️ 这一块的底不是页面色，是相机拍到的**实景**（仓库顶灯、白墙、白面单）。
+  /// 跟着换成浅色体系的话，抽屉面板、输入框、胶囊会变成一片浅底，
+  /// 而背后可能是白墙 —— 表盘读数与【对焦】按钮已经各自踩过一次这个坑。
+  ///
+  /// 冻结靠的是 `recorder_page.dart` 里那一层 `Theme(data: _cameraOverlayTheme)`。
+  /// **谁把它拆掉，这一条就红。**
+  testWidgets('★ 压在取景画面上那一块不跟主题走（冻结在改版前那套）',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    // 抽屉入口在**采集页**上（备份页没有），先切过去。
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    // `Theme.of` 拿的是最近一层祖先 —— 也就是那一层冻结的 `Theme`。
+    // ⚠️ 这里比的是 `colorScheme` 整体而不是某一个字段：`ColorScheme` 有真正的
+    // 值相等（`color_scheme.dart` 里逐个字段比），所以这一条不是「两个实例
+    // 必然不等」的空断言。
+    final overlay =
+        Theme.of(tester.element(find.byKey(const Key('work-sheet-manual'))));
+
+    expect(
+      overlay.colorScheme,
+      isNot(VidLogApp.theme.colorScheme),
+      reason: '浮层被主题染色了 —— 压在实景上的控件必须留在改版前那套上',
+    );
+    expect(
+      overlay.colorScheme.primary,
+      isNot(Palette.primary),
+      reason: '同上，且这样写更直白：浮层的主色不该是新配色那支蓝',
+    );
   });
 
   /// 「事件 ▸」抽屉现在**跟着日志走**（2026-09-26）。

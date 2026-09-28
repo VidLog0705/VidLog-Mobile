@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../recording/business_type.dart';
+import 'palette.dart';
 
 /// 一条录像的详情（需求方 2026-09-27 照备份页草图定的）。
 ///
@@ -31,6 +32,7 @@ class RecordDetailPage extends StatelessWidget {
     required this.businessType,
     required this.uploadText,
     required this.uploadColor,
+    required this.uploadTint,
     required this.timeText,
     required this.durationText,
     required this.sizeText,
@@ -53,8 +55,14 @@ class RecordDetailPage extends StatelessWidget {
   /// 备份状态那两样。文案与颜色由调用方给，**与列表上那个小标同源**
   /// （`summarizeUploadState`）—— 两处各判一套的话，会出现
   /// 「列表说已备份、点进来说没备份」。
+  ///
+  /// ⚠️ `uploadTint` 是那个小标的**底**，也是调用方给的同一个 `_uploadLook`。
+  /// 让这一页自己拿 `uploadColor` 兑 12% 透明度的话，两个屏上会是**两个深浅**
+  /// （兑出来的 `#E0F5EE` vs 采样出来的 `#E7F8F3`）—— 而这条注释上面
+  /// 那句话正是要防这个。
   final String uploadText;
   final Color uploadColor;
+  final Color uploadTint;
 
   final String timeText;
   final String durationText;
@@ -87,6 +95,9 @@ class RecordDetailPage extends StatelessWidget {
     // 而 Dart 的字段提升只对**私有** final 字段生效 —— 直接写
     // `if (businessType != null) businessType.displayName` 编译不过。
     final type = businessType;
+    // 与列表上那支色**同源**。`businessTypeLook` 吃 `null`（给的是灰），
+    // 所以这里不用先判空。
+    final typeLook = businessTypeLook(type);
 
     return Scaffold(
       appBar: AppBar(title: const Text('录像详情')),
@@ -107,13 +118,15 @@ class RecordDetailPage extends StatelessWidget {
               // 名字走 `BusinessType.displayName` —— 与列表上那个小标同一个字符串。
               // 各写一遍的话，列表写着「发货视频」而这里写着「发货」，
               // 用户会以为它们说的是两回事。
+              //
+              // ⚠️ 颜色也必须走同一个函数（`businessTypeLook`）。这里原先自己写了
+              // 一遍 `returning ? Colors.deepOrange : Colors.blue` —— 与列表上
+              // 用的那两支**不是同一个色**，于是列表上是一个橙、点进去是另一个橙，
+              // 而用户会以为换了类别。
               if (type != null)
-                _pill(
-                  type.displayName,
-                  type == BusinessType.returning ? Colors.deepOrange : Colors.blue,
-                ),
-              _pill(uploadText, uploadColor),
-              if (locked) _pill('已锁定', Theme.of(context).colorScheme.primary),
+                _pill(type.displayName, typeLook.color, typeLook.tint),
+              _pill(uploadText, uploadColor, uploadTint),
+              if (locked) _pill('已锁定', Palette.primary, Palette.blueTint),
             ],
           ),
           const SizedBox(height: 16),
@@ -151,7 +164,7 @@ class RecordDetailPage extends StatelessWidget {
             onPressed: () => _delete(context),
             icon: const Icon(Icons.delete_outline),
             label: const Text('删除这一条'),
-            style: OutlinedButton.styleFrom(foregroundColor: Colors.red.shade700),
+            style: OutlinedButton.styleFrom(foregroundColor: Palette.danger),
           ),
           const SizedBox(height: 8),
           const Text(
@@ -159,7 +172,7 @@ class RecordDetailPage extends StatelessWidget {
             // 面单上的姓名电话地址会原样跟着出去。这句话不说清楚，
             // 用户会以为系统替他处理过。
             '分享出去的是原视频，没有转码、没有打码 —— 面单上的姓名、电话、地址会原样跟着出去。',
-            style: TextStyle(fontSize: 11, color: Colors.black45),
+            style: TextStyle(fontSize: 11, color: Palette.faint),
           ),
         ],
       ),
@@ -180,7 +193,7 @@ class RecordDetailPage extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Container(color: Colors.black12, child: preview),
+            Container(color: Palette.hairline, child: preview),
             if (onPlay != null)
               Material(
                 color: Colors.transparent,
@@ -197,10 +210,12 @@ class RecordDetailPage extends StatelessWidget {
     );
   }
 
-  Widget _pill(String text, Color color) => Container(
+  /// 底与字**成对给**：浅浅的那个底是采样出来的一个值，不是「同一个色兑 12%
+  /// 透明」兑出来的 —— 列表上那个小标用的是同一对，两处才会是同一个色。
+  Widget _pill(String text, Color color, Color tint) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
+          color: tint,
           borderRadius: BorderRadius.circular(6),
         ),
         child: Text(text, style: TextStyle(fontSize: 12, color: color)),
@@ -215,7 +230,7 @@ class RecordDetailPage extends StatelessWidget {
               width: 64,
               child: Text(
                 label,
-                style: const TextStyle(fontSize: 13, color: Colors.black54),
+                style: const TextStyle(fontSize: 13, color: Palette.muted),
               ),
             ),
             Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),

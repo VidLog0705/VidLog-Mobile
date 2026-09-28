@@ -39,6 +39,7 @@ import '../upload/enrollment.dart';
 import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
 import 'camera_preview.dart';
+import 'palette.dart';
 import 'record_detail_page.dart';
 import 'scan_connect_page.dart';
 import 'scan_waybill_page.dart';
@@ -52,6 +53,25 @@ import 'zoom_dial.dart';
 /// ⚠️ 这是**页面本地的界面状态**，不是业务状态 —— 它不参与任何判定，
 /// 也不落盘。切栏、停录都不需要动它。
 enum _WorkSheet { manual, events, diagnostics }
+
+/// 压在**实景画面**上那一块的主题 —— **冻结在改版前那一套**，故意不跟新配色。
+///
+/// 为什么不一起换：这一块的底不是页面色，是相机拍到的**实景**（仓库顶灯、
+/// 白墙、白面单）。新配色是「浅蓝页 + 近白卡」的浅色体系，跟着换的话抽屉
+/// 面板、输入框、胶囊会变成一片浅底，而它们背后可能是白墙。
+/// 表盘读数与【对焦】按钮这两处已经各自踩过一次同一个坑
+/// （见 `zoom_dial.dart` 与 `_focusButton` 上的两段注释），那两次是靠
+/// **把颜色写死**躲过去的。
+///
+/// 这里用一层 `Theme` 把**整块**冻住，而不是给那七八个控件逐个补色：
+/// 逐个补色要写死的正是 M3 从种子里算出来的那些色调值 —— 没人采样过、
+/// 也没人验过，而且散在七八处之后下次换主题又是一轮。一层 `Theme` 是**一处**，
+/// 它保的是「和今天一模一样」这个**可验证的事实**。
+///
+/// ⚠️ `#1565C0` 是改版前 `main.dart` 里那个种子色，**故意写成另一个常量**、
+/// 不去引用 `Palette` —— 它不是配色的一部分，是一份**历史值**。
+final _cameraOverlayTheme =
+    ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF1565C0)));
 
 /// 切到 [tab] 时要播报哪一句；不该播报就返回 null。
 ///
@@ -1016,7 +1036,7 @@ class _RecorderPageState extends State<RecorderPage> {
             const SizedBox(height: 4),
             const Text(
               '手机上的原文件还在，不会因为传不上去就没了。',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
+              style: TextStyle(fontSize: 12, color: Palette.muted),
             ),
           ],
         ),
@@ -1865,7 +1885,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   IconButton(
                     tooltip: '改本机名',
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.edit_outlined, size: 15, color: Colors.black38),
+                    icon: const Icon(Icons.edit_outlined, size: 15, color: Palette.faint),
                     onPressed: identity == null ? null : _editDeviceName,
                   ),
                 ],
@@ -1876,21 +1896,21 @@ class _RecorderPageState extends State<RecorderPage> {
                     width: 7,
                     height: 7,
                     decoration: BoxDecoration(
-                      color: ip == null ? Colors.grey : Colors.green,
+                      color: ip == null ? Palette.faint : Palette.green,
                       shape: BoxShape.circle,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
                     ip ?? '未连局域网',
-                    style: const TextStyle(fontSize: 13, color: Colors.black54),
+                    style: const TextStyle(fontSize: 13, color: Palette.muted),
                   ),
                 ],
               ),
               const SizedBox(height: 2),
               const Text(
                 '电商发货 / 退货视频取证系统',
-                style: TextStyle(fontSize: 12, color: Colors.black45),
+                style: TextStyle(fontSize: 12, color: Palette.faint),
               ),
             ],
           ),
@@ -1923,22 +1943,24 @@ class _RecorderPageState extends State<RecorderPage> {
             ? '探测中…'
             : (online ? '电脑端在线' : '电脑端离线'));
 
-    final color = (!hasHost || !paired || _probingHost)
-        ? Colors.grey
-        : (online ? Colors.green : Colors.grey);
+    // 只有「在线」是绿的，其余三种（未连接 / 探测中 / 离线）是同一支灰。
+    // 改版前这里写了 `grey` 两次、`green` 一次，底还要各自再兑一次透明度。
+    final (fg, bg) = (!hasHost || !paired || _probingHost || !online)
+        ? (Palette.muted, Palette.hairline)
+        : (Palette.green, Palette.greenTint);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: bg,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.circle, size: 7, color: color),
+          Icon(Icons.circle, size: 7, color: fg),
           const SizedBox(width: 5),
-          Text(text, style: TextStyle(fontSize: 12, color: color)),
+          Text(text, style: TextStyle(fontSize: 12, color: fg)),
         ],
       ),
     );
@@ -1978,7 +2000,8 @@ class _RecorderPageState extends State<RecorderPage> {
           Expanded(
             child: _statCard(
               icon: Icons.videocam_outlined,
-              tint: Colors.blue,
+              tint: Palette.primary,
+              tintBg: Palette.blueTint,
               value: '$_todayCount',
               label: '本机今日',
             ),
@@ -1987,7 +2010,8 @@ class _RecorderPageState extends State<RecorderPage> {
           Expanded(
             child: _statCard(
               icon: Icons.layers_outlined,
-              tint: Colors.blue,
+              tint: Palette.primary,
+              tintBg: Palette.blueTint,
               value: '${_sessions.length}',
               label: '本机全部',
             ),
@@ -1996,7 +2020,8 @@ class _RecorderPageState extends State<RecorderPage> {
           Expanded(
             child: _statCard(
               icon: Icons.storage_outlined,
-              tint: Colors.purple,
+              tint: Palette.violet,
+              tintBg: Palette.violetTint,
               value: used.value,
               unit: used.unit,
               label: '总占用',
@@ -2016,6 +2041,7 @@ class _RecorderPageState extends State<RecorderPage> {
   Widget _statCard({
     required IconData icon,
     required Color tint,
+    required Color tintBg,
     required String value,
     String? unit,
     required String label,
@@ -2032,8 +2058,10 @@ class _RecorderPageState extends State<RecorderPage> {
               width: 34,
               height: 34,
               decoration: BoxDecoration(
-                color: tint.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
+                color: tintBg,
+                // 草图上这三个是**圆**，不是圆角方。尺寸与图标都不动 ——
+                // 草图改的只是那个形状（§47）。
+                shape: BoxShape.circle,
               ),
               child: Icon(icon, size: 19, color: tint),
             ),
@@ -2056,7 +2084,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   const SizedBox(width: 2),
                   Text(
                     unit,
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                    style: const TextStyle(fontSize: 12, color: Palette.muted),
                   ),
                 ],
               ],
@@ -2066,14 +2094,14 @@ class _RecorderPageState extends State<RecorderPage> {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+              style: const TextStyle(fontSize: 12, color: Palette.muted),
             ),
             if (note != null)
               Text(
                 note,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10, color: Colors.black38),
+                style: const TextStyle(fontSize: 10, color: Palette.faint),
               ),
           ],
         ),
@@ -2146,6 +2174,20 @@ class _RecorderPageState extends State<RecorderPage> {
           children: [
             Row(
               children: [
+                // 草图上「电脑备份」前面是一个**实心蓝圆 + 白色显示器**。
+                // 尺寸与三张统计卡的图标底**同档**（34 的圆 / 19 的图标）——
+                // 这一页上「图标装在一个色块里」只有这一种画法，
+                // 两个尺寸会看起来像两种东西（§47）。⚠️ 圆，不是圆角方。
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: const BoxDecoration(
+                    color: Palette.primary,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.monitor, size: 19, color: Colors.white),
+                ),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     '电脑备份',
@@ -2166,7 +2208,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   // 加大加粗：整页最要紧的一句话，原来它是这一块最小的字。
                   fontSize: 15,
                   fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400,
-                  color: pending > 0 ? Colors.black87 : Colors.green[700],
+                  color: pending > 0 ? Palette.ink : Palette.green,
                 ),
               ),
             ],
@@ -2175,12 +2217,12 @@ class _RecorderPageState extends State<RecorderPage> {
               hasHost
                   ? '${name.isEmpty ? '电脑端' : name} · $address'
                   : '还没填电脑端地址。',
-              style: const TextStyle(fontSize: 12, color: Colors.black54),
+              style: const TextStyle(fontSize: 12, color: Palette.muted),
             ),
             if (_nextRetryAt != null)
               Text(
                 '下次自动重试 ${_stamp(_nextRetryAt!)}',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: const TextStyle(fontSize: 12, color: Palette.muted),
               ),
             const SizedBox(height: 10),
             // 主按钮**通栏**（照草图）：这一页上用户最常做的一件事就是
@@ -2243,7 +2285,7 @@ class _RecorderPageState extends State<RecorderPage> {
             const Text(
               '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
               '（一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的地址不一定是你能连上的那个。）',
-              style: TextStyle(fontSize: 11, color: Colors.black45),
+              style: TextStyle(fontSize: 11, color: Palette.faint),
             ),
           ],
         ),
@@ -2262,20 +2304,22 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 这两件事要修的东西不一样（改地址 vs 重新扫码）。
   Widget _pairedPill({required bool hasHost, required bool paired}) {
     final text = paired ? '已配对' : '未配对';
-    final color = paired ? Colors.green : Colors.grey;
+    final (fg, bg) = paired
+        ? (Palette.green, Palette.greenTint)
+        : (Palette.muted, Palette.hairline);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: bg,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(paired ? Icons.link : Icons.link_off, size: 12, color: color),
+          Icon(paired ? Icons.link : Icons.link_off, size: 12, color: fg),
           const SizedBox(width: 4),
-          Text(text, style: TextStyle(fontSize: 12, color: color)),
+          Text(text, style: TextStyle(fontSize: 12, color: fg)),
         ],
       ),
     );
@@ -2294,7 +2338,7 @@ class _RecorderPageState extends State<RecorderPage> {
       // 鼠标停上去（真机上是长按）必须看到它到底删的是什么。
       tooltip: '断开配对',
       visualDensity: VisualDensity.compact,
-      icon: const Icon(Icons.delete_outline, size: 20, color: Colors.black38),
+      icon: const Icon(Icons.delete_outline, size: 20, color: Palette.faint),
       onPressed: _forgetHost,
     );
   }
@@ -2363,6 +2407,7 @@ class _RecorderPageState extends State<RecorderPage> {
     if (state == UploadState.failed) {
       return ActionChip(
         visualDensity: VisualDensity.compact,
+        backgroundColor: look.tint,
         avatar: Icon(Icons.error_outline, size: 16, color: look.color),
         label: Text(look.text, style: TextStyle(color: look.color)),
         onPressed: () => _showUploadFailure(session),
@@ -2371,6 +2416,7 @@ class _RecorderPageState extends State<RecorderPage> {
 
     return Chip(
       visualDensity: VisualDensity.compact,
+      backgroundColor: look.tint,
       label: Text(look.text, style: TextStyle(color: look.color)),
     );
   }
@@ -2680,6 +2726,7 @@ class _RecorderPageState extends State<RecorderPage> {
           businessType: _businessTypeOf(session),
           uploadText: look.text,
           uploadColor: look.color,
+          uploadTint: look.tint,
           timeText: _stamp(session.startedAt),
           durationText: _durationLabel(session.duration),
           sizeText: _sizeLabel(session.bytes),
@@ -2946,7 +2993,9 @@ class _RecorderPageState extends State<RecorderPage> {
         // 判不出来是真的会发生的（标签认不出就不写），灰色说的是
         // 「这一条我不知道是哪一类」，不是「它属于第三类」。
         decoration: BoxDecoration(
-          border: Border(left: BorderSide(color: _typeColor(type), width: 3)),
+          border: Border(
+            left: BorderSide(color: businessTypeLook(type).color, width: 3),
+          ),
         ),
         padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
         child: Row(
@@ -2995,7 +3044,7 @@ class _RecorderPageState extends State<RecorderPage> {
                       if (type != null) _typeBadge(type),
                       Text(
                         '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}',
-                        style: const TextStyle(fontSize: 12, color: Colors.black54),
+                        style: const TextStyle(fontSize: 12, color: Palette.muted),
                       ),
                     ],
                   ),
@@ -3009,21 +3058,12 @@ class _RecorderPageState extends State<RecorderPage> {
             // 这一页上保留下来的每一个 `›` 都是这样 —— 一个点不动的箭头
             // 正是踩坑 #13 说的那种「让用户猜」。
             if (!_managing)
-              const Icon(Icons.chevron_right, size: 18, color: Colors.black26),
+              const Icon(Icons.chevron_right, size: 18, color: Palette.faint),
           ],
         ),
       ),
     );
   }
-
-  /// 这一类的颜色。**三处共用**（竖条、胶囊、详情页那颗胶囊）——
-  /// 各写一套的话，列表上是橙色、点进去变成红色，用户会以为换了类别。
-  Color _typeColor(BusinessType? type) => switch (type) {
-        BusinessType.outbound => Colors.blue,
-        BusinessType.returning => Colors.deepOrange,
-        // 判不出来：灰。**不是第三种业务类型**，是「不知道」。
-        null => Colors.black26,
-      };
 
   /// 这一条是发货还是退货。判不出来时为 null（**不猜**）。
   BusinessType? _businessTypeOf(RecordingSession session) {
@@ -3041,14 +3081,18 @@ class _RecorderPageState extends State<RecorderPage> {
   /// ⚠️ 文字与颜色都**不能省**：「发货视频 / 退货视频」这几个字是唯一
   /// 分得清两类的东西 —— 只靠颜色的话，色弱的人分不出蓝和橙，
   /// 而这两栏的录像在业务上完全不是一回事。
+  ///
+  /// 颜色走 `businessTypeLook`（`palette.dart`）。**这里是唯一的定义处** ——
+  /// 详情页那颗胶囊、这一页的行首竖条读的都是它。改版前这一页自己写了一个
+  /// `_typeColor`、详情页又各写了一遍，于是列表上是一个橙、点进去是另一个橙。
   Widget _typeBadge(BusinessType type) {
-    final color = _typeColor(type);
+    final look = businessTypeLook(type);
     final returning = type == BusinessType.returning;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: look.tint,
         borderRadius: BorderRadius.circular(4),
       ),
       child: Row(
@@ -3057,13 +3101,13 @@ class _RecorderPageState extends State<RecorderPage> {
           Icon(
             returning ? Icons.assignment_return_outlined : Icons.local_shipping_outlined,
             size: 12,
-            color: color,
+            color: look.color,
           ),
           const SizedBox(width: 3),
           // 名字走 `BusinessType.displayName` —— 与详情页那个胶囊同一个字符串。
           Text(
             type.displayName,
-            style: TextStyle(fontSize: 11, color: color),
+            style: TextStyle(fontSize: 11, color: look.color),
           ),
         ],
       ),
@@ -3089,8 +3133,8 @@ class _RecorderPageState extends State<RecorderPage> {
 
         if (path == null) {
           return Container(
-            color: Colors.black12,
-            child: const Icon(Icons.movie_outlined, size: 22, color: Colors.black38),
+            color: Palette.hairline,
+            child: const Icon(Icons.movie_outlined, size: 22, color: Palette.faint),
           );
         }
 
@@ -3213,12 +3257,34 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// 用词与 `ArchiveRecord` 的状态名**一一对应**，不另起一套：
   /// 界面上一套、落盘一套的话，对着日志排查的人会先怀疑自己看错了哪一套。
-  ({String text, Color color}) _uploadLook(UploadState state) => switch (state) {
-        UploadState.archived => (text: '已备份', color: Colors.green),
-        UploadState.uploading => (text: '备份中…', color: Colors.blue),
-        UploadState.backoff => (text: '待重试', color: Colors.orange),
-        UploadState.failed => (text: '备份失败', color: Colors.red),
-        UploadState.pending => (text: '未备份', color: Colors.grey),
+  ({String text, Color color, Color tint}) _uploadLook(UploadState state) =>
+      switch (state) {
+        UploadState.archived => (
+            text: '已备份',
+            color: Palette.green,
+            tint: Palette.greenTint,
+          ),
+        UploadState.uploading => (
+            text: '备份中…',
+            color: Palette.primary,
+            tint: Palette.blueTint,
+          ),
+        UploadState.backoff => (
+            text: '待重试',
+            color: Palette.amber,
+            tint: Palette.amberTint,
+          ),
+        // 草图里没有失败态 —— 红是规格要求的语义色，全应用只有这一支。
+        UploadState.failed => (
+            text: '备份失败',
+            color: Palette.danger,
+            tint: Palette.hairline,
+          ),
+        UploadState.pending => (
+            text: '未备份',
+            color: Palette.muted,
+            tint: Palette.hairline,
+          ),
       };
 
   // ── ④ 视频记录 ───────────────────────────────
@@ -3351,7 +3417,7 @@ class _RecorderPageState extends State<RecorderPage> {
                     : (_recordsDay == null && _recordsSource == null
                         ? '本机还没有收尾入库的录像。'
                         : '现在这个筛选下没有录像。点上面那两个胶囊，选「全部」就都在了。'),
-                style: const TextStyle(fontSize: 13, color: Colors.black54),
+                style: const TextStyle(fontSize: 13, color: Palette.muted),
               ),
             )
           else
@@ -3365,7 +3431,7 @@ class _RecorderPageState extends State<RecorderPage> {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
               children: [
-                const Text('每页', style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const Text('每页', style: TextStyle(fontSize: 12, color: Palette.muted)),
                 const SizedBox(width: 8),
                 DropdownButton<int>(
                   value: _recordsPageSize,
@@ -3545,7 +3611,7 @@ class _RecorderPageState extends State<RecorderPage> {
                       (_settingsReady && _selected.isNotEmpty) ? _runBatchDelete : null,
                   icon: const Icon(Icons.delete_outline, size: 18),
                   label: const Text('批量删除'),
-                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red.shade700),
+                  style: OutlinedButton.styleFrom(foregroundColor: Palette.danger),
                 ),
               ),
             ],
@@ -3617,7 +3683,7 @@ class _RecorderPageState extends State<RecorderPage> {
                     textAlign: TextAlign.right,
                     style: TextStyle(
                       fontSize: 12,
-                      color: full ? Colors.orange : Colors.black54,
+                      color: full ? Palette.amber : Palette.muted,
                     ),
                   ),
                 );
@@ -3749,7 +3815,7 @@ class _RecorderPageState extends State<RecorderPage> {
             const Text(
               '填电脑端那台机器的局域网 IP。填完还要**配对**一次它才会收下'
               '这台手机的录像。',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
+              style: TextStyle(fontSize: 12, color: Palette.muted),
             ),
           ],
         ),
@@ -3825,55 +3891,62 @@ class _RecorderPageState extends State<RecorderPage> {
     // 而相机其实开着、表盘也划不动。画的与判的仍是**同一份** `gate`。
     final showPreview = _coordinator?.isCameraOpen == true && gate != null;
 
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      // 全屏取景是黑底，状态栏默认的深色字压在上面看不见。
-      value: SystemUiOverlayStyle.light,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ── ① 画面：铺满整页 ──
-          ColoredBox(
-            color: Colors.black,
-            child: showPreview
-                ? CameraPreview(
-                    viewfinder: gate.viewfinder,
-                    // 画面比例取自**实际**那一档（编排器探测之后的结论）——
-                    // 与取景框同一份来源，两者才不会各自歪一点。
-                    aspectRatio: _coordinator!.effectiveSpec.aspectRatio,
-                  )
-                // ⚠️ 未校准时**换掉整块画面**（规格 §3.6.4）。
-                // 只把那句「相机还没开」留在原地的话，用户看到的是一个
-                // **看着一切正常**的界面，而按【开始】什么都不发生。
-                : (_clockBlockedReason != null ? _clockBlockedScreen() : _idleScreen()),
-          ),
-
-          // ── ② 顶部浮层：状态与诊断计数 ──
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: _statusOverlay(recording, working),
-          ),
-
-          // ── ③ 底部浮层：刻度盘 + 询问 + 抽屉 + 操作 ──
-          //
-          // ⚠️ **不能写成 `Positioned(bottom: 0)`**，虽然只差这一层 `Align`。
-          //
-          // 只给 `bottom` 的 `Positioned` 传下来的是**无界高度**
-          // （`RenderStack` 只在 top/bottom 都给、或给了 height 时才约束高度）。
-          // 无界高度下 `RenderFlex` 走不到弹性分支 —— 于是列里的 `Flexible`
-          // **完全不生效**，`_sheetBody()` 那个 `Flexible` 就是个摆设，
-          // 键盘弹起来时面板顶部依旧从屏幕顶上冒出去（实测 y = -38）。
-          //
-          // `Positioned.fill` + `Align(bottomCenter)` 先把高度**框死在正文高度**内，
-          // 再由 `Align` 松约束给孩子，`Flexible` 才真的能把面板压扁。
-          Positioned.fill(
-            child: Align(
-              alignment: Alignment.bottomCenter,
-              child: _actionOverlay(recording, working, showPreview),
+    return Theme(
+      // ⚠️ 这一层是**故意**的：压在实景上的控件不跟新配色走。
+      // 谁把它拆掉，`test/widget_test.dart` 里那条冻结测试就会红。
+      data: _cameraOverlayTheme,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        // 全屏取景是黑底，状态栏默认的深色字压在上面看不见。
+        value: SystemUiOverlayStyle.light,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // ── ① 画面：铺满整页 ──
+            ColoredBox(
+              color: Colors.black,
+              child: showPreview
+                  ? CameraPreview(
+                      viewfinder: gate.viewfinder,
+                      // 画面比例取自**实际**那一档（编排器探测之后的结论）——
+                      // 与取景框同一份来源，两者才不会各自歪一点。
+                      aspectRatio: _coordinator!.effectiveSpec.aspectRatio,
+                    )
+                  // ⚠️ 未校准时**换掉整块画面**（规格 §3.6.4）。
+                  // 只把那句「相机还没开」留在原地的话，用户看到的是一个
+                  // **看着一切正常**的界面，而按【开始】什么都不发生。
+                  : (_clockBlockedReason != null
+                      ? _clockBlockedScreen()
+                      : _idleScreen()),
             ),
-          ),
-        ],
+
+            // ── ② 顶部浮层：状态与诊断计数 ──
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _statusOverlay(recording, working),
+            ),
+
+            // ── ③ 底部浮层：刻度盘 + 询问 + 抽屉 + 操作 ──
+            //
+            // ⚠️ **不能写成 `Positioned(bottom: 0)`**，虽然只差这一层 `Align`。
+            //
+            // 只给 `bottom` 的 `Positioned` 传下来的是**无界高度**
+            // （`RenderStack` 只在 top/bottom 都给、或给了 height 时才约束高度）。
+            // 无界高度下 `RenderFlex` 走不到弹性分支 —— 于是列里的 `Flexible`
+            // **完全不生效**，`_sheetBody()` 那个 `Flexible` 就是个摆设，
+            // 键盘弹起来时面板顶部依旧从屏幕顶上冒出去（实测 y = -38）。
+            //
+            // `Positioned.fill` + `Align(bottomCenter)` 先把高度**框死在正文高度**内，
+            // 再由 `Align` 松约束给孩子，`Flexible` 才真的能把面板压扁。
+            Positioned.fill(
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: _actionOverlay(recording, working, showPreview),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

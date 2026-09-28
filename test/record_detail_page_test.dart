@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/app/palette.dart';
 import 'package:vidlog_mobile/app/record_detail_page.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
 
@@ -48,7 +49,10 @@ void main() {
                     title: 'SF1000000001',
                     businessType: businessType,
                     uploadText: '已备份',
-                    uploadColor: Colors.green,
+                    // 与 `_uploadLook(UploadState.archived)` 那一对**同值** ——
+                    // 夹具自己编一套颜色的话，这一页改配色时测试还是绿的。
+                    uploadColor: Palette.green,
+                    uploadTint: Palette.greenTint,
                     timeText: '9月16日 17:32',
                     durationText: '00:48',
                     sizeText: '12.3 MB',
@@ -136,6 +140,23 @@ void main() {
 
     expect(find.text('退货视频'), findsOneWidget);
     expect(find.text(BusinessType.returning.displayName), findsOneWidget);
+  });
+
+  testWidgets('★ 那颗胶囊的颜色与列表上那支**是同一个函数给的**',
+      (WidgetTester tester) async {
+    // ⚠️ 这一页原先自己写了一套 `type == returning ? Colors.deepOrange : Colors.blue`
+    // —— 与列表上用的那两支**不是同一个色**，于是列表上是一个橙、点进去是
+    // 另一个橙，而用户会以为换了类别。现在两处都读 `businessTypeLook`。
+    await open(tester, businessType: BusinessType.returning);
+
+    final pill = tester.widget<Text>(find.text(BusinessType.returning.displayName));
+
+    expect(pill.style?.color, businessTypeLook(BusinessType.returning).color);
+    expect(
+      pill.style?.color,
+      isNot(Colors.deepOrange),
+      reason: '又写回 Material 内置色了 —— 那正是两屏不一致的来源',
+    );
   });
 
   testWidgets('锁着的时候：状态说得出来，按钮变成「解锁」', (WidgetTester tester) async {
