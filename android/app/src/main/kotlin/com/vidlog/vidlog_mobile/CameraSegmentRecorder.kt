@@ -11,9 +11,12 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
+import android.media.MediaRecorder
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
@@ -37,6 +40,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import java.io.File
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -48,6 +52,16 @@ import kotlin.math.max
  * @param startedAtMs 相对会话起点的**单调**毫秒偏移。
  * @param endedAtMs 同上。
  */
+/**
+ * 采集线程交给编码线程的一片 PCM。
+ *
+ * @param bytes 裸 PCM（16 位小端，单声道）。
+ * @param ptsUs 这一片的起始时刻（微秒）—— 由**已读帧数**推出来，见
+ *   [CameraSegmentRecorder.audioFramesRead]。**不是墙钟**：用户改系统时间
+ *   不得改变音频的时间轴（规格 §3.6.3 是同一条道理）。
+ */
+class PcmChunk(val bytes: ByteArray, val ptsUs: Long)
+
 data class ClosedSegment(
     val filePath: String,
     val sequence: Int,
@@ -104,7 +118,23 @@ sealed interface RecorderEvent {
  *    │                                                    └──轮转──> segment-001.mp4
  *    ├──> ImageReader ──> 静止检测（§3.3.3）+ 识码（§3.2.1）
  *    └──> 预览 Surface（可选，取景框要看得见）
+ *
+ * 麦克风 ──> AudioRecord ──(PCM)──> [采集线程] ──> pcmQueue ──┐
+ *                                                            │（同一个封装器）
+ *                        [取编码输出线程] <── AAC 编码器 <─────┘
  * ```
+ *
+ * ## ⚠️ 声音这一路的两个约束（录制声音，需求方 2026-09-28）
+ *
+ * 1. **`AudioRecord.read` 是阻塞的**，所以采集必须在自己一条线程上 ——
+ *    放进取编码输出那条线程会让视频的 `drainEncoder` 一起卡住（表现是掉帧）。
+ * 2. **`MediaCodec` 与 `MediaMuxer.writeSampleData` 都不是线程安全的**，
+ *    所以音频的编码与写入全部留在取编码输出那条线程上，`pcmQueue` 是两条线程
+ *    之间**唯一**的交接点。自己开一条线程去写 muxer 会写出随机损坏的文件。
+ *
+ * 另外：**轮转不需要换音频编码器**（这是本文件里最容易想反的一处）——
+ * 音频的 `INFO_OUTPUT_FORMAT_CHANGED` 一辈子只来一次，但那份 format
+ * 被缓存下来（同视频那一路的做法），新封装器照用即可。
  *
  * **编码器全程不停**，只换封装器。这是「不因切分而中断」的落点 ——
  * 如果每次切分都重启编码器，中间会丢掉若干帧，用户看到的就是画面跳一下。
@@ -366,6 +396,37 @@ class CameraSegmentRecorder(
 
         private const val MUXER_TIMEOUT_US = 10_000L
 
+        /** AAC 编码的 MIME。 */
+        const val MIME_AAC = MediaFormat.MIMETYPE_AUDIO_AAC
+
+        /**
+         * 音频参数：**单声道 44.1kHz 64kbps**。
+         *
+         * ⚠️ 三个值都要与 **iOS 那边逐字一致**（`CameraSegmentRecorder.swift`
+         * 的 `audioChannels` / `audioSampleRate` / `audioBitRate`）——
+         * 两端录出来的东西将来要能放在一起比对，音轨规格不一致本身就是噪音。
+         *
+         * 单声道是有意的：取证要的是「现场有没有声音、说了什么」，
+         * 立体声只会让文件大一倍。64kbps 对语音绰绰有余。
+         */
+        private const val AUDIO_SAMPLE_RATE = 44100
+        private const val AUDIO_CHANNELS = 1
+        private const val AUDIO_BIT_RATE = 64000
+
+        /**
+         * 每次从麦克风读多少采样。20ms 一片 —— AAC 一帧 1024 采样（≈23ms），
+         * 这个粒度喂给编码器正好，不会一次塞太多也不会太碎。
+         */
+        private const val AUDIO_PCM_SAMPLES_PER_READ = AUDIO_SAMPLE_RATE / 50
+
+        /**
+         * `pcmQueue` 最多排多少片（一片 20ms，100 片 = 2 秒）。
+         *
+         * 超了就丢最旧的。**没有上限的队列是一个会吃光内存的 bug**，
+         * 而它只在「编码线程被卡住」时才发作 —— 正是最不容易复现的时候。
+         */
+        private const val AUDIO_QUEUE_LIMIT = 100
+
         /** 面单进框自动放大到几倍（需求方 2026-09-22 裁决 #8：固定 2 倍）。 */
         private const val AUTO_ZOOM_FACTOR = 2.0f
 
@@ -474,7 +535,73 @@ class CameraSegmentRecorder(
     private var encoderLoopRunning = false
 
     private var encoderFormat: MediaFormat? = null
-    private var trackIndex = -1
+
+    // ── 声音这一路（录制声音，需求方 2026-09-28）────────────────────
+    //
+    // 与视频那一路**刻意长得一样**：编码器从开相机起就在跑，没在录的时候
+    // 取出来直接丢掉；每段只有「写不写进封装器」这一个开关。
+    // 不一样的地方只有一个：麦克风不是相机会话的一部分，它自己一条采集线程。
+
+    /**
+     * 录不录音。**由 [openCamera] 定一次**（麦克风是开会话那一步接进来的）。
+     *
+     * ⚠️ 与「工作模式 / 兜底档位 / 录制规格」同一组：**改了要等下次
+     * 「开始工作」**。Dart 那边同一个设置项也随 [startRecording] 再传一次，
+     * 两次的值来自同一个 `RecorderConfig.recordAudio` —— 它们必须一致。
+     */
+    private var recordAudio = false
+
+    /** 麦克风。为 null 表示这一路没接起来（没开录音 / 被拒 / 建不出来）。 */
+    private var audioRecord: AudioRecord? = null
+
+    /** AAC 编码器。**独立于视频编码器**，两者各自轮转互不影响。 */
+    private var audioEncoder: MediaCodec? = null
+
+    /**
+     * 采集线程。`AudioRecord.read` 是**阻塞**的，不能放在取编码输出的那条线程上
+     * —— 放上去会让视频的 `drainEncoder` 跟着一起卡住（表现是录制掉帧）。
+     */
+    private var audioThread: Thread? = null
+
+    @Volatile
+    private var audioLoopRunning = false
+
+    /**
+     * 采到的 PCM 分片，等取编码输出那条线程来喂给音频编码器。
+     *
+     * ⚠️ **必须是并发安全队列**：一头是采集线程、另一头是编码线程。
+     * 而这个队列也是**两条线程之间唯一的交接点** ——
+     * `MediaCodec` 与 `MediaMuxer` 全都只被编码线程碰。
+     */
+    private val pcmQueue = java.util.concurrent.ConcurrentLinkedQueue<PcmChunk>()
+
+    /** 音轨的 `MediaFormat`。只在第一次 `INFO_OUTPUT_FORMAT_CHANGED` 时记。 */
+    private var audioFormat: MediaFormat? = null
+
+    /**
+     * 本段第一个**写进去的**音频样本的 PTS（微秒）。
+     *
+     * 与视频的 [segmentPtsBaselineUs] 是同一个用途、同一个理由（见类注释
+     * 「时间戳要重新定基准」），只是**两条轨各减各的** —— 它们的时基原点
+     * 虽然都是「开相机那一刻」，但差着几十毫秒，不减的话声音会比画面早一点。
+     * `-1` 表示本段还没有音频样本写过。
+     */
+    private var audioPtsBaselineUs = -1L
+
+    /** 采集线程读过的总帧数 —— 音频 PTS 就由它推（**单调**，不吃墙钟）。 */
+    private var audioFramesRead = 0L
+
+    /**
+     * 视频轨在封装器里的下标。
+     *
+     * ⚠️ 2026-09-28 之前它叫 `trackIndex`（单数）。加了音轨之后那个名字会让
+     * 「这一行写的是哪条轨」变成要读上下文才猜得到 —— 这类歧义在
+     * 音视频两路都要写同一个封装器时最容易出错。
+     */
+    private var videoTrackIndex = -1
+
+    /** 音轨在封装器里的下标。这一段没有音轨时是 -1（见 [openNewSegment]）。 */
+    private var audioTrackIndex = -1
     private var segmentSequence = -1
     private var segmentStartedAtMs = 0L
     private var sessionStartedAtMs = 0L
@@ -580,7 +707,10 @@ class CameraSegmentRecorder(
      * 规格 §3.2.2：用户点「开始工作」→ 画面出现**可见的取景框**；
      * 那时还没扫码，不该录。所以相机开着送预览、等扫到面单才开始录。
      */
-    fun openCamera(spec: RecorderSpec = RecorderSpec.STANDARD): Boolean {
+    fun openCamera(
+        spec: RecorderSpec = RecorderSpec.STANDARD,
+        audio: Boolean = false,
+    ): Boolean {
         if (cameraOpen) return true
 
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
@@ -589,7 +719,6 @@ class CameraSegmentRecorder(
             onEvent(RecorderEvent.Failed("没有相机权限"))
             return false
         }
-
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val cameraId = pickBackCamera(manager)
         if (cameraId == null) {
@@ -599,6 +728,9 @@ class CameraSegmentRecorder(
 
         val characteristics = manager.getCameraCharacteristics(cameraId)
         this.spec = spec
+        // 录不录音**在开会话这一刻定死**（麦克风是这一步接进来的）——
+        // 与会话已经开着时改不了的东西同一组，见类的说明。
+        this.recordAudio = audio
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         // 成片的旋转角按**规格**算，而它同时是「录像帧 → 显示画面」的换算量
         // （见 analysisToDisplay）—— 两处必须用同一个数，取景框才不会歪。
@@ -647,6 +779,7 @@ class CameraSegmentRecorder(
         segmentDurationMs: Long,
         waybill: String = "",
         trustedStartMs: Double? = null,
+        audio: Boolean = false,
     ): Boolean {
         if (!cameraOpen || running) return false
 
@@ -654,6 +787,10 @@ class CameraSegmentRecorder(
         this.segmentDurationMs = segmentDurationMs
         outputDirectory.mkdirs()
 
+        // 与会话里那个值来自 Dart 的同一个设置项，正常情况下一模一样
+        // （见 `recordAudio` 的注释）。这里覆盖一次是为了让「这一段录不录」
+        // 由这一次调用说了算。
+        recordAudio = audio
         // ── 水印（规格 §3.6.2）────────────────────────────────────────
         //
         // ⚠️ 起算点是**可信时钟**给的开录时刻，不是 `System.currentTimeMillis()`：
@@ -835,6 +972,11 @@ class CameraSegmentRecorder(
         }
         encoderThread = null
 
+        // 声音这一路跟着收（麦克风 + 音频编码器 + 采集线程）。
+        // ⚠️ **要在它自己的编码器之前**：`stopAudioPipeline` 里那句
+        // 「先停录音再等采集线程」是这一步不被卡住的前提。
+        stopAudioPipeline()
+
         try {
             encoder?.stop()
             encoder?.release()
@@ -991,6 +1133,11 @@ class CameraSegmentRecorder(
             onEvent(RecorderEvent.Failed("水印没启用（画面合成起不来），录像照常。"))
             null
         }
+
+        // 声音这一路（录制声音，需求方 2026-09-28）。
+        // ⚠️ **要在取编码输出那条线程起来之前** —— 音频的编码与写入都由它带着走
+        // （见 drainAudio 的说明）。
+        startAudioPipelineIfNeeded()
 
         startEncoderLoop()
 
@@ -1296,6 +1443,298 @@ class CameraSegmentRecorder(
     }
 
     // ─────────────────────────────────────────────
+    // 声音这一路（录制声音，需求方 2026-09-28）
+    // ─────────────────────────────────────────────
+
+    /**
+     * 接起麦克风、AAC 编码器与采集线程。
+     *
+     * ⚠️ **整段都在 I4 的保护之下**：任何一步失败都只是「这一段没有音轨」，
+     * 绝不 return false、绝不抛出去 —— 少一段声音是遗憾，录不出来是事故。
+     *
+     * 与 iOS 那边**刻意对齐**：那边也是在开会话时把麦克风接进来，
+     * 接不进来就照常录画面。
+     */
+    private fun startAudioPipelineIfNeeded() {
+        if (!recordAudio) return
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            // 权限被拒**不影响录像**（I4）。但要说一句：不报的话用户看到的是
+            // 「开关开着、录出来没声音」，只会以为开关是假的（踩坑 #13）。
+            onEvent(RecorderEvent.Failed("没有麦克风权限，这一段录像没有声音"))
+            return
+        }
+
+        try {
+            val minBuffer = AudioRecord.getMinBufferSize(
+                AUDIO_SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            // 拿不到（返回负数）时给一个保守值：麦克风本身可能仍然能用，
+            // 为这个数字放弃整条音轨不值。
+            val bufferSize = if (minBuffer > 0) minBuffer * 2 else AUDIO_SAMPLE_RATE
+
+            @Suppress("MissingPermission")
+            val record = AudioRecord(
+                // CAMCORDER 是**给录像用**的那一档音源（带 AGC 与降噪方向的处理），
+                // 比 MIC 更贴这个场景：录的是打包现场，不是对着手机说话。
+                MediaRecorder.AudioSource.CAMCORDER,
+                AUDIO_SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize,
+            )
+
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                record.release()
+                onEvent(RecorderEvent.Failed("麦克风没能打开，这一段录像没有声音"))
+                return
+            }
+
+            val format = MediaFormat.createAudioFormat(
+                MIME_AAC, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS,
+            )
+            format.setInteger(
+                MediaFormat.KEY_AAC_PROFILE,
+                MediaCodecInfo.CodecProfileLevel.AACObjectLC,
+            )
+            format.setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, AUDIO_PCM_SAMPLES_PER_READ * 4)
+
+            val codec = MediaCodec.createEncoderByType(MIME_AAC)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+
+            audioRecord = record
+            audioEncoder = codec
+            audioFormat = null
+            audioFramesRead = 0L
+            pcmQueue.clear()
+
+            record.startRecording()
+            startAudioThread()
+        } catch (error: Exception) {
+            Log.e(TAG, "声音这一路建不起来，改成只录画面", error)
+            onEvent(
+                RecorderEvent.Failed("声音没能接上（${error.message}），录像照常、只是没有声音"),
+            )
+            // 半截建起来的东西要收回去，否则下一次开相机会以为它还活着。
+            stopAudioPipeline()
+        }
+    }
+
+    /**
+     * 采集线程：把麦克风里的 PCM 读出来，放进 [pcmQueue]。
+     *
+     * ⚠️ **它只碰 `AudioRecord`** —— 编码与写封装器全部留在取编码输出那条线程上
+     * （见 [drainAudio]）。这是两条线程之间唯一的交接点。
+     */
+    private fun startAudioThread() {
+        audioLoopRunning = true
+
+        audioThread = Thread({
+            val record = audioRecord
+            if (record == null) {
+                audioLoopRunning = false
+                return@Thread
+            }
+
+            val samples = AUDIO_PCM_SAMPLES_PER_READ
+            val buffer = ShortArray(samples)
+
+            while (audioLoopRunning) {
+                val read = try {
+                    record.read(buffer, 0, samples)
+                } catch (error: Exception) {
+                    Log.e(TAG, "读麦克风失败", error)
+                    -1
+                }
+
+                if (read <= 0) {
+                    // 停下来之后 read 会返回 0 / 负数，那不是错误，不该刷屏。
+                    if (!audioLoopRunning) break
+                    Thread.sleep(10)
+                    continue
+                }
+
+                // 16 位小端 —— `AudioRecord` 给的就是这个格式，
+                // 而 `MediaFormat` 那边的 PCM 也是它。
+                val bytes = ByteArray(read * 2)
+                ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                    .asShortBuffer().put(buffer, 0, read)
+
+                // PTS 由**已读帧数**推 —— 单调、不吃墙钟（规格 §3.6.3 的同一条道理）。
+                val ptsUs = audioFramesRead * 1_000_000L / AUDIO_SAMPLE_RATE
+                audioFramesRead += read
+
+                // 编码线程跟不上时**丢最旧的**：录像是主角，声音宁可缺一小段，
+                // 也不能让这个队列把内存吃光。
+                while (pcmQueue.size >= AUDIO_QUEUE_LIMIT) pcmQueue.poll()
+                pcmQueue.add(PcmChunk(bytes, ptsUs))
+            }
+        }, "vidlog-audio").also { it.start() }
+    }
+
+    /**
+     * 喂 PCM、取 AAC。**只在取编码输出那条线程上调用**（见 [drainEncoder]）。
+     *
+     * ⚠️ **`MediaCodec` 与 `MediaMuxer.writeSampleData` 都不是线程安全的。**
+     * 音频这一路的编码与写入必须与视频那一路在**同一条线程**上 ——
+     * 自己开一条线程去写 muxer 会写出损坏的文件，而且是随机损坏
+     * （本机验不出来，真机上表现为「有的分段播不了」）。
+     */
+    private fun drainAudio() {
+        val codec = audioEncoder ?: return
+
+        feedAudioEncoder(codec)
+        drainAudioOutput(codec)
+    }
+
+    /** 把排队的 PCM 喂给音频编码器。喂不动就停手，下一趟接着来。 */
+    private fun feedAudioEncoder(codec: MediaCodec) {
+        while (true) {
+            // ⚠️ `peek` 而不是 `poll`：编码器没腾出输入缓冲时这一片要**留在原位**。
+            // 先 poll 再放回去的话顺序就反了（`ConcurrentLinkedQueue` 没有"放回头部"），
+            // 而音频的 PTS 是单调的 —— 顺序一反，声音就全乱了。
+            val chunk = pcmQueue.peek() ?: return
+
+            val index = try {
+                codec.dequeueInputBuffer(0)
+            } catch (error: Exception) {
+                Log.w(TAG, "音频编码器取输入缓冲失败", error)
+                return
+            }
+            if (index < 0) return
+
+            try {
+                val buffer = codec.getInputBuffer(index) ?: return
+                buffer.clear()
+                buffer.put(chunk.bytes)
+                codec.queueInputBuffer(index, 0, chunk.bytes.size, chunk.ptsUs, 0)
+            } catch (error: Exception) {
+                Log.w(TAG, "喂音频编码器失败", error)
+                return
+            }
+
+            // 真的喂进去了才从队列里摘掉。
+            pcmQueue.poll()
+        }
+    }
+
+    /** 取音频编码器的输出，写进当前分段。没在录的时候照样取出来、照样丢掉。 */
+    private fun drainAudioOutput(codec: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+
+        while (true) {
+            val index = try {
+                codec.dequeueOutputBuffer(info, 0)
+            } catch (error: Exception) {
+                Log.w(TAG, "取音频编码输出失败", error)
+                return
+            }
+
+            when {
+                index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
+
+                index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    // 只在第一次记下来；**轮转时复用同一份**。
+                    // 音频编码器全程不停，这个回调一辈子只来一次 ——
+                    // 与视频那边同一个写法、同一个理由（见 openNewSegment）。
+                    if (audioFormat == null) audioFormat = codec.outputFormat
+                }
+
+                index >= 0 -> {
+                    // ⚠️ **csd 不写**（`BUFFER_FLAG_CODEC_CONFIG`）：那一块是编解码器的
+                    // 初始化参数，封装器从 `addTrack` 的 format 里自己取。
+                    // 当成普通样本写进去会污染文件，有的播放器直接打不开。
+                    val isConfig =
+                        (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+
+                    val buffer = codec.getOutputBuffer(index)
+
+                    if (!isConfig && buffer != null && info.size > 0) {
+                        val current = muxer
+
+                        if (current != null && audioTrackIndex >= 0) {
+                            buffer.position(info.offset)
+                            buffer.limit(info.offset + info.size)
+
+                            // 与视频同一个道理（见类注释「时间戳要重新定基准」）：
+                            // 本段第一个音频样本归零，否则那一段的声音会比画面早
+                            // 「开相机到开录」那么久。两条轨各减各的。
+                            if (audioPtsBaselineUs < 0) {
+                                audioPtsBaselineUs = info.presentationTimeUs
+                            }
+                            info.presentationTimeUs -= audioPtsBaselineUs
+
+                            try {
+                                current.writeSampleData(audioTrackIndex, buffer, info)
+                            } catch (error: Exception) {
+                                Log.w(TAG, "写入音频失败", error)
+                            }
+                        }
+                    }
+
+                    codec.releaseOutputBuffer(index, false)
+                }
+            }
+        }
+    }
+
+    /** 收掉声音这一路。**什么都不抛** —— 它多半是在 [release] 里被调的。 */
+    private fun stopAudioPipeline() {
+        audioLoopRunning = false
+
+        audioThread?.let { thread ->
+            try {
+                // 采集线程可能正卡在阻塞的 `read` 上，所以先停录音再等它。
+                audioRecord?.let { record ->
+                    try {
+                        if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                            record.stop()
+                        }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "停麦克风失败", error)
+                    }
+                }
+
+                thread.join(1_000)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        audioThread = null
+        pcmQueue.clear()
+
+        try {
+            audioEncoder?.stop()
+        } catch (error: Exception) {
+            // 和视频那边一样：已经处于错误态时 stop() 会抛，不影响已录好的东西。
+            Log.w(TAG, "停音频编码器失败", error)
+        }
+        try {
+            audioEncoder?.release()
+        } catch (error: Exception) {
+            Log.w(TAG, "释放音频编码器失败", error)
+        }
+        audioEncoder = null
+
+        try {
+            audioRecord?.release()
+        } catch (error: Exception) {
+            Log.w(TAG, "释放麦克风失败", error)
+        }
+        audioRecord = null
+
+        audioFormat = null
+        audioFramesRead = 0L
+        audioPtsBaselineUs = -1L
+    }
+
+    // ─────────────────────────────────────────────
     // 静止检测与识码
     // ─────────────────────────────────────────────
 
@@ -1555,6 +1994,10 @@ class CameraSegmentRecorder(
 
     /** 编码器输出到达。由 `startEncoderLoop` 起的线程驱动。 */
     fun drainEncoder(endOfStream: Boolean = false) {
+        // 声音那一路跟着这一条线程走（**不是**另开一条，理由见 [drainAudio]）。
+        // 放在最前面：它的编码与写入都不该等视频。
+        drainAudio()
+
         val codec = encoder ?: return
         val info = MediaCodec.BufferInfo()
 
@@ -1586,7 +2029,7 @@ class CameraSegmentRecorder(
                         }
 
                         muxer?.let { muxer ->
-                            if (trackIndex >= 0) {
+                            if (videoTrackIndex >= 0) {
                                 buffer.position(info.offset)
                                 buffer.limit(info.offset + info.size)
 
@@ -1595,7 +2038,7 @@ class CameraSegmentRecorder(
                                 info.presentationTimeUs -= segmentPtsBaselineUs
 
                                 try {
-                                    muxer.writeSampleData(trackIndex, buffer, info)
+                                    muxer.writeSampleData(videoTrackIndex, buffer, info)
                                 } catch (error: Exception) {
                                     Log.w(TAG, "写入封装器失败", error)
                                 }
@@ -1620,6 +2063,16 @@ class CameraSegmentRecorder(
     private fun openSegmentIfNeeded(isKeyFrame: Boolean, ptsUs: Long) {
         if (!isKeyFrame) return
         if (encoderFormat == null) return
+
+        // ⚠️ 要录音时，**音轨的 format 也得等到了**才能开段 ——
+        // `addTrack` 之后紧接着 `start()`，音轨要么一起进去、要么这一整段都没有。
+        //
+        // ⚠️ 判据是「**这一路真的接起来了没有**」（`audioEncoder != null`），
+        // 不是「设置里开着没有」。拿设置当判据的话，麦克风被拒 / 被别的应用
+        // 占着时这个条件永远不成立 —— **第一段永远开不了，什么都录不到**，
+        // 而那正是 I4 明令禁止的「音频把录制搞坏」。
+        if (audioEncoder != null && audioFormat == null) return
+
         openNewSegment(ptsUs)
     }
 
@@ -1645,6 +2098,8 @@ class CameraSegmentRecorder(
         segmentSequence++
         segmentStartedAtMs = SystemClock.elapsedRealtime()
         segmentPtsBaselineUs = ptsUs
+        // 音频的基准跟着这一段重新算 —— 它的第一个样本还没写进来（见 drainAudioOutput）。
+        audioPtsBaselineUs = -1L
 
         val file = File(
             outputDirectory,
@@ -1659,7 +2114,21 @@ class CameraSegmentRecorder(
             // 按**规格**算出来的旋转角，不是裸的 sensorOrientation ——
             // 它是竖屏那一档的值。
             newMuxer.setOrientationHint(displayRotation)
-            trackIndex = newMuxer.addTrack(format)
+
+            // ⚠️ **两条轨都要在 `start()` 之前 add 完** ——
+            // `MediaMuxer.start()` 之后再 `addTrack` 会抛。
+            videoTrackIndex = newMuxer.addTrack(format)
+
+            // 音轨用的是**缓存下来的那份 format**（`INFO_OUTPUT_FORMAT_CHANGED`
+            // 只来一次），轮转时照用 —— 与视频那一路同一个做法，见 drainAudioOutput。
+            // 所以**轮转不需要换音频编码器**：编码器全程不停，format 也没有变过。
+            val cachedAudioFormat = audioFormat
+            audioTrackIndex = if (recordAudio && cachedAudioFormat != null) {
+                newMuxer.addTrack(cachedAudioFormat)
+            } else {
+                -1
+            }
+
             newMuxer.start()
             muxer = newMuxer
         } catch (error: Exception) {
@@ -1675,7 +2144,9 @@ class CameraSegmentRecorder(
         val endedAt = SystemClock.elapsedRealtime() - sessionStartedAtMs
 
         muxer = null
-        trackIndex = -1
+        videoTrackIndex = -1
+        audioTrackIndex = -1
+        audioPtsBaselineUs = -1L
 
         // stop() 在「一个样本都没写」时会抛。那种分段本来也没有内容，忽略即可。
         var stopped = false

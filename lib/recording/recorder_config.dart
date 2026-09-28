@@ -25,6 +25,12 @@ enum StaticStopSetting {
 
   Duration get duration => Duration(minutes: minutes);
 
+  /// 下拉里显示的那一行字。
+  ///
+  /// ⚠️ [off] 显示成「关闭」而不是「0 分钟」—— 摆一个写着 0 的档位，
+  /// 用户得自己翻译「0 分钟是什么意思」。
+  String get label => isEnabled ? '$minutes 分钟' : '关闭';
+
   /// 配置坏掉时用的值。
   static const fallback = StaticStopSetting.minutes3;
 
@@ -73,6 +79,9 @@ enum DurationFallbackSetting {
 
   Duration get duration => Duration(minutes: minutes);
 
+  /// 下拉里显示的那一行字。见 [StaticStopSetting.label]。
+  String get label => isEnabled ? '$minutes 分钟' : '关闭';
+
   /// 配置坏掉时用的值。沿用规格原本的 4 分钟。
   static const fallback = DurationFallbackSetting.minutes4;
 
@@ -97,11 +106,82 @@ enum DurationFallbackSetting {
   }
 }
 
+/// 面单条码最短长度。**规格里原本没有这一项**，是需求方 2026-09-28
+/// 对着自绘的设置界面新加的（见 `实现决策.md` 对应那一节）。
+///
+/// ## 它拦的是「印在面单上的码」，不是「人敲进去的单号」
+///
+/// 相机识码是**连续**的，画面里飘过一个短条码就会触发一次识别。真实面单的
+/// 单号都有十几位，短码几乎一定是**误识**（货架条码、包装上的其他码、
+/// 甚至是别家快递的面单）。这一项让相机侧把短的挡掉，免得录出一堆
+/// 挂着垃圾单号的片段。
+///
+/// ⚠️ **手工输入那条路不走这个判据**（`_simulateScan`）。那是人明确敲的，
+/// 拦它等于「短单号根本录不了」，而设置的名字本身就限定了「**面单**条码」。
+///
+/// ## 为什么是「位数」而不是正则
+///
+/// 承运转单号的形态按承运商而异，规格 §3.2.3 连校验位都还没定
+/// （见 `WaybillNumber` 的「已知缺口」）。在拿到具体规则之前，
+/// 位数是这个系统**唯一能诚实测量**的东西（§13.1）。
+enum WaybillMinLength {
+  /// 不设下限 —— 相机侧来什么认什么（老行为）。
+  unlimited(0),
+  d8(8),
+  d9(9),
+  d10(10),
+  d11(11),
+  d12(12),
+  d13(13),
+  d14(14),
+  d15(15);
+
+  const WaybillMinLength(this.length);
+
+  /// 最少几位；[unlimited] 为 0。
+  ///
+  /// ⚠️ **数的是归一化之后的长度**（去掉空白、统一大写），不是原始字节数。
+  /// 按原样数的话，一个带空格的 11 位单号会被算成 12 位。
+  final int length;
+
+  bool get isEnabled => length > 0;
+
+  String get label => length == 0 ? '不限' : '$length 位';
+
+  /// 配置坏掉时用的值。**需求方指定的默认档：11 位。**
+  static const fallback = WaybillMinLength.d11;
+
+  /// 从远端配置解析，**任何非法输入都回落到 [fallback]**（不变量 I4）。
+  ///
+  /// ⚠️ 与其他几个档位同一条规矩：**超范围也回落，不夹取** ——
+  /// 夹取会把「配错了」悄悄变成一个用户没选过的档位。
+  static WaybillMinLength fromConfig(Object? raw) {
+    if (raw is WaybillMinLength) return raw;
+
+    final length = switch (raw) {
+      int value => value,
+      num value => value.toInt(),
+      String value => int.tryParse(value.trim()),
+      _ => null,
+    };
+
+    if (length == null) return fallback;
+
+    for (final setting in WaybillMinLength.values) {
+      if (setting.length == length) return setting;
+    }
+
+    return fallback;
+  }
+}
+
 /// 录制相关阈值。
 class RecorderConfig {
   const RecorderConfig({
     this.staticStop = StaticStopSetting.fallback,
     this.durationFallback = DurationFallbackSetting.fallback,
+    this.waybillMinLength = WaybillMinLength.fallback,
+    this.recordAudio = true,
     this.promptAfterOverride,
     this.durationPromptRepeatEvery = const Duration(minutes: 5),
     this.durationPromptGrace = const Duration(minutes: 1),
@@ -121,6 +201,17 @@ class RecorderConfig {
 
   /// 时长兜底档位（§3.3.4）。
   final DurationFallbackSetting durationFallback;
+
+  /// 面单条码最短长度（需求方 2026-09-28 新增，见 [WaybillMinLength]）。
+  ///
+  /// 它由 `ScanGate` 执行，也就是**只作用于相机识码**。
+  final WaybillMinLength waybillMinLength;
+
+  /// 录像文件里带不带声音（需求方 2026-09-28 加）。
+  ///
+  /// ⚠️ 它**不改变这台手机出不出声** —— 那是 `voiceEnabled`。
+  /// 这个只决定写进 mp4 的那条音轨。两者可以同时开（那时播报会被录进去）。
+  final bool recordAudio;
 
   /// 首次询问时机的**覆盖值**。
   ///

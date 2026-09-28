@@ -343,6 +343,133 @@ void main() {
     });
   });
 
+  group('面单条码最短长度（2026-09-28 新增）', () {
+    test('★ 改了要落盘，重开还在', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.waybillMinLength = WaybillMinLength.d8;
+      await settings.save();
+
+      expect((await RecordingSettings.load(path())).waybillMinLength,
+          WaybillMinLength.d8);
+    });
+
+    test('⚠️ **不限**（0）是一个真档位，与「键不在」必须分得开', () async {
+      // 合并的话，「不限」每次重开 App 都会被改回默认的 11 位 ——
+      // 而用户看到的下拉还是「不限」，挑不出毛病。
+      final settings = await RecordingSettings.load(path());
+      settings.waybillMinLength = WaybillMinLength.unlimited;
+      await settings.save();
+
+      final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
+      expect(raw['waybillMinLength'], 0);
+
+      expect((await RecordingSettings.load(path())).waybillMinLength,
+          WaybillMinLength.unlimited);
+    });
+
+    test('存的是**位数**不是名字，默认档是 11 位', () async {
+      expect(
+        (await RecordingSettings.load(path())).waybillMinLength,
+        WaybillMinLength.d11,
+        reason: '需求方指定的默认档',
+      );
+
+      final settings = await RecordingSettings.load(path());
+      settings.waybillMinLength = WaybillMinLength.d13;
+      await settings.save();
+
+      final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
+      expect(raw['waybillMinLength'], 13);
+    });
+
+    test('没有这一项（老设置文件）→ 回默认档，不抛', () async {
+      File(path()).writeAsStringSync(jsonEncode({'mode': 'sameWaybillStop'}));
+
+      expect((await RecordingSettings.load(path())).waybillMinLength,
+          WaybillMinLength.d11);
+    });
+
+    test('垃圾值一律回默认档（I4：坏配置不许导致录制失败）', () async {
+      for (final garbage in <Object?>['11', 11, 7, 16, 99, true, <int>[], -3]) {
+        File(path()).writeAsStringSync(jsonEncode({'waybillMinLength': garbage}));
+
+        // ⚠️ `'11'` 与 `11` 是**合法的**（`fromConfig` 认数字串，那是给远端配置
+        // 写的），所以这里只断言「一定是一档合法的值」，不硬扣是哪一档。
+        expect(
+          WaybillMinLength.values,
+          contains((await RecordingSettings.load(path())).waybillMinLength),
+          reason: '「$garbage」读出来的不是一档合法档位',
+        );
+      }
+
+      // 超范围（16 / 99 / -3）与认不出的，一律回 11 —— 不夹取。
+      for (final garbage in <Object?>[16, 99, -3, 7, true, <int>[]]) {
+        File(path()).writeAsStringSync(jsonEncode({'waybillMinLength': garbage}));
+        expect((await RecordingSettings.load(path())).waybillMinLength,
+            WaybillMinLength.d11,
+            reason: '「$garbage」该回落，不该夹到最近的一档');
+      }
+    });
+
+    test('8~15 八档 + 不限，一共九个，且「不限」排在最前', () {
+      expect(WaybillMinLength.values.length, 9);
+      expect(WaybillMinLength.unlimited.length, 0);
+      expect(WaybillMinLength.unlimited.isEnabled, isFalse);
+      expect(WaybillMinLength.unlimited.label, '不限');
+      expect(WaybillMinLength.d8.label, '8 位');
+    });
+  });
+
+  group('录制声音（2026-09-28 新增）', () {
+    test('★ 默认**开**：取证视频带声音是更完整的一份证据', () async {
+      expect((await RecordingSettings.load(path())).recordAudio, isTrue,
+          reason: '默认关的话，绝大多数用户根本不会发现这个功能存在');
+    });
+
+    test('★ 改了要落盘，重开还在（含「关」）', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.recordAudio = false;
+      await settings.save();
+
+      final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
+      expect(raw['recordAudio'], false);
+
+      expect((await RecordingSettings.load(path())).recordAudio, isFalse);
+    });
+
+    test('没有这一项（老设置文件）→ 按**开**算', () async {
+      File(path()).writeAsStringSync(jsonEncode({'mode': 'sameWaybillStop'}));
+
+      expect((await RecordingSettings.load(path())).recordAudio, isTrue);
+    });
+
+    test('⚠️ 只认真正的 bool —— 不认字符串「false」', () async {
+      // 与播报开关同一条规矩：认字符串就得开始猜各种写法（'0' / 'no' / ''），
+      // 而每多认一种就多一种把「本来是关」读成「开」的机会。这个文件是我们自己写的。
+      for (final garbage in <Object?>['false', '0', 0, 1, <int>[], null]) {
+        File(path()).writeAsStringSync(jsonEncode({'recordAudio': garbage}));
+
+        expect((await RecordingSettings.load(path())).recordAudio, isTrue,
+            reason: '「$garbage」不是 bool，该按开算');
+      }
+    });
+  });
+
+  group('两个兜底档位下拉里显示的字', () {
+    test('「关闭」不显示成「0 分钟」', () {
+      // 摆一个写着 0 的档位，用户得自己翻译「0 分钟是什么意思」。
+      expect(StaticStopSetting.off.label, '关闭');
+      expect(DurationFallbackSetting.off.label, '关闭');
+    });
+
+    test('启用的档位带单位', () {
+      expect(StaticStopSetting.minutes2.label, '2 分钟');
+      expect(StaticStopSetting.minutes5.label, '5 分钟');
+      expect(DurationFallbackSetting.minutes4.label, '4 分钟');
+      expect(DurationFallbackSetting.minutes6.label, '6 分钟');
+    });
+  });
+
   group('WorkMode.fromConfig', () {
     test('认名字，前后空白修掉', () {
       expect(WorkMode.fromConfig(' continuousScan '), WorkMode.continuousScan);

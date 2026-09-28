@@ -59,6 +59,7 @@ void main() {
     WorkMode mode = WorkMode.sameWaybillStop,
     RecorderConfig config = const RecorderConfig(staticStop: StaticStopSetting.off),
     bool cameraAlreadyOpen = false,
+    bool? appliedAudio,
     TrustedClock? trustedClock,
   }) {
     // 必须先建列表再构造 —— `actions.add` 是构造时就捕获的，
@@ -85,6 +86,7 @@ void main() {
       clock: clock,
       packageTracker: tracker,
       cameraAlreadyOpen: cameraAlreadyOpen,
+      appliedAudio: appliedAudio,
       trustedClock: trustedClock,
       onAction: actions.add,
     );
@@ -1972,6 +1974,111 @@ void main() {
       await coordinator.dispose();
     });
   });
+
+  // ─────────────────────────────────────────────
+  // 录制声音（需求方 2026-09-28）
+  // ─────────────────────────────────────────────
+
+  group('录制声音', () {
+    test('★ 开了就一定把 audio 显式传下去', () async {
+      final coordinator = make(config: const RecorderConfig(recordAudio: true));
+      nowMs = 1000;
+      await begin(coordinator);
+
+      expect(gateway.startedAudio, isTrue,
+          reason: '「录不录音」没传到原生 —— 录像会没有声音，而设置里开着');
+
+      await coordinator.dispose();
+    });
+
+    test('★ 关了就传 false —— **不是不传**', () async {
+      // ⚠️ 这条是本组最要紧的一条。两端原生都把「args 里没有 audio 键」
+      // 当成老行为（**不录音**），所以少传一次在「开」的时候是静默失效、
+      // 在「关」的时候是碰巧对了。这个字段一旦是 null，就说明调用链上
+      // 有人把它丢了 —— `startRecording` 的调用点只有一处，但那是约定，
+      // 不是编译器能保证的事。
+      final coordinator = make(config: const RecorderConfig(recordAudio: false));
+      nowMs = 1000;
+      await begin(coordinator);
+
+      expect(gateway.startedAudio, isFalse);
+      expect(gateway.startedAudio, isNotNull,
+          reason: '「关」也要把键发出去 —— 靠「缺参数」表示关是不可靠的');
+
+      await coordinator.dispose();
+    });
+
+    test('★ 开关变了要**先关再开**，否则麦克风永远进不了会话', () async {
+      // ⚠️ 这是录音这一路上最容易漏的一环，而且**静默**：
+      // 麦克风是配置会话那一步加进去的（加不进去，会话建好之后补不上），
+      // 而原生看到「会话已经开着」会直接早退。于是「改成开」那一次
+      // 只是把 `audio: true` 白送过去 —— 文件里永远没有声音，
+      // 而设置页上那个开关亮着（踩坑 #13 的静默版）。
+      //
+      // 上一趟是关着开的（`appliedAudio: false`），这一趟要开。
+      final coordinator = make(
+        config: const RecorderConfig(recordAudio: true),
+        cameraAlreadyOpen: true,
+        appliedAudio: false,
+      );
+
+      await coordinator.openCamera();
+
+      expect(gateway.cameraCloseCount, 1, reason: '开关变了却没重开会话');
+      expect(gateway.openedAudio, isTrue);
+
+      await coordinator.dispose();
+    });
+
+    test('开关没变就**不重开**（不能白闪一下取景框）', () async {
+      final coordinator = make(
+        config: const RecorderConfig(recordAudio: true),
+        cameraAlreadyOpen: true,
+        appliedAudio: true,
+      );
+
+      await coordinator.openCamera();
+
+      expect(gateway.cameraCloseCount, 0);
+      expect(gateway.openedAudio, isTrue);
+
+      await coordinator.dispose();
+    });
+
+    test('★ 开相机那一趟就把开关带过去（与开录那一趟是两件事）', () async {
+      // 两趟都要传：这一趟决定「会话里有没有麦克风这一路」，
+      // `startRecording` 那一趟决定「这一段文件里写不写音轨」。
+      // 只传后者的话，开关打开也永远没有声音。
+      final coordinator = make(config: const RecorderConfig(recordAudio: true));
+
+      await coordinator.openCamera();
+
+      expect(gateway.openedAudio, isTrue, reason: '开相机没带录音开关');
+
+      await coordinator.dispose();
+    });
+
+    test('⚠️ 条码最短长度**只挡相机**，手输的短单号照录', () async {
+      // 设置那一项叫「**面单**条码最短长度」，管的是印在面单上的码
+      // （也就是相机这条路）。手工输入是人明确敲的 —— 拦它等于
+      // 「短单号根本录不了」，而那条路本来就有「单号无效」的状态行兜底。
+      //
+      // `onWaybillDetected` 就是手输那条路（相机的要经过 `ScanGate`），
+      // 所以这里传一个短单号进去，它必须照常开录。
+      final coordinator = make(
+        config: const RecorderConfig(waybillMinLength: WaybillMinLength.d15),
+      );
+      nowMs = 1000;
+      await coordinator.startWorking(sourceDeviceId: 'device-1');
+      await coordinator.onWaybillDetected(WaybillNumber.parse('SF1'));
+      await coordinator.waitForPendingEvents();
+
+      expect(coordinator.isRecording, isTrue, reason: '手输的短单号被长度挡了');
+      expect(gateway.started, isTrue);
+
+      await coordinator.dispose();
+    });
+  });
 }
 
 class _ThrowingIndex implements RecordingIndex {
@@ -2003,15 +2110,33 @@ class FakeGateway implements RecorderGateway {
   Future<bool> requestCameraPermission() async => true;
 
   @override
-  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec}) async {
+  Future<bool> requestMicrophonePermission() async {
+    microphoneAsked = true;
+    return true;
+  }
+
+  /// 弹过麦克风授权框没有。页面那一趟只走一次，靠它验。
+  bool microphoneAsked = false;
+
+  @override
+  Future<void> openCamera({
+    bool qrOnly = false,
+    RecordingSpec? spec,
+    bool audio = false,
+  }) async {
     cameraOpened = true;
     cameraQrOnly = qrOnly;
     openedSpec = spec;
+    openedAudio = audio;
   }
 
   /// 最近一次开相机带着的规格。**「规格改了要重开相机」那条要靠它验** ——
   /// 不重开的话，用户改了规格、回来按开始，录的仍是上一档（改了没反应）。
   RecordingSpec? openedSpec;
+
+  /// 最近一次开相机带着的录音开关。**与 [startedAudio] 是两件事** ——
+  /// 这个决定「会话里有没有麦克风这一路」，那个决定「文件里写不写音轨」。
+  bool? openedAudio;
 
   /// 假的能力探测：返回候选表里第一个「可用的」下标。
   ///
@@ -2049,6 +2174,7 @@ class FakeGateway implements RecorderGateway {
     required Duration segmentDuration,
     String? waybill,
     int? trustedStartMs,
+    bool audio = false,
   }) async {
     if (onStartRecording != null) await onStartRecording!();
 
@@ -2057,11 +2183,20 @@ class FakeGateway implements RecorderGateway {
     this.segmentDuration = segmentDuration;
     startedWaybill = waybill;
     startedTrustedMs = trustedStartMs;
+    startedAudio = audio;
   }
 
   /// 开录时带过去的单号与**可信**起录时刻（水印要用，规格 §3.6.2）。
   String? startedWaybill;
   int? startedTrustedMs;
+
+  /// 开录时**显式传**过去的「录不录音」。
+  ///
+  /// ⚠️ 这个字段是「缺参数 = 不录音」那个坑在本机唯一能拦住它的地方：
+  /// 两端原生都把「args 里没有 audio 键」当成老行为（不录音），
+  /// 所以 Dart 少传一次，表现是**录像没有声音而设置里开着**。
+  /// 断言见「录制声音」那一组。
+  bool? startedAudio;
 
   /// 停止时补投一个分段事件 —— 模拟原生层「停止时才封完最后一段」的行为。
   SegmentClosedEvent? emitOnStop;
@@ -2084,6 +2219,7 @@ class FakeGateway implements RecorderGateway {
 
   /// 关了几次。**「已经关了就不再关」是要验的** ——
   /// 不判状态就重复关，会让原生的会话与 Dart 的记忆错位。
+  /// 「录音开关改了要重开会话」也看它（那一条要先关再开）。
   int cameraCloseCount = 0;
 
   @override

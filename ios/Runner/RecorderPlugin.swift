@@ -22,7 +22,8 @@ import UIKit
 /// |---|---|---|
 /// | `hasCameraPermission` | Dart → 原生 | 是否已授权 |
 /// | `requestCameraPermission` | Dart → 原生 | 弹授权框 |
-/// | `openCamera` | Dart → 原生 | 开相机送预览，**不录**；参数含录制规格（§3.1.7） |
+/// | `requestMicrophonePermission` | Dart → 原生 | 弹麦克风授权框（录制声音）；失败不挡录制 |
+/// | `openCamera` | Dart → 原生 | 开相机送预览，**不录**；参数含录制规格（§3.1.7）与 `audio` |
 /// | `firstUsableSpec` | Dart → 原生 | 候选表里第一个真能跑的**下标**（§3.1.7 的可用性检查） |
 /// | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长 |
 /// | `stopRecording` | Dart → 原生 | 停止；**等最后一段封完才返回** |
@@ -128,6 +129,17 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
         case "requestCameraPermission":
             CameraSegmentRecorder.requestCameraPermission { granted in
+                DispatchQueue.main.async { result(granted) }
+            }
+
+        // 麦克风权限（录制声音，需求方 2026-09-28）。
+        // ⚠️ 与相机那条**不一样的地方**：拿不到权限**不挡任何事**（I4），
+        // 所以 Dart 那边只看一眼、不据此拦。它唯一的用途是把系统那个框弹出来 ——
+        // 不弹的话 `AVCaptureDeviceInput` 会静静地失败，用户看到的就是一个
+        // 「打开了却永远没声音」的开关。
+        // 已经问过时 `requestAccess` 直接回当前答案，不再弹框。
+        case "requestMicrophonePermission":
+            CameraSegmentRecorder.requestMicrophonePermission { granted in
                 DispatchQueue.main.async { result(granted) }
             }
 
@@ -608,6 +620,12 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         // 录制规格。**缺参数 = 默认档**：老版本 Dart 不带它时行为与从前一致。
         let spec = RecorderSpec.parse((call.arguments as? [String: Any])?["spec"])
 
+        // 录制声音（需求方 2026-09-28）。**缺参数 = false = 老行为（不录音）**
+        // —— 所以 Dart 那边是显式传这个键的（见 `recorder_gateway.dart`）。
+        // 它只能在这一趟给：麦克风是在 `openCamera` 开会话那一步加进去的，
+        // 会话建好之后补不进来。
+        let audio = (call.arguments as? [String: Any])?["audio"] as? Bool ?? false
+
         if let recorder, recorder.captureSession.isRunning {
             // ⚠️ 相机已经开着时**只能换识码范围**，不能就这么返回：
             // 录制页把相机开着、用户切到扫码连接那一下，返回早退的话
@@ -627,7 +645,7 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         })
         created.qrOnly = qrOnly
 
-        guard created.openCamera(spec: spec) else {
+        guard created.openCamera(spec: spec, audio: audio) else {
             result(FlutterError(code: "camera_failed", message: "相机未能打开", details: nil))
             return
         }
@@ -659,11 +677,17 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         let waybill = args["waybill"] as? String ?? ""
         let trustedStartMs = (args["trustedStartMs"] as? NSNumber)?.doubleValue
 
+        // 录制声音。与 `openCamera` 那处同一个道理：**缺参数 = false = 老行为**。
+        // 真正的音轨开关在 `CameraSegmentRecorder.startRecording` 里逐段生效
+        // （每一段 writer 都是新起的），这里只是把它带过去。
+        let audio = args["audio"] as? Bool ?? false
+
         let started = recorder.startRecording(
             directory: URL(fileURLWithPath: directory),
             segmentDuration: durationMs / 1000,
             waybill: waybill,
-            trustedStartMs: trustedStartMs)
+            trustedStartMs: trustedStartMs,
+            audio: audio)
 
         if started {
             result(nil)

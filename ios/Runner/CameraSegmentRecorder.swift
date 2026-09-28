@@ -530,6 +530,25 @@ final class CameraSegmentRecorder: NSObject {
     /// 关键帧间隔（秒）。它决定「单独播放某一段时，开头要等多久才出画面」。
     private static let keyFrameIntervalSeconds = 1
 
+    // ── 音轨的参数（录制声音，需求方 2026-09-28）──────────────────
+    //
+    // 取证声音要的是「听得出人说了什么、有没有异响」，**不是音乐**。
+    // 所以是单声道 44.1kHz / 64kbps：一瓶 5 分钟的水大约 2.4 MB，
+    // 相对同一段的视频（几十上百 MB）可以忽略。
+    //
+    // ⚠️ **必须与安卓那边是同一套数**（`CameraSegmentRecorder.kt` 里那三个
+    // 常量）—— 两端录出来的文件属性不一致的话，电脑端的回放与转码
+    // 会按其中一边的假设来，另一边出问题。
+
+    /// 单声道。
+    private static let audioChannels = 1
+
+    /// 44.1kHz —— 语音的常见采样率，两端都支持。
+    private static let audioSampleRate = 44100
+
+    /// 64kbps。
+    private static let audioBitRate = 64000
+
     /// 识码的采样间隔。**不跑满帧** —— 识码比静止检测贵得多，
     /// 而包裹摆在那儿几秒内扫到就够了。
     private static let barcodeScanInterval: TimeInterval = 0.3
@@ -566,6 +585,22 @@ final class CameraSegmentRecorder: NSObject {
     private var videoOutput: AVCaptureVideoDataOutput?
     private var analysisOutput: AVCaptureVideoDataOutput?
     private var captureDevice: AVCaptureDevice?
+
+    /// 麦克风那一路（录制声音，需求方 2026-09-28）。
+    ///
+    /// ⚠️ **只有 `recordAudio` 为真时才会建** —— 录音关掉的时候，
+    /// 这一路输出和那个麦克风输入都不进会话，手机顶上的录音指示也不会亮。
+    /// 见 [openCamera]。
+    private var audioOutput: AVCaptureAudioDataOutput?
+
+    /// 录不录音。**由 [openCamera] 定一次**（会话配置时就要知道，
+    /// 因为麦克风输入是开会话时加进去的）—— 与 [spec] 同一个待遇。
+    ///
+    /// ⚠️ 与「工作模式 / 兜底档位 / 录制规格」同一组：**改了要等下次
+    /// 「开始工作」**（设置页「什么时候生效」那张卡上写着这一条）。
+    /// Dart 那边同一个设置项也随 `startRecording` 再传一次（[startRecording]），
+    /// 两次的值来自同一个 `_recordAudio` —— 它们必须一致。
+    private var recordAudio = false
 
     /// 只认二维码。由「扫码连接」那个界面打开，**录制页永远不打开**
     /// （规格 §3.4.5 ④）。
@@ -665,6 +700,19 @@ final class CameraSegmentRecorder: NSObject {
         AVCaptureDevice.requestAccess(for: .video, completionHandler: completion)
     }
 
+    /// 麦克风权限（录制声音，需求方 2026-09-28）。
+    ///
+    /// ⚠️ 权限被拒**不影响录像**（不变量 I4）：那一段照常录，只是没有音轨。
+    /// `AVCaptureDeviceInput(device: .default(for: .audio))` 在没授权时会抛，
+    /// 而那个 catch 就是这条降级路径（见 [openCamera]）。
+    static var hasMicrophonePermission: Bool {
+        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
+    static func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+        AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
+    }
+
     // MARK: - 生命周期
 
     /// 打开相机并开始送预览。
@@ -673,7 +721,13 @@ final class CameraSegmentRecorder: NSObject {
     /// 那时还没扫码，不该录。所以相机开着送预览、等扫到面单才开始录。
     ///
     /// 返回 false 表示相机打不开。
-    func openCamera(spec: RecorderSpec = .standard) -> Bool {
+    ///
+    /// <param name="audio">
+    /// 录不录音（需求方 2026-09-28）。**只能在开会话这一趟给**：麦克风输入
+    /// 是 `beginConfiguration` 里加进会话的，会话建好之后补不进来。
+    /// 缺参数按 **false** 走 —— 老版本 Dart 不带它 = 老行为 = 不录音。
+    /// </param>
+    func openCamera(spec: RecorderSpec = .standard, audio: Bool = false) -> Bool {
         guard !cameraOpen else { return true }
 
         guard let device = Self.pickBackCamera() else {
@@ -682,6 +736,7 @@ final class CameraSegmentRecorder: NSObject {
         }
         captureDevice = device
         self.spec = spec
+        self.recordAudio = audio
 
         session.beginConfiguration()
 
@@ -714,6 +769,17 @@ final class CameraSegmentRecorder: NSObject {
         }
         addAnalysisOutput()
 
+        // ── 麦克风（录制声音，需求方 2026-09-28）──────────────────────
+        //
+        // ⚠️ **整段都在 I4 的保护之下**：音频这一路出任何问题都只是
+        // 「这一段没有声音」，绝不 return false。少一条音轨是遗憾，
+        // 录不出来是事故。
+        if recordAudio {
+            configureAudioSession()
+            addAudioInput()
+            addAudioOutput()
+        }
+
         session.commitConfiguration()
 
         // 方向必须在 commit 之后设 —— 输出刚 add 进去时它的 connection
@@ -745,14 +811,26 @@ final class CameraSegmentRecorder: NSObject {
     /// 水印上那行时间就从它推 —— 规格 §3.6.3：「水印与时长都不得取自墙钟」。
     /// 传 nil 时退回墙钟（老调用方 / 测试路径）。
     /// </param>
+    /// <param name="audio">
+    /// 这一段录不录音（需求方 2026-09-28）。
+    /// ⚠️ 缺参数按 **false** 走（老版本 Dart 不带这个参数 = 老行为 = 不录音），
+    /// 但 Dart 那边**每次都显式传**（有测试钉着）——「缺参数 = 不录音」
+    /// 这个默认值只是给老调用方兜底，不是一条可以依赖的路径。
+    /// </param>
     func startRecording(
         directory: URL, segmentDuration: TimeInterval, waybill: String = "",
-        trustedStartMs: Double? = nil
+        trustedStartMs: Double? = nil, audio: Bool = false
     ) -> Bool {
         guard cameraOpen, !isRecording else { return false }
 
         outputDirectory = directory
         self.segmentDuration = segmentDuration
+
+        // 与会话里那个值来自 Dart 的同一个设置项，正常情况下一模一样
+        // （见 `recordAudio` 的注释）。这里覆盖一次是为了让「这一段录不录」
+        // 由这一次调用说了算 —— 而 [makeWriter] 还额外要求 `audioOutput`
+        // 真的建起来了，两者不一致时降级成「没有音轨」而不是「一条空音轨」。
+        recordAudio = audio
 
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
@@ -836,6 +914,17 @@ final class CameraSegmentRecorder: NSObject {
 
             self.cameraOpen = false
             self.captureDevice = nil
+
+            // 音频这一路跟着一起收（录制声音，需求方 2026-09-28）。
+            // ⚠️ **必须把 audio session 也 deactivate** —— 不放的话，
+            // 「结束工作」之后这台手机仍然占着录音通道，别的 App
+            // （录音机、语音消息）会拿不到麦克风，而且顶上的录音指示还亮着。
+            self.audioOutput = nil
+            if self.recordAudio {
+                try? AVAudioSession.sharedInstance().setActive(
+                    false, options: .notifyOthersOnDeactivation)
+            }
+
             completion?()
         }
     }
@@ -1168,6 +1257,74 @@ final class CameraSegmentRecorder: NSObject {
         analysisOutput = output
     }
 
+    /// 录音要用的 `AVAudioSession` 档（录制声音，需求方 2026-09-28）。
+    ///
+    /// ⚠️ **必须显式设 `.playAndRecord`。** 会话里一加麦克风输入，系统就按
+    /// 当前 audio session 的档位决定采不采得到声音；默认档（`.soloAmbient`）
+    /// 不支持录音 —— 表现是**音轨是空的、一点都不报错**。
+    ///
+    /// ⚠️ `.defaultToSpeaker` 是给语音播报用的：不加它，`.playAndRecord` 会把
+    /// 声音默认送到**听筒**，播报小到听不见（而那是错码保护唯一的线索）。
+    ///
+    /// ⚠️ **不要**加 `.mixWithOthers` —— 那会把别的 App 正在放的音乐混进
+    /// 取证录像里。规格要的是现场的声音，不是现场的手机外放。
+    ///
+    /// ⚠️ 失败也不抛：采不到声音就是没有音轨，录像照旧。
+    private func configureAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(
+                .playAndRecord, mode: .default,
+                options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setActive(true)
+        } catch {
+            NSLog("VidLog: 音频会话设不上（\(error.localizedDescription)），这一段可能没有声音")
+        }
+    }
+
+    /// 把麦克风接进会话。
+    ///
+    /// 未授权时会抛（`AVCaptureDeviceInput` 的构造是 throwing），
+    /// 那个 catch 就是 I4 的降级路径 —— 照常录，只是没有音轨。
+    private func addAudioInput() {
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            NSLog("VidLog: 找不到可用的麦克风，这一段将没有声音")
+            return
+        }
+
+        do {
+            let input = try AVCaptureDeviceInput(device: device)
+            guard session.canAddInput(input) else {
+                NSLog("VidLog: 麦克风输入无法加入会话，这一段将没有声音")
+                return
+            }
+            session.addInput(input)
+        } catch {
+            NSLog("VidLog: 麦克风用不了（\(error.localizedDescription)），这一段将没有声音")
+        }
+    }
+
+    /// 音频输出。
+    ///
+    /// ⚠️ **它挂的是 `videoQueue`，不是自己一条队列。**
+    /// `AVCaptureSession` 会把两个 output 的回调**串行**派发到同一条队列上，
+    /// 所以音频这一路与视频那一路永远不会同时在跑 —— `currentWriter` /
+    /// `sessionStarted` 那两个标志也就还是单线程在碰，一行锁都不用加。
+    /// （分成两条队列的话要上锁，而那一处是 iOS 侧最容易写错的地方。）
+    /// 代价只是音视频回调互相等一小下，而音频这一路干的活只有一句 append。
+    private func addAudioOutput() {
+        let output = AVCaptureAudioDataOutput()
+        output.setSampleBufferDelegate(self, queue: videoQueue)
+
+        guard session.canAddOutput(output) else {
+            NSLog("VidLog: 无法加入音频输出，这一段将没有声音")
+            return
+        }
+
+        session.addOutput(output)
+        audioOutput = output
+    }
+
     /// 让画面按**用户选的方向**摆（规格 §3.1.7）。
     ///
     /// iOS 17 起 `videoOrientation` 废弃，改用 `videoRotationAngle`；两套都写。
@@ -1198,6 +1355,14 @@ final class CameraSegmentRecorder: NSObject {
         let fileURL: URL
         let startedAt: TimeInterval
 
+        /// 音轨那一路（录制声音）。**录音关掉时是 nil**。
+        ///
+        /// ⚠️ 它是**第二个 `AVAssetWriterInput`** —— 所以 [finish] 里
+        /// 两个都要 `markAsFinished()`。只 mark 视频那一路的话，
+        /// `finishWriting` 会一直等音频 input，表现是
+        /// **「停止录像卡住不回」**（而 `stop()` 的完成本来就等最后一段封完）。
+        let audioInput: AVAssetWriterInput?
+
         /// 记下来给下一个分段用 —— 轮转时不该再去反推尺寸。
         let width: Int
         let height: Int
@@ -1212,7 +1377,8 @@ final class CameraSegmentRecorder: NSObject {
 
         init(sequence: Int, writer: AVAssetWriter, input: AVAssetWriterInput,
              adaptor: AVAssetWriterInputPixelBufferAdaptor, fileURL: URL,
-             startedAt: TimeInterval, width: Int, height: Int) {
+             startedAt: TimeInterval, width: Int, height: Int,
+             audioInput: AVAssetWriterInput? = nil) {
             self.sequence = sequence
             self.writer = writer
             self.input = input
@@ -1221,6 +1387,7 @@ final class CameraSegmentRecorder: NSObject {
             self.startedAt = startedAt
             self.width = width
             self.height = height
+            self.audioInput = audioInput
         }
     }
 
@@ -1266,6 +1433,35 @@ final class CameraSegmentRecorder: NSObject {
 
         writer.add(input)
 
+        // ── 音轨（录制声音，需求方 2026-09-28）────────────────────────
+        //
+        // ⚠️ 三个条件缺一不可：用户开了录音、麦克风那一路真的接上了
+        // （`audioOutput != nil`，会话配置时才能确定）、writer 收得下。
+        // 少判一个的后果是**一条空的音轨** —— 播放器上显示有声音、点开一片静音，
+        // 而「关掉开关后录像不带声音」那条验收会因此判错。
+        //
+        // ⚠️ **不加 `AVAssetWriterInputPixelBufferAdaptor`** —— adaptor 是给
+        // `CVPixelBuffer` 用的（视频专用）。音频是直接 append `CMSampleBuffer`。
+        var audioInput: AVAssetWriterInput?
+        if recordAudio, audioOutput != nil {
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVNumberOfChannelsKey: Self.audioChannels,
+                AVSampleRateKey: Self.audioSampleRate,
+                AVEncoderBitRateKey: Self.audioBitRate,
+            ]
+            let candidate = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            candidate.expectsMediaDataInRealTime = true
+
+            if writer.canAdd(candidate) {
+                writer.add(candidate)
+                audioInput = candidate
+            } else {
+                // 加不上就不加：没有音轨是遗憾，录不出来是事故（I4）。
+                NSLog("VidLog: 无法加入音频轨，分段 \(sequence) 将没有声音")
+            }
+        }
+
         guard writer.startWriting() else {
             let reason = writer.error?.localizedDescription ?? "未知原因"
             onEvent(.failed("分段 \(sequence) 开始写入失败：\(reason)"))
@@ -1275,7 +1471,8 @@ final class CameraSegmentRecorder: NSObject {
         return SegmentWriter(sequence: sequence, writer: writer, input: input,
                              adaptor: adaptor, fileURL: url,
                              startedAt: CACurrentMediaTime(),
-                             width: width, height: height)
+                             width: width, height: height,
+                             audioInput: audioInput)
     }
 
     /// 封闭一个分段并上报。
@@ -1286,6 +1483,12 @@ final class CameraSegmentRecorder: NSObject {
         let sessionStart = sessionStartedAt
 
         segment.input.markAsFinished()
+
+        // ⚠️ 音轨那一路**也要 mark**（录制声音，需求方 2026-09-28）。
+        // 两个 input 只 mark 一个的话，`finishWriting` 会一直等另一个，
+        // 表现是**「停止录像卡住不回」** —— 而 `stop()` 的完成本来就等
+        // 最后一段的 `finishWriting`，所以那一下会一直卡着。
+        segment.audioInput?.markAsFinished()
 
         segment.writer.finishWriting { [weak self] in
             guard let self else { return }
@@ -1338,8 +1541,50 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate {
             return
         }
 
+        // 音频那一路上来先判 —— 它挂的是**同一条 `videoQueue`**（见
+        // [addAudioOutput]），所以下面那些 `currentWriter` / `sessionStarted`
+        // 的读写与视频那一路是串行的，不用再加锁。
+        if let audio = audioOutput, output === audio {
+            appendAudio(sampleBuffer)
+            return
+        }
+
         guard output === videoOutput else { return }
         appendFrame(sampleBuffer)
+    }
+
+    /// 音轨的一帧（录制声音，需求方 2026-09-28）。
+    ///
+    /// ## 三条守卫，一条都不能少
+    ///
+    /// ① `isRecording` —— 相机开着但还没扫到面单时，音频那一路上照样有样本
+    ///    （音频输出是从 `openCamera` 就在送）。不拦的话，录制还没开始
+    ///    就往一个不存在的 writer 上 append。
+    /// ② `currentWriter != nil` —— writer 是**第一帧视频**建起来的
+    ///    （尺寸要等第一帧才知道）。在那之前到的音频样本没有地方可写。
+    /// ③ `sessionStarted` —— ⚠️ **这一条是本机的关键**：`startSession(atSourceTime:)`
+    ///    只能调一次，而现在**只由视频那一帧来调**（见 [appendFrame]）。
+    ///    音频的第一帧可能早于视频的第一帧，那时 writer 还没开会话，
+    ///    append 会直接抛 `NSException` —— 应用当场闪退。
+    ///
+    ///    这里刻意**不让音频去开这个会话**：`startSession` 的起始时刻
+    ///    要是早于 `startWriting()` 的真实时刻，`AVAssetWriter` 会直接失败。
+    ///    代价是开头最多丢一帧视频那么长（约 33ms）的声音 ——
+    ///    比「偶尔崩一次」划算得多。
+    private func appendAudio(_ sampleBuffer: CMSampleBuffer) {
+        guard isRecording else { return }
+
+        stateLock.lock()
+        let writer = currentWriter
+        stateLock.unlock()
+
+        guard let active = writer, active.sessionStarted,
+              let audioInput = active.audioInput,
+              active.writer.status == .writing,
+              audioInput.isReadyForMoreMediaData
+        else { return }
+
+        audioInput.append(sampleBuffer)
     }
 
     private func appendFrame(_ sampleBuffer: CMSampleBuffer) {

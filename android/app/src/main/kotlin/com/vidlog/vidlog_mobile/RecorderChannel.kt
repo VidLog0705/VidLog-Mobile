@@ -42,8 +42,9 @@ import java.util.Locale
  * |---|---|---|
  * | `hasCameraPermission` | Dart → 原生 | 是否已授权 |
  * | `requestCameraPermission` | Dart → 原生 | 弹授权框（结果由系统回调，Dart 稍后重试） |
- * | `openCamera` | Dart → 原生 | 开相机送预览，**不录** |
- * | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长 |
+ * | `requestMicrophonePermission` | Dart → 原生 | 弹麦克风授权框（录制声音）；失败不挡录制 |
+ * | `openCamera` | Dart → 原生 | 开相机送预览，**不录**；参数含录制规格与 `audio` |
+ * | `startRecording` | Dart → 原生 | 开始录一段，参数含工作区目录、单段时长、`audio` |
  * | `stopRecording` | Dart → 原生 | 停止；**相机保持开着** |
  * | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
  * | `setZoom` / `maxZoom` / `minZoom` | Dart → 原生 | 变焦与表盘刻度（规格 §3.1.2） |
@@ -84,6 +85,14 @@ class RecorderChannel(private val activity: FlutterActivity) :
         private const val TAG = "VidLogRecorder"
 
         private const val REQUEST_CAMERA = 7301
+
+        /**
+         * 麦克风授权（录制声音，需求方 2026-09-28）。
+         *
+         * ⚠️ 与相机那个**分开一个码**：`onPermissionResult` 靠它分辨是谁的结果，
+         * 共用一个码的话，回来的授权结果会被写进错误的那个槽位。
+         */
+        private const val REQUEST_MICROPHONE = 7302
 
         /** 滴声的音量（0~100）。与语音的音量不挂钩，取一个「听得清但不吵」的值。 */
         private const val BEEP_VOLUME = 80
@@ -126,6 +135,15 @@ class RecorderChannel(private val activity: FlutterActivity) :
 
     /** 等待授权结果的 Dart 回调。授权框是异步的，只能存下来等系统回调。 */
     private var pendingPermissionResult: MethodChannel.Result? = null
+
+    /**
+     * 等麦克风授权结果的那个回调。**与相机那个分开存**。
+     *
+     * 两个框不会同时在屏幕上（Dart 那边先等完相机才问麦克风），但混用一个槽位
+     * 意味着「后到的请求把先到的结果覆盖掉」—— 那会让 Dart 那边 `await` 挂死，
+     * 而画面上只表现为「点了开始工作，一直没反应」。
+     */
+    private var pendingMicrophoneResult: MethodChannel.Result? = null
 
     /** 语音播报。规格 §3.3.2 / §3.3.4 的两句提示。 */
     private var tts: TextToSpeech? = null
@@ -189,6 +207,25 @@ class RecorderChannel(private val activity: FlutterActivity) :
                         activity,
                         arrayOf(Manifest.permission.CAMERA),
                         REQUEST_CAMERA,
+                    )
+                }
+            }
+
+            // 麦克风授权（录制声音，需求方 2026-09-28）。
+            // ⚠️ 与相机那条**不一样的地方**：拿不到权限**不挡任何事**（I4），
+            // Dart 那边只看一眼、不据此拦。它唯一的用途是把系统那个框弹出来 ——
+            // 不弹的话 `AudioRecord` 会静静地失败，用户看到的就是一个
+            // 「打开了却永远没声音」的开关（踩坑 #13）。
+            // 已经授权时直接回 true，不再弹框。
+            "requestMicrophonePermission" -> {
+                if (hasMicrophonePermission()) {
+                    result.success(true)
+                } else {
+                    pendingMicrophoneResult = result
+                    ActivityCompat.requestPermissions(
+                        activity,
+                        arrayOf(Manifest.permission.RECORD_AUDIO),
+                        REQUEST_MICROPHONE,
                     )
                 }
             }
@@ -289,6 +326,12 @@ class RecorderChannel(private val activity: FlutterActivity) :
         // 录制规格。**缺参数 = 默认档**：老版本 Dart 不带它时行为与从前一致。
         val spec = RecorderSpec.parse(call.argument<Any>("spec"))
 
+        // 录制声音（需求方 2026-09-28）。**缺参数 = false = 老行为（不录音）**
+        // —— 所以 Dart 那边是显式传这个键的（见 `recorder_gateway.dart`）。
+        // 与 `startRecording` 那个 `audio` 是**两件事**：这里决定「会话里有没有
+        // 麦克风这一路」，那里决定「这一段文件里写不写音轨」，两个都要传。
+        val audio = call.argument<Boolean>("audio") ?: false
+
         // 已经开着（相机 + 预览都在跑）就直接回成功，与 iOS 一致。
         // ⚠️ 但**识码范围要顺手换掉**：就这么返回的话，录制页把相机开着、
         // 用户切到扫码连接那一下，屏幕上是一维码的白名单在扫一张二维码 ——
@@ -311,7 +354,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
         )
         created.qrOnly = qrOnly
 
-        if (!created.openCamera(spec)) {
+        if (!created.openCamera(spec, audio)) {
             result.error("camera_failed", "相机未能打开", null)
             return
         }
@@ -350,8 +393,11 @@ class RecorderChannel(private val activity: FlutterActivity) :
         val waybill = call.argument<String>("waybill") ?: ""
         val trustedStartMs = call.argument<Number>("trustedStartMs")?.toDouble()
 
+        // 录制声音。与 `openCamera` 那处同一个道理：**缺参数 = false = 老行为**。
+        val audio = call.argument<Boolean>("audio") ?: false
+
         val started = current.startRecording(
-            File(directory), segmentDurationMs, waybill, trustedStartMs)
+            File(directory), segmentDurationMs, waybill, trustedStartMs, audio)
         if (started) {
             result.success(null)
         } else {
@@ -884,17 +930,30 @@ class RecorderChannel(private val activity: FlutterActivity) :
         ContextCompat.checkSelfPermission(activity, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
+    /** 麦克风权限（录制声音）。见 `requestMicrophonePermission` 那条。 */
+    private fun hasMicrophonePermission(): Boolean =
+        ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
     /** 由 [MainActivity.onRequestPermissionsResult] 转发过来。 */
     fun onPermissionResult(requestCode: Int, grantResults: IntArray) {
-        if (requestCode != REQUEST_CAMERA) return
-
         val granted = grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
 
-        pendingPermissionResult?.success(granted)
-        pendingPermissionResult = null
+        when (requestCode) {
+            REQUEST_CAMERA -> {
+                pendingPermissionResult?.success(granted)
+                pendingPermissionResult = null
+            }
+
+            REQUEST_MICROPHONE -> {
+                pendingMicrophoneResult?.success(granted)
+                pendingMicrophoneResult = null
+            }
+        }
     }
 
     /** 供 [MainActivity] 判断要不要处理。 */
-    fun handlesRequest(requestCode: Int): Boolean = requestCode == REQUEST_CAMERA
+    fun handlesRequest(requestCode: Int): Boolean =
+        requestCode == REQUEST_CAMERA || requestCode == REQUEST_MICROPHONE
 }

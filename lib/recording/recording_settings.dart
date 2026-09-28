@@ -9,9 +9,10 @@ import 'work_mode.dart';
 
 /// 用户选的录制设置（`<root>/settings.json`）。
 ///
-/// 落盘的九项：工作模式、静止停录档位、时长兜底档位、语音播报开关、
-/// 录制规格三项（编码 / 分辨率 / 方向，规格 §3.1.7），
-/// 以及归档后的本地保留期两份（发货 / 退货，规格 §3.5.2.1）。
+/// 落盘的十三项：工作模式、静止停录档位、时长兜底档位、语音播报开关、
+/// 录制规格三项（编码 / 分辨率 / 方向，规格 §3.1.7）、
+/// 归档后的本地保留期四项（发货 / 退货 × 已备份 / 未备份，规格 §3.5.2.1），
+/// 以及 2026-09-28 加的两项：面单条码最短长度、录制声音。
 ///
 /// ## 为什么单独一个文件，不并进 `device.json`
 ///
@@ -50,6 +51,8 @@ class RecordingSettings {
     this.codec = VideoCodec.h264,
     this.resolution = VideoResolution.p1080,
     this.orientation = RecordingOrientation.portrait,
+    this.waybillMinLength = WaybillMinLength.fallback,
+    this.recordAudio = true,
   });
 
   final String path;
@@ -99,6 +102,32 @@ class RecordingSettings {
 
   /// 成片方向。**只有手机端有这一项**（电脑端的摄像头方向由设备与安装决定）。
   RecordingOrientation orientation;
+
+  /// 面单条码最短长度（需求方 2026-09-28 加，见 [WaybillMinLength]）。
+  ///
+  /// ⚠️ **只作用于相机识码**。手工输入的单号不走这个判据。
+  WaybillMinLength waybillMinLength;
+
+  /// 录像**文件里**带不带声音（需求方 2026-09-28 加）。
+  ///
+  /// ## ⚠️ 它与「语音播报」是两件事，别混
+  ///
+  /// - 这一项管的是**录出来的 mp4 里那条音轨**，也就是录进去了什么；
+  /// - [voiceEnabled] 管的是**这台手机现在出不出声**（含表盘滴声）。
+  ///
+  /// 两个可以同时开：那时播报会被录进录像里。需求方 2026-09-28 明确
+  /// 要的是两个独立开关，**不合并**。
+  ///
+  /// ## ⚠️ 默认**开**
+  ///
+  /// 取证视频带声音是更完整的一份证据。默认关的话，绝大多数用户
+  /// 根本不会发现这个功能存在。代价要说清楚：**已装机的用户升上来之后，
+  /// 录像会突然开始有声音** —— 这一点写在交付说明里。
+  ///
+  /// 读坏了同样回 `true`：这一项**没有安全方向可言** —— 关掉它不会更安全，
+  /// 开着也只是多一条音轨。与 [voiceEnabled] 一样「只认真正的 bool」，
+  /// 不认字符串 `'false'`。
+  bool recordAudio;
 
   /// 用户选的那一档 —— 落盘与界面都按它走。
   ///
@@ -151,6 +180,15 @@ class RecordingSettings {
       codec: VideoCodec.fromConfig(json['codec']),
       resolution: VideoResolution.fromConfig(json['resolution']),
       orientation: RecordingOrientation.fromConfig(json['orientation']),
+      // 2026-09-28 新增。⚠️ **老文件里没有这两个键** —— 缺席就走各自的默认档
+      // （11 位 / 开）。这两个默认值就是「升级之后行为变了吗」的答案：
+      // 条码下限**变了**（老版本什么都认），录制声音也**变了**（老版本不录音）。
+      // 两条都写进交付说明。
+      waybillMinLength: WaybillMinLength.fromConfig(json['waybillMinLength']),
+      recordAudio: switch (json['recordAudio']) {
+        final bool value => value,
+        _ => true,
+      },
     );
   }
 
@@ -195,6 +233,14 @@ class RecordingSettings {
         'codec': codec.name,
         'resolution': resolution.name,
         'orientation': orientation.name,
+
+        // 条码下限存**位数**，理由与两个档位一样（`fromConfig` 认的就是个数）。
+        // ⚠️ 「不限」存成 **0**，而 0 是一个真档位、不是「没设过」——
+        // 两者必须分得开：键在且为 0 = 用户选了不限；**键不在**（老文件）
+        // 才走默认的 11 位。合并的话，「不限」每次重开 App 都会被改回 11 位。
+        'waybillMinLength': waybillMinLength.length,
+
+        'recordAudio': recordAudio,
       }),
     );
   }

@@ -5,10 +5,8 @@ import 'package:vidlog_mobile/app/palette.dart';
 import 'package:vidlog_mobile/app/recorder_page.dart';
 import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/main.dart';
-import 'package:vidlog_mobile/recording/recorder_config.dart';
 import 'package:vidlog_mobile/recording/recorder_events.dart';
 import 'package:vidlog_mobile/recording/recording_spec.dart';
-import 'package:vidlog_mobile/recording/retention_setting.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
 
 void main() {
@@ -556,9 +554,11 @@ void main() {
       (WidgetTester tester) async {
     // ⚠️ 先把视口拉高。设置页是 `ListView`，**屏幕外的卡片根本没建** ——
     // 默认的 800×600 下第三、四块不在树里，`find` 会找不到它们。
-    // 3600 是 2026-09-27 加上「录制规格」那块（三行横排单选）之后的高度 ——
-    // 再加卡片就要跟着往上调，否则红的是 `find` 而不是真正想验的那条守卫。
-    tester.view.physicalSize = const Size(400, 3600);
+    //
+    // 5200 是 2026-09-28 照需求方那张图重排之后的高度（**13 张卡**，
+    // 原来是 7 张）。再加卡片就要跟着往上调，否则红的是 `find`
+    // 而不是真正想验的那条守卫。
+    tester.view.physicalSize = const Size(400, 5200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -566,46 +566,45 @@ void main() {
 
     // 图标是齿轮（`Icons.settings_outlined`）不是滑杆 —— 2026-09-23
     // 照需求方的界面草图换掉了，`Icons.tune_outlined` 在这儿找不到才会红。
+    // ⚠️ 页头那个方块用的是**实心** `Icons.settings`，与这个不是同一个 ——
+    // 两个图标一样的话这条 `tap` 就会变成「点哪个都行」，守卫跟着变松。
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
 
-    // 五块都在。验收工具那块缺了 M4 的「时长兜底」验收没法跑；
-    // 生效时机那块缺了，用户改完没反应只会以为开关坏了。
-    // 语音播报是需求方 2026-09-22 点名要的。
-    expect(find.text('工作模式'), findsOneWidget);
-    expect(find.text('录制规格'), findsOneWidget);
-    expect(find.text('防忘停录'), findsOneWidget);
-    expect(find.text('语音播报'), findsOneWidget);
+    // 十三张卡一张都不能少（2026-09-28 照图重排）。
+    // 验收工具那块缺了 M4 的「时长兜底」验收没法跑；生效时机那块缺了，
+    // 用户改完没反应只会以为开关坏了。
+    for (final title in const [
+      '工作模式',
+      '发货录像清理',
+      '退货录像清理',
+      '录像编码',
+      '录像规格',
+      '录像方向',
+      '录制声音',
+      '忘记停止录制时的自动兜底',
+      '语音提示',
+      '网盘视频',
+      '关于我们',
+    ]) {
+      expect(find.text(title), findsOneWidget, reason: '设置页少了「$title」那张卡');
+    }
     expect(find.textContaining('时长兜底加速'), findsOneWidget);
     expect(find.textContaining('不用退出去重进'), findsOneWidget);
 
-    // ⚠️ 这条是实质的。`_settings` 是 `_bootstrap` 里异步读出来的，
+    // ⚠️ 下面这一整段是实质的。`_settings` 是 `_bootstrap` 里异步读出来的，
     // 读出来之前改设置会被随后读到盘上值直接覆盖 —— 用户看到的是
     // 「开关点了没反应」，而且下一次打开发现改的没了。
-    // 所以控件在这段时间里必须是禁用的（`onSelectionChanged: null`）。
+    // 所以控件在这段时间里必须是禁用的。
     //
     // widget 测试里没有平台通道，`_bootstrap` 必然失败 → `_settings` 恒为 null，
-    // 正好就是这个状态。把 `_settingsReady` 那道守卫去掉，这条会红。
+    // 正好就是这个状态。把 `_settingsReady` 那道守卫去掉，这段会红。
     expect(
       tester
           .widget<SegmentedButton<WorkMode>>(find.byType(SegmentedButton<WorkMode>))
           .onSelectionChanged,
       isNull,
       reason: '设置还没读出来就允许改 → 改完被盘上值覆盖，用户以为开关坏了',
-    );
-    expect(
-      tester
-          .widget<SegmentedButton<StaticStopSetting>>(
-              find.byType(SegmentedButton<StaticStopSetting>))
-          .onSelectionChanged,
-      isNull,
-    );
-    expect(
-      tester
-          .widget<SegmentedButton<DurationFallbackSetting>>(
-              find.byType(SegmentedButton<DurationFallbackSetting>))
-          .onSelectionChanged,
-      isNull,
     );
 
     // 录制规格那三行单选同理（规格 §3.1.7）。三行**都要**验 ——
@@ -633,7 +632,8 @@ void main() {
       isNull,
     );
 
-    // 保留期那四个下拉同理（规格 §3.5.2.1）。四个数**各一个**，所以四个都验 ——
+    // 下拉项：保留期四个（规格 §3.5.2.1）+ 两个兜底档位（§3.3.3 / §3.3.4）
+    // + 条码最短长度（2026-09-28 新增）。**每一个都各验一遍** ——
     // 少套一个的 `_settingsReady`，那一格在真机上就是「改了没反应」，
     // 而且是静默的：下拉看起来能点。
     for (final key in const [
@@ -641,31 +641,56 @@ void main() {
       'settings-retention-archived-return',
       'settings-retention-unarchived-outbound',
       'settings-retention-unarchived-return',
+      'settings-static-stop',
+      'settings-duration-fallback',
+      'settings-waybill-min-length',
     ]) {
       expect(
-        tester
-            .widget<DropdownButton<RetentionSetting>>(find.byKey(Key(key)))
-            .onChanged,
+        tester.widget<DropdownButton<Object?>>(find.byKey(Key(key))).onChanged,
         isNull,
         reason: '「$key」在设置读出来之前必须禁用',
       );
     }
 
-    // 页上有两个开关，靠 key 取 —— 这也顺带把「哪个开关是哪个」钉住了。
-    SwitchListTile switchAt(String key) =>
+    // 页上的开关，靠 key 取 —— 这也顺带把「哪个开关是哪个」钉住了。
+    SwitchListTile switchTileAt(String key) =>
         tester.widget<SwitchListTile>(find.byKey(Key(key)));
+    Switch switchAt(String key) =>
+        tester.widget<Switch>(find.byKey(Key(key)));
 
     // 验收开关**不落盘**，所以它不依赖盘上的设置读没读出来 —— 一直是可用的。
-    expect(switchAt('settings-accelerated-switch').onChanged, isNotNull);
+    expect(switchTileAt('settings-accelerated-switch').onChanged, isNotNull);
 
-    // ⚠️ 播报开关是**落盘**的，所以它跟着一起禁用。
+    // ⚠️ 语音提示开关是**落盘**的，所以它跟着一起禁用。
     // 它同时是唯一「立刻生效」的一项设置：关它的人是因为现在就吵，
     // 让他「先结束工作再开始」是不合理的（`实现决策.md` §17.3）。
     expect(switchAt('settings-voice-switch').onChanged, isNull);
     expect(switchAt('settings-voice-switch').value, isTrue,
         reason: '设置没读出来时按开算 —— 不该静默把提示功能关掉');
 
-    // 最小的真机宽度下，五档的静止档位选择器不能横着溢出。
+    // 录制声音同样是落盘的（2026-09-28 新增），同样禁用。
+    expect(switchTileAt('settings-record-audio-switch').onChanged, isNull);
+    expect(switchTileAt('settings-record-audio-switch').value, isTrue,
+        reason: '设置没读出来时按开算 —— 取证视频带声音是更完整的一份证据');
+
+    // ⚠️ 试听在这是**灰的**，但原因不是设置没读出来，而是**还没有编排器**
+    // （语音通道要等第一次「开始工作」才接上）。这条同时钉住了另一件事：
+    // 试听没有 bypass 那个唯一的 `voiceEnabled` 闸 —— 它是 `speak()` 的调用者，
+    // 不是第二个判 `_voiceOn` 的地方。
+    expect(
+      tester
+          .widget<TextButton>(find.byKey(const Key('settings-voice-preview')))
+          .onPressed,
+      isNull,
+      reason: '没有编排器时试听必须按不动 —— 按了不发声就是「改了没反应的开关」',
+    );
+
+    // 最小的真机宽度（360dp）下，最宽的那个固定宽度控件不能横着溢出。
+    // ⚠️ 现在这一页的下拉**全都套在 `_settingRow` 的 `Expanded` 里**，
+    // 结构上溢不出来；唯一宽度由内容决定的是模式那个三选胶囊
+    // （`连续扫码` / `同码停录` / `扫码静止停录`，三段都是长词）。
+    // 所以这条改挂在它身上 —— 原来挂的五档静止档位已经改成下拉了。
+    //
     // 溢出的子树照样在 widget 树里、`find` 找得到、`takeException` 也是 null
     // （溢出是 paint 阶段报的）—— 所以这里只认矩形。
     tester.view.physicalSize = const Size(360, 640);
@@ -673,21 +698,19 @@ void main() {
     addTearDown(tester.view.reset);
     await tester.pumpAndSettle();
 
-    // ⚠️ **屏矮了之后必须先滚过去。** `ListView` 只建屏幕内的孩子，
-    // 2026-09-27 在上面加了「录制规格」那块（三行单选）之后，
-    // 静止档位选择器就落到 640 之外了 —— 不滚的话红的是 `find`，不是溢出。
+    // ⚠️ **屏矮了之后必须先滚过去。** `ListView` 只建屏幕内的孩子。
     await tester.scrollUntilVisible(
-      find.byType(SegmentedButton<StaticStopSetting>),
+      find.byType(SegmentedButton<WorkMode>),
       200,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
 
-    final staticStop = find.byType(SegmentedButton<StaticStopSetting>);
+    final mode = find.byType(SegmentedButton<WorkMode>);
     expect(
-      tester.getRect(staticStop).right,
+      tester.getRect(mode).right,
       lessThanOrEqualTo(360.0),
-      reason: '360dp 的屏上静止档位选择器超出了右边缘，最后两档点不到',
+      reason: '360dp 的屏上模式三选胶囊超出了右边缘，「扫码静止停录」点不到',
     );
   });
 }

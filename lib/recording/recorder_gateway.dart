@@ -80,6 +80,21 @@ abstract interface class RecorderGateway {
   /// 应当等用户操作后重新调 [hasCameraPermission]。
   Future<bool> requestCameraPermission();
 
+  /// 麦克风权限（录制声音，需求方 2026-09-28）。
+  ///
+  /// **一个方法就够**，不像相机那样分成「查」+「要」两个 —— 已经问过的时候
+  /// 两端原生都直接回当前答案、不再弹框（iOS `AVCaptureDevice.requestAccess`、
+  /// 安卓 `checkSelfPermission` 都是这个语义）。相机那边分两个是因为
+  /// 界面要按 [hasCameraPermission] 显示不同的话，这里没这个需要。
+  ///
+  /// ⚠️ **结果调用方可以不听**：没有麦克风权限只是「这一段没有音轨」（I4），
+  /// 绝不挡录像。它的唯一用途是**把系统那个框弹出来** —— 不弹的话
+  /// `AVCaptureDeviceInput` / `AudioRecord` 会静静地失败，用户看到的就是
+  /// 一个「打开了却永远没声音」的开关（踩坑 #13）。
+  ///
+  /// **实现可以抛**（老包没有这个方法）：调用方按「没有权限」处理。
+  Future<bool> requestMicrophonePermission();
+
   // ── 相机与录制是两件事 ──
   //
   // 规格 §3.2.2：点「开始工作」→ 画面出现**可见的取景框**；扫到面单才开录。
@@ -99,8 +114,17 @@ abstract interface class RecorderGateway {
   /// 传 `null` 表示**不改** —— 相机已经开着时这是常态（换识码范围、从别的页面
   /// 回来），那时按原生当前那套走，重开一次会闪黑屏。
   ///
+  /// [audio] 决定**开会话时要不要把麦克风接进来**（需求方 2026-09-28）。
+  ///
+  /// ⚠️ **它与 [startRecording] 的 `audio` 是两件事，两个都要传**：
+  /// 这里决定「会话里有没有麦克风这一路」（加不进去，会话建好之后补不上），
+  /// 那里决定「这一段文件里写不写音轨」。只传后者的话，开关打开也永远没有声音。
+  ///
+  /// ⚠️ 会话**已经开着**时这个值不生效 —— 原生直接早退。改它要重开会话，
+  /// 由 [RecordingCoordinator.openCamera] 自己判（它会先 closeCamera）。
+  ///
   /// 相机已经开着时调用它：只换识码范围，不重开相机。
-  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec});
+  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec, bool audio = false});
 
   /// 录制前那次**真实的可用性检查**（规格 §3.1.7）。
   ///
@@ -125,11 +149,20 @@ abstract interface class RecorderGateway {
   /// 用户改系统时间**不得**改变视频里的时间」。
   ///
   /// 两者都可空：不传时原生仍会画时间那一行（退回墙钟起算、单号为空）。
+  /// [audio] 决定录像**文件里**带不带声音（需求方 2026-09-28）。
+  ///
+  /// ⚠️ **调用方必须显式传**。两端原生都按「参数缺了 = 保持从前的行为」写，
+  /// 而从前的行为是**不录音** —— 不传就是无声，且看不出来。
+  ///
+  /// ⚠️ 麦克风被拒 / 加不进采集会话 / 编码器起不来时，两端都**降级成无声视频**
+  /// 而不是失败（I4）。所以「要了声音却没声音」是一条**可能发生**的正常路径，
+  /// 界面与验收清单都按这个前提写。
   Future<void> startRecording({
     required String directory,
     required Duration segmentDuration,
     String? waybill,
     int? trustedStartMs,
+    bool audio = false,
   });
 
   /// 停止录制。**相机保持开着**，取景框还在，下件包裹接着扫。
@@ -281,10 +314,31 @@ class ChannelRecorderGateway implements RecorderGateway {
       await _methods.invokeMethod<bool>('requestCameraPermission') ?? false;
 
   @override
-  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec}) =>
+  Future<bool> requestMicrophonePermission() async {
+    // ⚠️ 这里**吞异常**（别的原生方法都不吞）：老包 / 还没接上这个方法时
+    // `invokeMethod` 会抛 `MissingPluginException`，而这一句的失败对录像
+    // 毫无影响（只是没有音轨）。让它抛出去的话，调用方那一段
+    // 「打开相机」的 try 会整个跳到 catch —— 表现成「没有麦克风权限就录不了像」，
+    // 恰好违反 I4。
+    try {
+      return await _methods.invokeMethod<bool>('requestMicrophonePermission') ?? false;
+    } on Object {
+      return false;
+    }
+  }
+
+  @override
+  Future<void> openCamera({
+    bool qrOnly = false,
+    RecordingSpec? spec,
+    bool audio = false,
+  }) =>
       _methods.invokeMethod<void>('openCamera', {
         'qrOnly': qrOnly,
         if (spec != null) 'spec': spec.toWire(),
+        // ⚠️ **不带 `if`** —— 与会话里那一路的存在与否直接相关，
+        // 这个键必须每次都发出去（同一个理由见 [startRecording]）。
+        'audio': audio,
       });
 
   @override
@@ -299,12 +353,17 @@ class ChannelRecorderGateway implements RecorderGateway {
     required Duration segmentDuration,
     String? waybill,
     int? trustedStartMs,
+    bool audio = false,
   }) =>
       _methods.invokeMethod<void>('startRecording', {
         'directory': directory,
         'segmentDurationMs': segmentDuration.inMilliseconds,
         if (waybill != null) 'waybill': waybill,
         if (trustedStartMs != null) 'trustedStartMs': trustedStartMs,
+        // ⚠️ **不带 `if`** —— 这个键每次都要发出去，`false` 也要发。
+        // 写成 `if (audio) 'audio': audio` 的话，「关掉录音」这个意图
+        // 根本到不了原生，用户会以为开关坏了。
+        'audio': audio,
       });
 
   @override

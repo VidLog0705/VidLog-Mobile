@@ -170,4 +170,82 @@ void main() {
       expect(gate.accept(sighting('SF1'), t0 + 100), isNotNull);
     });
   });
+
+  // ── 面单条码最短长度（需求方 2026-09-28 新增）──────
+  //
+  // 它拦的是**印在面单上的码**，也就是相机这条路。手工输入那条路
+  // （`_simulateScan`）**不走 ScanGate**，所以不在这一组里 ——
+  // 它由编排器那一层测（见 `recording_coordinator_test.dart` 的
+  // 「条码最短长度只挡相机」）。
+  group('★ 面单条码最短长度', () {
+    ScanGate makeMinGate(int minLength, {List<String>? tooShort}) {
+      final gate = ScanGate(
+        viewfinder: const Viewfinder(
+          rect: NormalizedRect(left: 0.25, top: 0.25, width: 0.5, height: 0.5),
+        ),
+        minLength: minLength,
+      );
+      gate.onTooShort = (text, min) => tooShort?.add('$text/$min');
+      return gate;
+    }
+
+    test('短于下限的条码不触发录制', () {
+      expect(makeMinGate(11).accept(sighting('SF12345678'), t0), isNull);
+    });
+
+    test('刚好等于下限的条码**放行**（判据是「短于」不是「不长于」）', () {
+      // 11 位单号是常态。写成 `<=` 的话，默认档会把每一张正常面单都挡掉。
+      expect(makeMinGate(11).accept(sighting('SF123456789'), t0), isNotNull);
+    });
+
+    test('长于下限的条码照旧', () {
+      expect(makeMinGate(11).accept(sighting('SF1234567890123'), t0), isNotNull);
+    });
+
+    test('**不限**（0）时什么长度都放行', () {
+      // ⚠️ 0 是「不限」这个真档位，不是「没设过」。判据写成 `!= 0` 或
+      // 忘了 `minLength > 0` 的话，这一档会把所有短码都挡掉。
+      final gate = makeMinGate(0);
+      expect(gate.accept(sighting('A'), t0), isNotNull);
+      expect(gate.accept(sighting('AB'), t0 + 100), isNotNull);
+    });
+
+    test('数的是**归一化之后**的长度，不是原始字节数', () {
+      // 'SF 123456789' 原样 12 个字符，归一化后是 11 位。
+      // 按原始长度判的话，一个带空格的正常单号会被误挡。
+      expect(makeMinGate(11).accept(sighting('SF 123456789'), t0), isNotNull);
+    });
+
+    test('被挡下时报一次，而且**只报一次**', () {
+      // ⚠️ 这条是本组最要紧的一条。短码会一直摆在画面里，每帧都回调一次的话
+      // 事件列表会被刷爆 —— 所以它必须与放行那条路**共用同一套去重**。
+      final seen = <String>[];
+      final gate = makeMinGate(11, tooShort: seen);
+
+      expect(gate.accept(sighting('SF12345'), t0), isNull);
+      for (var ms = 300; ms <= 10 * second; ms += 300) {
+        expect(gate.accept(sighting('SF12345'), t0 + ms), isNull);
+      }
+
+      expect(seen, ['SF12345/11'], reason: '叫了 ${seen.length} 次 —— 短码摆在画面里刷屏了');
+    });
+
+    test('短码拿开够久再出现，会再报一次', () {
+      final seen = <String>[];
+      final gate = makeMinGate(11, tooShort: seen);
+
+      gate.accept(sighting('SF12345'), t0);
+      gate.accept(sighting('SF12345'), t0 + 5 * second);
+
+      expect(seen, ['SF12345/11', 'SF12345/11']);
+    });
+
+    test('被挡下的短码**不污染**长码的采纳', () {
+      // 同一个画面里既有货架短码又有真面单，真面单必须照常开录。
+      final gate = makeMinGate(11);
+
+      expect(gate.accept(sighting('EAN13'), t0), isNull);
+      expect(gate.accept(sighting('SF123456789'), t0 + 100), isNotNull);
+    });
+  });
 }

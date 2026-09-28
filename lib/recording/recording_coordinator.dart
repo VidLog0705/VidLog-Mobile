@@ -55,14 +55,22 @@ class RecordingCoordinator {
     this.trustedClock,
     this.onAction,
     bool cameraAlreadyOpen = false,
+    RecordingSpec? appliedSpec,
+    bool? appliedAudio,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
         _punchLog = punchLog,
         _scanErrors = scanErrors,
         _stopController = StopController(mode: mode, config: config),
+        // 录音开关**只在构造时读一次** —— 与模式、两个档位同一条规矩：
+        // 改它要等下次「开始工作」重建编排器（`实现决策.md` §17.3）。
+        // 不跟着 `voiceEnabled` 做成可变字段：那个只出声，改错了当场听得出；
+        // 这个决定录进文件的东西，中途换会让同一次工作里两段录像一条有一声
+        // 一条没声音，事后没人说得清哪一段该有。
+        _recordAudio = config.recordAudio,
         _clock = clock ?? _defaultClock(),
-        _scanGate = scanGate ?? ScanGate(),
+        _scanGate = scanGate ?? ScanGate(minLength: config.waybillMinLength.length),
         _packageTracker = packageTracker ?? PackageTracker(),
         // 用户选的那一档。**它不等于是实际用的那一档** —— 后者要等
         // [resolveRecordingSpec] 问过设备才知道（规格 §3.1.7 的回落）。
@@ -72,6 +80,22 @@ class RecordingCoordinator {
     // 重建编排器时要把「它已经开着」这个事实继承过来，否则按下【开始】
     // 那一瞬间界面会以为相机没了，把取景画面换回「相机还没开」那块提示。
     _cameraOpen = cameraAlreadyOpen;
+
+    // ⚠️ **连「它是按什么开的」一起继承**（[appliedSpec] / [appliedAudio]）。
+    //
+    // 只继承「开着」是不够的：新编排器如果以为「从来没开过」（`null`），
+    // 那么它 [openCamera] 时就不敢判「设置变了没有」—— 于是那一趟
+    // `gateway.openCamera` 带着**新的**录音开关过去，而原生看到会话已经开着
+    // 会直接早退，麦克风根本没加进去。结果就是开关打开、文件里却没有声音，
+    // 而且**一句话都不报**（踩坑 #13 的静默版）。
+    //
+    // 传 `null` 是合法的，表示「调用方也不知道」（测试、以及不关心这件事的装配）。
+    _appliedSpec = appliedSpec;
+    _appliedAudio = appliedAudio;
+
+    // 太短的条码被闸挡下时说一声（见 `ScanGate.onTooShort`）。接在闸上而不是
+    // 拿 `accept` 的返回值去猜 —— 它返回 null 有四种原因，只有这一种要说。
+    _scanGate.onTooShort = (text, minLength) => onBarcodeTooShort?.call(text, minLength);
 
     _subscription = _gateway.events.listen((event) {
       // ⚠️ **分段落盘走单独一条链**，不跟别的事件挤在一起。
@@ -134,6 +158,9 @@ class RecordingCoordinator {
   final ScanErrorLog? _scanErrors;
 
   final StopController _stopController;
+
+  /// 录像文件带不带声音。见构造里那段说明。
+  final bool _recordAudio;
   final MonotonicClock _clock;
 
   /// 把相机的**连续识码**变成**离散的扫码**（框外忽略 + 去重）。
@@ -176,6 +203,13 @@ class RecordingCoordinator {
   /// 与 [onAction] 分开：那个是状态机往外的输出，这个是输入侧的观测。
   /// 界面拿它显示「扫到了什么」，人才能判断是没扫到还是扫到了没认。
   void Function(WaybillNumber waybill)? onBarcodeAccepted;
+
+  /// 相机扫到一个**短于设定下限**的条码，因此没有触发录制。
+  ///
+  /// 与 [onBarcodeAccepted] 分开：那个是「认了」，这个是「没认，而且是**有原因**
+  /// 地没认」。不加这一条的话，用户扫了张真面单却毫无反应，只能猜是相机坏了 ——
+  /// 框外、太短、去重，在界面上长得一模一样。
+  void Function(String text, int minLength)? onBarcodeTooShort;
 
   /// 画面静止状态发生变化（规格 §3.3.3）。
   ///
@@ -346,20 +380,31 @@ class RecordingCoordinator {
   /// 对已经在跑的会话直接早退；而会话被系统中断（来电、后台）之后再调一次，
   /// 是唯一的恢复机会 —— 去重反而会把恢复的路堵死。
   Future<void> openCamera() async {
-    // ⚠️ **规格变了就把相机关掉重开。**
+    // ⚠️ **规格变了、或者录音开关变了，就把相机关掉重开。**
     //
-    // 编码与分辨率是开会话时就定死的（iOS 的 session preset / 安卓选出来的
-    // 输出尺寸），原生那边看到「会话已经开着」就直接早退 —— 不重开的话，
-    // 用户改了规格、回来按【开始工作】，实际录的仍是上一次那一档：
-    // 一个**改了没反应的开关**（踩坑 #13），而且它骗的是画质。
-    if (_cameraOpen && _appliedSpec != null && _appliedSpec != _effectiveSpec) {
+    // 这两样都是**开会话时就定死的**：编码与分辨率决定 session preset /
+    // 输出尺寸，录音则决定麦克风输入**要不要加进会话**（加不进去，会话建好
+    // 之后补不上）。而原生那边看到「会话已经开着」就直接早退 —— 于是
+    // 用户改了设置、回来按【开始工作】，实际录的仍是上一次那一套：
+    // 一个**改了没反应的开关**（踩坑 #13）。规格骗的是画质，录音骗的是
+    // 「文件里到底有没有声音」，两个都得重开。
+    //
+    // ⚠️ 这里必须自己判，**不能指望「重建编排器时相机会跟着重开」** ——
+    // 重建时是 `releaseCamera: false`（相机是进程级的同一个原生会话，
+    // 见 `_buildCoordinator`），新编排器把「相机已经开着」继承过来，
+    // 原生那一趟 `openCamera` 会直接早退。不判的话录音开关永远只生效第一次。
+    final needsReopen = _cameraOpen &&
+        ((_appliedSpec != null && _appliedSpec != _effectiveSpec) ||
+            (_appliedAudio != null && _appliedAudio != _recordAudio));
+    if (needsReopen) {
       await _gateway.closeCamera();
       _cameraOpen = false;
     }
 
-    await _gateway.openCamera(spec: _effectiveSpec);
+    await _gateway.openCamera(spec: _effectiveSpec, audio: _recordAudio);
     _cameraOpen = true; // 上面失败会抛；抛了就不记成开着
     _appliedSpec = _effectiveSpec;
+    _appliedAudio = _recordAudio;
     _scanGate.reset();
     _packageTracker.reset();
   }
@@ -422,10 +467,21 @@ class RecordingCoordinator {
   /// 相机**实际开着**用的那一档。用来判断「规格改了要不要重开相机」。
   RecordingSpec? _appliedSpec;
 
+  /// 相机开会话时那个录音开关。与 [_appliedSpec] 同一个用途 ——
+  /// 麦克风输入是配置会话时加进去的，所以它也算「会话的一部分」。
+  ///
+  /// `null` = 还不知道（相机还没开过）。
+  bool? _appliedAudio;
+
   RecordingSpec get requestedSpec => _requestedSpec;
 
   /// 实际在用的规格。界面「实际按 X 录制」那一行读的就是它。
   RecordingSpec get effectiveSpec => _effectiveSpec;
+
+  /// 相机**实际上**是按哪一套开的。给「重建编排器时把会话继承过去」用 ——
+  /// 见构造里 `appliedSpec` / `appliedAudio` 那段说明。
+  RecordingSpec? get appliedSpec => _appliedSpec;
+  bool? get appliedAudio => _appliedAudio;
 
   /// 回落的原因；没回落过时为 null。
   String? _specFallbackReason;
@@ -520,6 +576,10 @@ class RecordingCoordinator {
       // 不得改变视频里的时间（§3.6.3）。
       waybill: waybill.value,
       trustedStartMs: trustedClock?.now.millisecondsSinceEpoch,
+      // ⚠️ **必须显式传**：两端原生都是「缺这个参数 = 老行为」，而老行为是
+      // **不录音**。靠默认值的话，开着开关也照样录出无声视频，而画面上
+      // 一切正常 —— 那种 bug 只有把文件拿出来看属性才发现得了。
+      audio: _recordAudio,
     );
 
     // 开录用的这个单号此刻就在画面里/操作员手上。**必须标记成「刚见过」**，

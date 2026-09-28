@@ -437,6 +437,8 @@ class _RecorderPageState extends State<RecorderPage> {
         // 两个档位都**原样保留用户的选择** —— 加速只压时长兜底的首次询问时机。
         staticStop: _staticStop,
         durationFallback: _durationFallback,
+        waybillMinLength: _waybillMinLength,
+        recordAudio: _recordAudio,
         promptAfterOverride: _accelerated ? const Duration(seconds: 20) : null,
         durationPromptRepeatEvery:
             _accelerated ? const Duration(seconds: 30) : const Duration(minutes: 5),
@@ -1072,7 +1074,15 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 继承过去 —— 否则按下【开始】那一瞬间界面会以为相机没了、把取景画面
   /// 换回「相机还没开」那块提示，而且原生还要白重建一次捕获会话。
   Future<void> _buildCoordinator() async {
+    // 相机开着的话，**连「它是按什么开的」一起继承**（`dispose` 之前读）。
+    //
+    // 只传「开着」是不够的：新编排器如果以为「从来没开过」，它开相机那一步
+    // 就判不出「录音开关变了没有」，于是那一趟 `gateway.openCamera` 带着新的
+    // 开关过去、原生却因为会话已经开着直接早退 —— 麦克风根本没加进去。
+    // 结果是开关打开、文件里没有声音，而且一句话都不报（踩坑 #13）。
     final cameraWasOpen = _coordinator?.isCameraOpen ?? false;
+    final appliedSpec = _coordinator?.appliedSpec;
+    final appliedAudio = _coordinator?.appliedAudio;
     await _coordinator?.dispose(releaseCamera: false);
 
     _coordinator = RecordingCoordinator(
@@ -1085,6 +1095,8 @@ class _RecorderPageState extends State<RecorderPage> {
       mode: _mode,
       config: _config,
       cameraAlreadyOpen: cameraWasOpen,
+      appliedSpec: appliedSpec,
+      appliedAudio: appliedAudio,
       // ⚠️ 可信时钟（规格 §3.6.4）——**未校准不得开始录制**。
       // 传真的那个（不是 null）：`null` 是给测试留的「不设闸」。
       trustedClock: _clock,
@@ -1095,7 +1107,9 @@ class _RecorderPageState extends State<RecorderPage> {
       // 才会对上。
       spec: _requestedSpec(),
       onAction: _onAction,
-    )..onBarcodeAccepted = _onBarcodeAccepted;
+    )
+      ..onBarcodeAccepted = _onBarcodeAccepted
+      ..onBarcodeTooShort = _onBarcodeTooShort;
 
     // 可用性检查是异步的（要问原生），所以构造之后单独走一步 ——
     // 它同时把取景框的画面比例按生效的那一档算好（规格 §3.2.2 的连带项）。
@@ -1253,6 +1267,16 @@ class _RecorderPageState extends State<RecorderPage> {
     _log('📷 扫到 $waybill');
   }
 
+  /// 扫到了，但**太短**，于是没录。
+  ///
+  /// ⚠️ 这一行不是可有可无的装饰：不加的话，用户对着一张真面单扫了半天，
+  /// 屏幕上什么都不会发生 —— 而「框外」「太短」「还在画面里」这三种在界面上
+  /// 长得**一模一样**，都是毫无反应。人只会得出「相机坏了」这一个结论。
+  /// 说清楚是哪一种，才知道该去改设置还是该挪一下手机。
+  void _onBarcodeTooShort(String text, int minLength) {
+    _log('📷 扫到 $text，只有 ${text.length} 位、短于设定的 $minLength 位 —— 不触发录制');
+  }
+
   // ─────────────────────────────────────────────
   // 操作
   // ─────────────────────────────────────────────
@@ -1308,6 +1332,22 @@ class _RecorderPageState extends State<RecorderPage> {
     await _openCameraForPreview();
   }
 
+  /// 把系统那个麦克风授权框弹出来（录制声音开着时才问）。
+  ///
+  /// ⚠️ **结果故意不听**（不变量 I4）：没有麦克风权限只是「这一段没有音轨」，
+  /// 绝不挡录像 —— 所以这里不设状态、不 return，与上面那段相机权限刚好相反。
+  ///
+  /// 唯一的目的是**让那个框出现**：不弹的话原生那边 `AVCaptureDeviceInput` /
+  /// `AudioRecord` 会静静地失败，用户看到的就是一个「打开了却永远没声音」的
+  /// 开关（踩坑 #13）。已经问过时两端原生都直接回当前答案、不再弹框。
+  ///
+  /// ⚠️ **必须在开相机会话之前**：麦克风是在配置会话那一步加进去的
+  /// （`CameraSegmentRecorder.openCamera`），会话建好之后补不上。
+  Future<void> _askForMicrophoneIfNeeded() async {
+    if (!_recordAudio) return;
+    await _gateway.requestMicrophonePermission();
+  }
+
   /// 进采集栏时把相机打开（**不开始工作**）。
   ///
   /// 与 [_startWorking] 分开：进栏只给一个取景画面让人对准面单，
@@ -1332,6 +1372,8 @@ class _RecorderPageState extends State<RecorderPage> {
           return;
         }
       }
+
+      await _askForMicrophoneIfNeeded();
 
       await coordinator.openCamera();
 
@@ -1369,6 +1411,8 @@ class _RecorderPageState extends State<RecorderPage> {
           return;
         }
       }
+
+      await _askForMicrophoneIfNeeded();
 
       await _buildCoordinator(); // 换模式下重建，配置跟着走
 
@@ -1766,9 +1810,12 @@ class _RecorderPageState extends State<RecorderPage> {
       // 发货 / 退货两栏**没有 AppBar** —— 取景要一直铺到状态栏底下（需求方
       // 2026-09-22：页面全屏显示摄像头画面）。标题与状态改由画面上的浮层承担。
       //
-      // 备份 / 设置两栏照旧留着 AppBar：那两页是**读**的页面，不是瞄面单用的，
-      // 没有理由让内容顶到状态栏上。
-      appBar: _tab == 1 || _tab == 2 ? null : AppBar(title: Text(_tabTitle)),
+      // ⚠️ **设置栏 2026-09-28 起也没有了** —— 需求方那张图上，页头是页面里
+      // 自己的一块（蓝底齿轮方块 + 设置 + 一句说明，见 `_settingsHeader`）。
+      // 留着 AppBar 就是两个「设置」上下叠着。
+      //
+      // 只有备份栏照旧留着：它是**读**的页面，没有理由让内容顶到状态栏上。
+      appBar: _tab == 0 ? AppBar(title: Text(_tabTitle)) : null,
       // 用 IndexedStack 而不是 TabBarView：切走时**不销毁预览视图**，
       // 切回来不会闪一下。预览层本来就有「布局时重新挂会话」的自愈逻辑，
       // 但能不重建就别重建。
@@ -4664,6 +4711,8 @@ class _RecorderPageState extends State<RecorderPage> {
     VideoCodec? codec,
     VideoResolution? resolution,
     RecordingOrientation? orientation,
+    WaybillMinLength? waybillMinLength,
+    bool? recordAudio,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -4688,6 +4737,11 @@ class _RecorderPageState extends State<RecorderPage> {
       if (codec != null) _codec = codec;
       if (resolution != null) _resolution = resolution;
       if (orientation != null) _orientation = orientation;
+
+      // 这两项**不另立字段** —— 界面直接读 `_settings`（见 [_waybillMinLength]
+      // 与 [_recordAudio]），所以这里只写回 settings 一处。
+      if (waybillMinLength != null) settings.waybillMinLength = waybillMinLength;
+      if (recordAudio != null) settings.recordAudio = recordAudio;
 
       settings.mode = _mode;
       settings.staticStop = _staticStop;
@@ -4718,6 +4772,17 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 理由见 `RecordingSettings.voiceEnabled` 的注释。
   bool get _voiceOn => _settings?.voiceEnabled ?? true;
 
+  /// 面单条码最短长度。读完设置之前按默认档（11 位）算。
+  ///
+  /// ⚠️ 与 [_voiceOn] 同一个写法（**读穿 `_settings`**，不另立一个字段）：
+  /// 另立字段就成两份真相，而这两项都只在「开始工作」重建编排器时被读一次。
+  WaybillMinLength get _waybillMinLength =>
+      _settings?.waybillMinLength ?? WaybillMinLength.fallback;
+
+  /// 录像文件带不带声音。读完设置之前按**开**算，理由见
+  /// `RecordingSettings.recordAudio`。
+  bool get _recordAudio => _settings?.recordAudio ?? true;
+
   /// **用户选的**录制规格（设置还没读出来时用默认档）。
   ///
   /// ⚠️ 与「实际用的那一档」不是一回事 —— 后者由编排器探测之后给出
@@ -4740,15 +4805,29 @@ class _RecorderPageState extends State<RecorderPage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _settingsHeader(),
+        const SizedBox(height: 16),
         _modeCard(),
         const SizedBox(height: 12),
-        _specCard(),
+        _retentionCard(outbound: true),
+        const SizedBox(height: 12),
+        _retentionCard(outbound: false),
+        const SizedBox(height: 12),
+        _codecCard(),
+        const SizedBox(height: 12),
+        _resolutionCard(),
+        const SizedBox(height: 12),
+        _orientationCard(),
+        const SizedBox(height: 12),
+        _recordAudioCard(),
         const SizedBox(height: 12),
         _fallbackCard(),
         const SizedBox(height: 12),
-        _retentionCard(),
-        const SizedBox(height: 12),
         _voiceCard(),
+        const SizedBox(height: 12),
+        _netdiskCard(),
+        const SizedBox(height: 12),
+        _aboutCard(),
         const SizedBox(height: 12),
         _acceptanceCard(),
         const SizedBox(height: 12),
@@ -4757,41 +4836,298 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  // ── ②b 语音播报 ──────────────────────────────
+  // ── 设置页的通用件 ───────────────────────────
 
-  /// 语音播报开关（需求方 2026-09-22 点名的）。
+  /// 页头：**实心蓝圆角方块（白色齿轮）+ 设置 + 一句说明**，压在一块浅蓝底上。
   ///
-  /// ⚠️ **关掉的只是声音，不是提示。** 「单号不同，请核对」那类提示在屏幕上
-  /// 照旧出现、事件日志照旧记（日志图标从 🔊 变 🔇）。关播报不等于关提示 ——
-  /// 否则用户关掉声音的同时也把错码保护的唯一线索关掉了。
-  Widget _voiceCard() {
+  /// ⚠️ 有了它，设置栏就**不要 AppBar 了**（见 `build` 里那条）——
+  /// 留着会有两个「设置」上下叠着。
+  Widget _settingsHeader() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Palette.blueTint,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Palette.primary,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.settings, color: Colors.white, size: 26),
+          ),
+          const SizedBox(width: 12),
+          const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('设置',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              SizedBox(height: 2),
+              Text('系统配置与功能管理', style: TextStyle(fontSize: 12)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 设置页那一列卡片的统一外壳：**实心蓝圆角方块 + 白色字形**，右边标题与说明。
+  ///
+  /// ⚠️ 与备份页的 `_statCard`（浅色**圆**底 + 彩色字形）**故意不一样**。
+  /// 那不是疏漏：两页各照自己那张图做，谁也别去改谁。
+  Widget _settingCard({
+    required IconData icon,
+    required String title,
+    String? blurb,
+    Widget? trailing,
+    required List<Widget> children,
+  }) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SwitchListTile(
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: Palette.primary,
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+                  child: Icon(icon, color: Colors.white, size: 20),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      if (blurb != null) ...[
+                        const SizedBox(height: 2),
+                        Text(blurb, style: const TextStyle(fontSize: 12)),
+                      ],
+                    ],
+                  ),
+                ),
+                ?trailing,
+              ],
+            ),
+            const SizedBox(height: 16),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 卡片里的一行：左边一个标签，右边一个控件。
+  Widget _settingRow(String label, Widget control) {
+    return Row(
+      children: [
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 14))),
+        const SizedBox(width: 8),
+        Expanded(child: control),
+      ],
+    );
+  }
+
+  /// 档位下拉。**设置页现在一律用下拉**（需求方那张图上是下拉）——
+  /// 三个档位类型共用一个，免得三处各写一遍 `DropdownButton` 的样板。
+  ///
+  /// `_settingsReady`：盘上的设置还没读出来时不给改 —— 改了会被随后读出来的
+  /// 盘上值覆盖，等于改了没反应还看不出来。
+  Widget _settingDropdown<T>({
+    required String key,
+    required T value,
+    required List<T> values,
+    required String Function(T) label,
+    required ValueChanged<T> onChanged,
+  }) {
+    return DropdownButton<T>(
+      key: Key(key),
+      value: value,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: [
+        for (final option in values)
+          DropdownMenuItem(value: option, child: Text(label(option))),
+      ],
+      onChanged: _settingsReady
+          ? (selected) {
+              if (selected != null) onChanged(selected);
+            }
+          : null,
+    );
+  }
+
+  // ── ②b 语音提示 ──────────────────────────────
+
+  /// 语音播报开关（需求方 2026-09-22 点名的）。
+  ///
+  /// ⚠️ **关掉的只是声音，不是提示。** 「单号不同，请核对」那类提示在屏幕上
+  /// 照旧出现、事件日志照旧记（日志图标从 🔊 变 🔇）。关播报不等于关提示 ——
+  /// 否则用户关掉声音的同时也把错码保护的唯一线索关掉了。
+  ///
+  /// 卡片名照需求方那张图改成 `语音提示`（原来叫「语音播报」），并加上 `试听`。
+  Widget _voiceCard() {
+    return _settingCard(
+      icon: Icons.volume_up_outlined,
+      title: '语音提示',
+      blurb: '离线自动使用系统语音 —— 不联网、不带音频素材（规格 §3.3.6）。',
+      children: [
+        Row(
+          children: [
+            TextButton.icon(
+              key: const Key('settings-voice-preview'),
+              onPressed:
+                  (_settingsReady && _coordinator != null) ? _previewVoice : null,
+              icon: const Icon(Icons.volume_up, size: 18),
+              label: const Text('试听'),
+            ),
+            const Spacer(),
+            Switch(
               key: const Key('settings-voice-switch'),
-              contentPadding: EdgeInsets.zero,
               value: _voiceOn,
               onChanged: _settingsReady
                   ? (value) => _updateSettings(voiceEnabled: value)
                   : null,
-              title: const Text('语音播报'),
-              subtitle: const Text(
-                '扫到不是同一件的包裹时出声提醒（规格 §3.3.2 错码保护），'
-                '表盘滑过刻度时的「咔哒」声也归它管。旁边有人、或者嫌吵时关掉。',
-              ),
-            ),
-            const Text(
-              '关掉只是不出声：屏幕上的提示和事件日志照旧，'
-              '日志前面的图标会从 🔊 变成 🔇。立刻生效，不用重新开始工作。',
-              style: TextStyle(fontSize: 12),
             ),
           ],
         ),
-      ),
+        const SizedBox(height: 6),
+        const Text(
+          '管的是**这台手机现在出不出声**：扫到不是同一件的包裹时出声提醒'
+          '（规格 §3.3.2 错码保护），表盘滑过刻度时的「咔哒」声也归它。'
+          '旁边有人、或者嫌吵时关掉。',
+          style: TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '关掉只是不出声：屏幕上的提示和事件日志照旧，日志前面的图标会从 🔊 变成 🔇。'
+          '**立刻生效**，不用重新开始工作 —— 它是唯一一项不用等的设置。',
+          style: TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 4),
+        // 这一行会随状态换内容：没有编排器时先说清「试听为什么按不动」，
+        // 有编排器时改说最容易混的那件事（它管不到录像文件）。
+        Text(
+          _coordinator == null
+              ? '⚠️ 试听暂时是灰的：语音通道要等第一次点【开始工作】才接上。'
+              : '⚠️ 它管不到**录像文件里**有没有声音 —— 那是下面「录制声音」那一项。',
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
+
+  /// 试听：念那句真会播报的「开始录像」。
+  ///
+  /// ⚠️ **必须走编排器那一个发声漏斗**（`RecordingCoordinator.speak`），
+  /// 不在这一页自己判一次 `_voiceOn` —— 那样就有了**第二道闸**，而
+  /// `recording_coordinator.dart:679` 明确警告过：闸有两道、通路有两条的话，
+  /// 「关掉播报」迟早会有一半失灵。
+  ///
+  /// ⚠️ 措辞**直接用 `VoicePrompt.startRecording`**，不为试听新造一个枚举值 ——
+  /// 那个枚举存在的意义就是「措辞只有一处」，再抄一遍「开始录像」就是第二处。
+  ///
+  /// ⚠️ **不查许可。** 手机端整条链路没有任何许可判断（`04-许可设计.md`：手机端免费），
+  /// 试听也不许是第一个。
+  Future<void> _previewVoice() async {
+    await _coordinator?.speak(VoicePrompt.startRecording);
+  }
+
+  // ── ②d 录制声音（需求方 2026-09-28 新增）──────
+
+  /// 录像**文件里**带不带声音。
+  ///
+  /// ⚠️ 图标是**麦克风**不是喇叭 —— 需求方 2026-09-28 看过之后点名换的：
+  /// 喇叭会和上面「语音提示」那张卡混起来，而这是**两件不同的事**
+  /// （一个管这台手机出不出声，一个管录进去的文件里有没有音轨）。
+  ///
+  /// ⚠️ 它**等下次「开始工作」**才生效（跟着编排器重建走），见 [_whenCard]。
+  Widget _recordAudioCard() {
+    return _settingCard(
+      icon: Icons.mic_none,
+      title: '录制声音',
+      blurb: '关闭后录像不带声音。',
+      children: [
+        SwitchListTile(
+          key: const Key('settings-record-audio-switch'),
+          contentPadding: EdgeInsets.zero,
+          value: _recordAudio,
+          onChanged: _settingsReady
+              ? (value) => _updateSettings(recordAudio: value)
+              : null,
+          title: Text(_recordAudio ? '开启' : '关闭'),
+          subtitle: const Text(
+            '与「语音提示」是两件事：那一项管这台手机出不出声，'
+            '这一项只管录像文件里有没有音轨。两个可以同时开 —— '
+            '那时播报会被录进录像里。',
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── ②e 网盘视频 / 关于我们：两个二级页的入口 ───
+
+  /// 一行 + 右箭头 → 二级页。**不改 `_tab` 那套** —— 照本页已有的先例
+  /// `Navigator.push` 推上去，页里带 `AppBar` 返回。
+  Widget _linkCard({
+    required IconData icon,
+    required String title,
+    required String blurb,
+    required VoidCallback onTap,
+  }) {
+    return _settingCard(
+      icon: icon,
+      title: title,
+      blurb: blurb,
+      children: [
+        ListTile(
+          key: Key('settings-link-$title'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('打开'),
+          trailing: const Icon(Icons.chevron_right, size: 20),
+          onTap: onTap,
+        ),
+      ],
+    );
+  }
+
+  Widget _netdiskCard() => _linkCard(
+        icon: Icons.cloud_outlined,
+        title: '网盘视频',
+        blurb: '把录像上传到网盘之后，按单号查回来播放。',
+        onTap: _openNetdiskPage,
+      );
+
+  Widget _aboutCard() => _linkCard(
+        icon: Icons.info_outline,
+        title: '关于我们',
+        blurb: '版本号与一句话介绍。',
+        onTap: _openAboutPage,
+      );
+
+  void _openNetdiskPage() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (context) => const NetdiskShellPage()),
+    );
+  }
+
+  void _openAboutPage() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (context) => const AboutPage()),
     );
   }
 
@@ -4800,67 +5136,73 @@ class _RecorderPageState extends State<RecorderPage> {
   Widget _modeCard() {
     final scheme = Theme.of(context).colorScheme;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('工作模式', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text('决定这一件什么时候算录完（规格 §3.3.1）。',
-                style: TextStyle(fontSize: 12)),
-            const SizedBox(height: 12),
-            SegmentedButton<WorkMode>(
-              segments: const [
-                ButtonSegment(value: WorkMode.continuousScan, label: Text('连续扫')),
-                ButtonSegment(value: WorkMode.sameWaybillStop, label: Text('同码停')),
-                ButtonSegment(
-                    value: WorkMode.scanThenStaticStop, label: Text('扫码静止')),
-              ],
-              selected: {_mode},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(mode: value.first)
-                  : null,
-            ),
-            const SizedBox(height: 12),
-
-            // 只讲**选中的那一个**。三个模式的说明同时铺出来，用户得先自己
-            // 对号入座；而人真正要回答的问题是「我现在这个会怎么停」。
-            Container(
-              key: const Key('settings-mode-blurb'),
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(_modeTitle(_mode),
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text(_modeBlurb(_mode), style: const TextStyle(fontSize: 12)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '三个模式都一样：扫到别的单号不会停 —— 二次扫描只有单号相同才停'
-              '（§3.3.2 错码保护）。',
-              style: TextStyle(fontSize: 12),
-            ),
+    return _settingCard(
+      icon: Icons.check_box_outlined,
+      title: '工作模式',
+      blurb: '决定这一件什么时候算录完（规格 §3.3.1）。',
+      children: [
+        SegmentedButton<WorkMode>(
+          segments: const [
+            ButtonSegment(value: WorkMode.continuousScan, label: Text('连续扫码')),
+            ButtonSegment(value: WorkMode.sameWaybillStop, label: Text('同码停录')),
+            ButtonSegment(
+                value: WorkMode.scanThenStaticStop, label: Text('扫码静止停录')),
           ],
+          selected: {_mode},
+          onSelectionChanged: _settingsReady
+              ? (value) => _updateSettings(mode: value.first)
+              : null,
         ),
-      ),
+        const SizedBox(height: 12),
+
+        // 只讲**选中的那一个**。三个模式的说明同时铺出来，用户得先自己
+        // 对号入座；而人真正要回答的问题是「我现在这个会怎么停」。
+        Container(
+          key: const Key('settings-mode-blurb'),
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_modeTitle(_mode),
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(_modeBlurb(_mode), style: const TextStyle(fontSize: 12)),
+            ],
+          ),
+        ),
+
+        const Divider(height: 28),
+
+        _settingRow(
+          '面单条码最短长度',
+          _settingDropdown<WaybillMinLength>(
+            key: 'settings-waybill-min-length',
+            value: _waybillMinLength,
+            values: WaybillMinLength.values,
+            label: (value) => value.label,
+            onChanged: (value) => _updateSettings(waybillMinLength: value),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          '相机扫到的条码**短于**这个位数就当成误识，不触发录制 —— '
+          '挡的是货架条码、包装上的别的码、别家快递的面单这类东西。\n'
+          '⚠️ 只管**相机**：手工敲进去的单号不受这一项限制。',
+          style: TextStyle(fontSize: 12),
+        ),
+      ],
     );
   }
 
   static String _modeTitle(WorkMode mode) => switch (mode) {
-        WorkMode.continuousScan => '连续扫 —— 换件换段',
-        WorkMode.sameWaybillStop => '同码停 —— 复扫同码就停',
-        WorkMode.scanThenStaticStop => '扫码静止 —— 静止够时长才停',
+        WorkMode.continuousScan => '连续扫码 —— 换件换段',
+        WorkMode.sameWaybillStop => '同码停录 —— 复扫同码就停',
+        WorkMode.scanThenStaticStop => '扫码静止停录 —— 静止够时长才停',
       };
 
   static String _modeBlurb(WorkMode mode) => switch (mode) {
@@ -4872,193 +5214,223 @@ class _RecorderPageState extends State<RecorderPage> {
               '一件包裹可能被切成两段。',
         WorkMode.sameWaybillStop =>
           '识别到单号就开录，复扫到同一个单号就停。'
-              '三个模式里只有它不用人额外做什么就能自己停。',
+              '三个模式里只有它不用人额外做什么就能自己停。\n'
+              '扫到**别的**单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
+              '只出声提醒，直到扫回本件面单才停。',
         WorkMode.scanThenStaticStop =>
           '识别到单号就开录。包裹要先离开画面、再回到画面，'
               '并且静止够下面设的时长才停。\n'
               '注意：这个模式下复扫同码不停，只认静止 —— '
-              '这就是它和「同码停」的区别。',
+              '这就是它和「同码停录」的区别。\n'
+              '扫到**别的**单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
+              '只出声提醒。',
       };
 
   // ── ①b 录制规格（规格 §3.1.7）─────────────────
 
-  /// 编码 / 分辨率 / 方向。**三项都横排单选**（规格点名不要下拉）。
+  /// 编码 / 分辨率 / 方向。
   ///
-  /// ## 三条界面规矩
+  /// ⚠️ 2026-09-28 起**拆成三张卡**（需求方那张图上是三张）。
+  /// 在这之前它们是一张卡里三个 `Divider` 段。
+  ///
+  /// ## 三条界面规矩（拆卡后一条没松）
   ///
   /// ① 编码名**只写「H.265」**，不许出现 HEVC —— 名字由
   ///    `RecordingSpec.codecLabel` 一处产出（规格原话：两个名字混用会让用户
   ///    以为是两种不同的编码）。
-  /// ② 帧率**没有选项**：规格是「上限 30、不提供选择」，所以界面上只是一句话。
-  ///    摆一个只有一个选项的下拉是骗人的。
-  /// ③ **实际用哪一档必须说出来**（规格：**回落必须可见**、**不得静默回落**）。
-  ///    那一行读的是编排器探测之后的结论 —— 用户选的那一档跑不通时，
-  ///    这里要**连原因一起**说清楚，否则用户会以为自己选错了。
-  Widget _specCard() {
+  /// ② 帧率**没有选项**：规格是「上限 30、不提供选择」，所以每个档位的说明里
+  ///    只把它写成一句话。摆一个只有一个选项的下拉是骗人的。
+  /// ③ **实际用哪一档必须说出来**（规格：**回落必须可见**、**不得静默回落**），
+  ///    见 [_resolutionCard] 底下那一块。
+  Widget _codecCard() {
+    return _settingCard(
+      icon: Icons.code,
+      title: '录像编码',
+      blurb: '兼容优先，还是体积优先 —— 按播放环境和存储空间选。',
+      children: [
+        SegmentedButton<VideoCodec>(
+          key: const Key('settings-codec'),
+          segments: const [
+            ButtonSegment(value: VideoCodec.h264, label: Text('H.264 兼容优先')),
+            ButtonSegment(value: VideoCodec.h265, label: Text('H.265 更省空间')),
+          ],
+          selected: {_codec},
+          onSelectionChanged: _settingsReady
+              ? (value) => _updateSettings(codec: value.first)
+              : null,
+        ),
+        const SizedBox(height: 8),
+        Text(_codecBlurb(_codec), style: const TextStyle(fontSize: 12)),
+      ],
+    );
+  }
+
+  /// 选中的那一档编码的一句话说明。
+  ///
+  /// ⚠️ H.265 那句里的**电脑端网页回放**限制是**必须留着**的：它是本机
+  /// 真实存在的限制（见 `实现决策.md` 与母仓 §3.4），藏起来的话用户选了
+  /// H.265、回头在电脑上播不了，只会以为录像坏了。
+  static String _codecBlurb(VideoCodec codec) => switch (codec) {
+        VideoCodec.h264 =>
+          '兼容性最好，几乎所有手机都能播放；文件体积约增加 30-40%。',
+        VideoCodec.h265 =>
+          '同画质下体积小一半左右。⚠️ 电脑端的**网页回放**对 H.265 支持不一致，'
+              '可能播不了 —— 那时用系统播放器打开就行，录像本身没问题。',
+      };
+
+  Widget _resolutionCard() {
     final scheme = Theme.of(context).colorScheme;
     final effective = _coordinator?.effectiveSpec;
     final reason = _coordinator?.specFallbackReason;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('录制规格', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              '录制前可选，**录制中不可改**（改了要等下次「开始工作」）。帧率固定 30 帧 —— '
-              '它是上限，不提供选择。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 16),
-
-            _settingTitle('编码', 'H.265 同画质下体积小一半左右。'),
-            const SizedBox(height: 8),
-            SegmentedButton<VideoCodec>(
-              key: const Key('settings-codec'),
-              segments: const [
-                ButtonSegment(value: VideoCodec.h264, label: Text('H.264')),
-                ButtonSegment(value: VideoCodec.h265, label: Text('H.265')),
-              ],
-              selected: {_codec},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(codec: value.first)
-                  : null,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              '⚠️ 电脑端的**网页回放**对 H.265 的支持不一致，可能播不了 —— '
-              '那时用系统播放器打开就行，录像本身没问题。所以这里不砍掉 H.265。',
-              style: TextStyle(fontSize: 12),
-            ),
-
-            const Divider(height: 28),
-
-            _settingTitle('分辨率', '越大越清楚、也越占地方。清理时的容量预告按这一档算。'),
-            const SizedBox(height: 8),
-            SegmentedButton<VideoResolution>(
-              key: const Key('settings-resolution'),
-              segments: const [
-                ButtonSegment(value: VideoResolution.uhd4K, label: Text('4K')),
-                ButtonSegment(value: VideoResolution.p1080, label: Text('1080P')),
-                ButtonSegment(value: VideoResolution.p720, label: Text('720P')),
-              ],
-              selected: {_resolution},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(resolution: value.first)
-                  : null,
-            ),
-
-            const Divider(height: 28),
-
-            _settingTitle('方向', '手机怎么拿就选哪个 —— 取景框和画面比例都跟着它走。'),
-            const SizedBox(height: 8),
-            SegmentedButton<RecordingOrientation>(
-              key: const Key('settings-orientation'),
-              segments: const [
-                ButtonSegment(
-                    value: RecordingOrientation.landscapeLeft, label: Text('横左')),
-                ButtonSegment(
-                    value: RecordingOrientation.portrait, label: Text('竖屏')),
-                ButtonSegment(
-                    value: RecordingOrientation.landscapeRight, label: Text('横右')),
-              ],
-              selected: {_orientation},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(orientation: value.first)
-                  : null,
-            ),
-
-            const SizedBox(height: 16),
-
-            // 「实际按 X 录制」—— 规格那句「不得静默回落」的落点。
-            Container(
-              key: const Key('settings-effective-spec'),
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: reason == null
-                    ? scheme.surfaceContainerHighest
-                    : Colors.orange.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                effective == null
-                    ? '实际用哪一档还没检查过。点【开始工作】时会真开一次相机试。'
-                    : reason == null
-                        ? '实际按 ${effective.label} 录制。'
-                        : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
-                            '$reason',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: reason == null ? null : Colors.deepOrange.shade900,
-                ),
-              ),
-            ),
+    return _settingCard(
+      icon: Icons.hd_outlined,
+      title: '录像规格',
+      blurb: '越大越清楚、也越占地方。清理时的容量预告按这一档算。',
+      children: [
+        SegmentedButton<VideoResolution>(
+          key: const Key('settings-resolution'),
+          segments: const [
+            ButtonSegment(value: VideoResolution.uhd4K, label: Text('4K')),
+            ButtonSegment(value: VideoResolution.p1080, label: Text('1080p')),
+            ButtonSegment(value: VideoResolution.p720, label: Text('720p')),
           ],
+          selected: {_resolution},
+          onSelectionChanged: _settingsReady
+              ? (value) => _updateSettings(resolution: value.first)
+              : null,
         ),
-      ),
+        const SizedBox(height: 8),
+        Text(_resolutionBlurb(_resolution), style: const TextStyle(fontSize: 12)),
+
+        const SizedBox(height: 16),
+
+        // 「实际按 X 录制」—— 规格那句「不得静默回落」的落点。
+        // ⚠️ 它说的是**整档规格**（编码 + 分辨率 + 方向），不只是分辨率 ——
+        // 但它挂在三张卡里名字最对得上的这一张上。
+        Container(
+          key: const Key('settings-effective-spec'),
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: reason == null
+                ? scheme.surfaceContainerHighest
+                : Colors.orange.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            effective == null
+                ? '实际用哪一档还没检查过。点【开始工作】时会真开一次相机试。'
+                : reason == null
+                    ? '实际按 ${effective.label} 录制。'
+                    : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
+                        '$reason',
+            style: TextStyle(
+              fontSize: 12,
+              color: reason == null ? null : Colors.deepOrange.shade900,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 一档分辨率的一句话说明。句式照需求方那张图：`宽 × 高 · 30 帧 · 一句评价`。
+  ///
+  /// ⚠️ 写的**永远是横过来的那组尺寸**（`1280 × 720`），竖屏时也不换成
+  /// `720 × 1280` —— 用户是按「720p」这个名字认档位的，需求方图上写的也是这组。
+  static String _resolutionBlurb(VideoResolution resolution) => switch (resolution) {
+        VideoResolution.uhd4K => '3840 × 2160 · 30 帧 · 最清楚，也最占地方。',
+        VideoResolution.p1080 => '1920 × 1080 · 30 帧 · 清楚与体积之间的折中。',
+        VideoResolution.p720 => '1280 × 720 · 30 帧 · 更省空间、更流畅。',
+      };
+
+  Widget _orientationCard() {
+    return _settingCard(
+      icon: Icons.screen_rotation_outlined,
+      title: '录像方向',
+      blurb: '手机怎么拿就选哪个 —— 取景框和画面比例都跟着它走。',
+      children: [
+        SegmentedButton<RecordingOrientation>(
+          key: const Key('settings-orientation'),
+          segments: const [
+            ButtonSegment(
+                value: RecordingOrientation.landscapeLeft, label: Text('横左')),
+            ButtonSegment(
+                value: RecordingOrientation.portrait, label: Text('竖屏')),
+            ButtonSegment(
+                value: RecordingOrientation.landscapeRight, label: Text('横右')),
+          ],
+          selected: {_orientation},
+          onSelectionChanged: _settingsReady
+              ? (value) => _updateSettings(orientation: value.first)
+              : null,
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          '水印随录像变换，成片始终位于视觉右上角并保持正向可读。',
+          style: TextStyle(fontSize: 12),
+        ),
+      ],
     );
   }
 
   // ── ② 两个兜底档位 ───────────────────────────
 
+  /// 卡片名照需求方那张图改成 `忘记停止录制时的自动兜底`（原来叫「防忘停录」）。
+  /// 长了一截，但它把「这是干什么用的」直接说完了 —— 四个字的缩写说不完。
+  ///
+  /// ⚠️ **两个档位现在都是下拉**（图上就是下拉），`label` 由枚举自己给。
   Widget _fallbackCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('防忘停录', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              '两个兜底互相独立：关掉一个不影响另一个。任何一个到点，录制就停。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 16),
-
-            _settingTitle('静止停录', '画面一直不动、够这个时长就停（§3.3.3）。'),
-            const SizedBox(height: 8),
-            SegmentedButton<StaticStopSetting>(
-              segments: const [
-                ButtonSegment(value: StaticStopSetting.off, label: Text('关闭')),
-                ButtonSegment(value: StaticStopSetting.minutes2, label: Text('2 分')),
-                ButtonSegment(value: StaticStopSetting.minutes3, label: Text('3 分')),
-                ButtonSegment(value: StaticStopSetting.minutes4, label: Text('4 分')),
-                ButtonSegment(value: StaticStopSetting.minutes5, label: Text('5 分')),
-              ],
-              selected: {_staticStop},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(staticStop: value.first)
-                  : null,
-            ),
-
-            const Divider(height: 28),
-
-            _settingTitle(
-              '时长兜底',
-              '不管画面动不动，录满这个分钟数就弹一次「是否停止」；'
-                  '不操作 1 分钟后自动停（§3.3.4）。',
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<DurationFallbackSetting>(
-              segments: const [
-                ButtonSegment(value: DurationFallbackSetting.off, label: Text('关闭')),
-                ButtonSegment(value: DurationFallbackSetting.minutes4, label: Text('4 分')),
-                ButtonSegment(value: DurationFallbackSetting.minutes5, label: Text('5 分')),
-                ButtonSegment(value: DurationFallbackSetting.minutes6, label: Text('6 分')),
-              ],
-              selected: {_durationFallback},
-              onSelectionChanged: _settingsReady
-                  ? (value) => _updateSettings(durationFallback: value.first)
-                  : null,
-            ),
-          ],
+    return _settingCard(
+      icon: Icons.timer_off_outlined,
+      title: '忘记停止录制时的自动兜底',
+      blurb: '两个兜底互相独立：关掉一个不影响另一个。任何一个到点，录制就停。',
+      children: [
+        _settingRow(
+          '最长录制时长',
+          _settingDropdown<DurationFallbackSetting>(
+            key: 'settings-duration-fallback',
+            value: _durationFallback,
+            values: DurationFallbackSetting.values,
+            label: (value) => value.label,
+            onChanged: (value) => _updateSettings(durationFallback: value),
+          ),
         ),
-      ),
+        const SizedBox(height: 6),
+
+        // ⚠️ 这一段**必须是询问式**。需求方那张图上这里写的是
+        // 「自动停止，到点前 30 秒语音提醒」，而裁决是**照规格 §3.3.4**
+        // （先问、1 分钟没人理才停）。说明不跟着改的话，界面上就是一句假话 ——
+        // 用户会站在原地等那句「还有 30 秒」，然后被直接停掉。
+        const Text(
+          '不管画面动不动，录满这个时长就**语音问一次**'
+          '「录制时间即将超时，是否需要停止录制？」：\n'
+          '· 点【停止】→ 立刻停；\n'
+          '· 点【继续】→ 接着录，之后每隔 5 分钟再问一次；\n'
+          '· 问完 1 分钟没人理 → 自动停。',
+          style: TextStyle(fontSize: 12),
+        ),
+
+        const Divider(height: 28),
+
+        _settingRow(
+          '画面静止自动停止',
+          _settingDropdown<StaticStopSetting>(
+            key: 'settings-static-stop',
+            value: _staticStop,
+            values: StaticStopSetting.values,
+            label: (value) => value.label,
+            onChanged: (value) => _updateSettings(staticStop: value),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          '画面一直不动、够这个时长就停（§3.3.3）。这条**不出声** —— '
+          '收尾时用户多半已经走开，补一句只会像设备在自言自语。',
+          style: TextStyle(fontSize: 12),
+        ),
+      ],
     );
   }
 
@@ -5066,18 +5438,24 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 本地留多久 —— **发货 / 退货 × 已备份 / 未备份 = 四个数**（规格 §3.5.2.1）。
   ///
-  /// 需求方 2026-09-24 点名要的摆法是「**一张两行两列的表**（行 = 已备份 / 未备份，
-  /// 列 = 发货 / 退货）」。用下拉而不是分段按钮，是因为有 9 个档位 ——
-  /// 分段按钮铺不下，会挤成一行看不清的字。
+  /// ## ⚠️ 2026-09-28 起拆成两张卡
+  ///
+  /// 需求方 2026-09-24 点名要的摆法是「一张两行两列的表」，2026-09-28 那张
+  /// 自绘的图上把它**改成了两张卡**（发货录像清理 / 退货录像清理，各两个下拉），
+  /// 照图走。**四个 `Key` 一个没改** —— 换了摆法但没换设置项。
   ///
   /// ## ⚠️ 两列语义**相反**（这一块最要紧的一句话）
   ///
   /// - **已备份**：到期**真删本地副本**（先过 §3.5.4 回查），起算点 = 备份成功时刻；
   /// - **未备份**：到期**只标红、只催上传，永不自动删**，起算点 = 录完时刻。
   ///
-  /// 后者是**唯一副本**（I2），删了就永久没了。这段话必须写在界面上 ——
+  /// 后者是**唯一副本**（I2），删了就永久没了。这段话**必须**让用户看得到 ——
   /// 不写的话，用户要么以为「选了不保留却没反应」是坏了（踩坑 #13），
   /// 要么以为自己选了「马上删」而**不敢选**。
+  ///
+  /// ⚠️ 拆卡之后它没地方铺了（两张卡各写一遍就是四段重复的⚠️），
+  /// 于是收进标题右边那个 `?` 里 —— **图上正好有一个 `?`**，这就是它该待的地方。
+  /// 四条一句没删，只是不再常驻。
   ///
   /// ## 为什么手机端没有「归档层」那个下拉（电脑端有）
   ///
@@ -5086,113 +5464,121 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 手机的归档层是电脑端（局域网）/ NAS / 网盘，三者都在**别的设备**上。
   /// 所以这里不摆一个「归档层」下拉：它在这台机器上没有第二种可能，
   /// 摆上去就是个改了没反应的开关（踩坑 #13）。
-  Widget _retentionCard() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('本地保留期', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            const Text(
-              '四个数互相独立，改一个不动另一个。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 12),
+  Widget _retentionCard({required bool outbound}) {
+    final side = outbound ? '发货' : '退货';
 
-            Row(
-              children: [
-                const SizedBox(width: 64),
-                Expanded(
-                  child: Text('发货',
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                ),
-                Expanded(
-                  child: Text('退货',
-                      style: const TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-
-            _retentionTableRow(
-              title: '已备份',
-              outboundKey: 'settings-retention-archived-outbound',
-              outbound: _retentionArchivedOutbound,
-              onOutbound: (value) =>
-                  _updateSettings(retentionArchivedOutbound: value),
-              returnKey: 'settings-retention-archived-return',
-              returning: _retentionArchivedReturn,
-              onReturn: (value) =>
-                  _updateSettings(retentionArchivedReturn: value),
-            ),
-            const SizedBox(height: 8),
-            _retentionTableRow(
-              title: '未备份',
-              outboundKey: 'settings-retention-unarchived-outbound',
-              outbound: _retentionUnarchivedOutbound,
-              onOutbound: (value) =>
-                  _updateSettings(retentionUnarchivedOutbound: value),
-              returnKey: 'settings-retention-unarchived-return',
-              returning: _retentionUnarchivedReturn,
-              onReturn: (value) =>
-                  _updateSettings(retentionUnarchivedReturn: value),
-            ),
-
-            const SizedBox(height: 12),
-            const Text(
-              '⚠️「已备份」那一列：备份成功后，手机上的原片再留多久。'
-              '从「备份成功那一刻」起算，不是从录完起算。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              '⚠️「未备份」那一列**永不自动删除** —— 那是唯一一份，删了就没了。'
-              '它到期的动作只有提醒（列表标红 + 催上传），从「录完那一刻」起算。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              '⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动'
-              '（硬性豁免，关不掉），所以它实际是「备份成功后最快 24 小时清理」。',
-              style: TextStyle(fontSize: 12),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              '⚠️ 这一块记的是**到期之后该怎么做**，而手机端的自动清理还没接通 —— '
-              '今天不会有任何文件**自动**被删。想现在删就用备份页每一条右边的垃圾桶图标'
-              '（那会先跟电脑端核对，核对不上就不删）。另外【被锁定】的证据永远不清。',
-              style: TextStyle(fontSize: 12),
-            ),
-          ],
-        ),
+    return _settingCard(
+      icon: outbound
+          ? Icons.local_shipping_outlined
+          : Icons.assignment_return_outlined,
+      title: '$side录像清理',
+      blurb: '$side那批在手机上留多久。两个数互相独立 —— 改一个不动另一个。',
+      trailing: IconButton(
+        key: const Key('settings-retention-help'),
+        tooltip: '保留期说明',
+        icon: const Icon(Icons.help_outline, size: 20),
+        onPressed: _showRetentionHelp,
       ),
-    );
-  }
-
-  /// 两行两列表里的一行：一个行首标签 + 两个下拉。
-  Widget _retentionTableRow({
-    required String title,
-    required String outboundKey,
-    required RetentionSetting outbound,
-    required ValueChanged<RetentionSetting> onOutbound,
-    required String returnKey,
-    required RetentionSetting returning,
-    required ValueChanged<RetentionSetting> onReturn,
-  }) {
-    return Row(
       children: [
-        SizedBox(
-          width: 64,
-          child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        // ⚠️ 顺序照图：**未备份**在上。这一栏才是用户真正会踩的那个 ——
+        // 它永不自动删，「选了半天没反应」的疑问只会出在这里。
+        _settingRow(
+          '未备份保留',
+          _retentionDropdown(
+            outbound
+                ? 'settings-retention-unarchived-outbound'
+                : 'settings-retention-unarchived-return',
+            outbound ? _retentionUnarchivedOutbound : _retentionUnarchivedReturn,
+            (value) => _updateSettings(
+              retentionUnarchivedOutbound: outbound ? value : null,
+              retentionUnarchivedReturn: outbound ? null : value,
+            ),
+          ),
         ),
-        Expanded(child: _retentionDropdown(outboundKey, outbound, onOutbound)),
-        const SizedBox(width: 8),
-        Expanded(child: _retentionDropdown(returnKey, returning, onReturn)),
+        const SizedBox(height: 6),
+        const Text(
+          '⚠️ 这一栏**永不自动删**：还没备份上去的录像在手机上是**唯一一份**，'
+          '删了就永久没了（不变量 I2）。它到期的动作只有提醒 —— '
+          '列表标红 + 顶部催上传。',
+          style: TextStyle(fontSize: 12),
+        ),
+
+        const Divider(height: 28),
+
+        _settingRow(
+          '备份后保留',
+          _retentionDropdown(
+            outbound
+                ? 'settings-retention-archived-outbound'
+                : 'settings-retention-archived-return',
+            outbound ? _retentionArchivedOutbound : _retentionArchivedReturn,
+            (value) => _updateSettings(
+              retentionArchivedOutbound: outbound ? value : null,
+              retentionArchivedReturn: outbound ? null : value,
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          '备份成功后，手机上的原片再留多久 —— 从「备份成功那一刻」起算，'
+          '不是从录完起算。这一栏到点会**真的删**手机上的那份。',
+          style: TextStyle(fontSize: 12),
+        ),
       ],
     );
   }
+
+  /// 保留期的四条 ⚠️（需求方点名**必须保留**，只是收进 `?` 里）。
+  ///
+  /// 用对话框而不是展开/收起：这段字比卡片本身还长，铺在卡里会把两个
+  /// 真正要改的下拉挤到屏幕外面去。
+  Future<void> _showRetentionHelp() => showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          key: const Key('settings-retention-help-dialog'),
+          title: const Text('保留期怎么算'),
+          content: const SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '⚠️「备份后保留」那一栏：备份成功后，手机上的原片再留多久。'
+                  '从「备份成功那一刻」起算，不是从录完起算。',
+                  style: TextStyle(fontSize: 13),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  '⚠️「未备份保留」那一栏**永不自动删除** —— 那是唯一一份，'
+                  '删了就没了。它到期的动作只有提醒（列表标红 + 催上传），'
+                  '从「录完那一刻」起算。',
+                  style: TextStyle(fontSize: 13),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  '⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动'
+                  '（硬性豁免，关不掉），所以它实际是「备份成功后最快 24 小时清理」。',
+                  style: TextStyle(fontSize: 13),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  '⚠️ 这一块记的是**到期之后该怎么做**，而手机端的自动清理还没接通 —— '
+                  '今天不会有任何文件**自动**被删。想现在删就用备份页每一条右边的'
+                  '垃圾桶图标（那会先跟电脑端核对，核对不上就不删）。'
+                  '另外【被锁定】的证据永远不清。',
+                  style: TextStyle(fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
 
   Widget _retentionDropdown(
     String key,
@@ -5286,17 +5672,6 @@ class _RecorderPageState extends State<RecorderPage> {
     return result;
   }
 
-  Widget _settingTitle(String title, String blurb) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 2),
-        Text(blurb, style: const TextStyle(fontSize: 12)),
-      ],
-    );
-  }
-
   // ── ③ 验收工具 ───────────────────────────────
 
   /// 真机验收用的开关。**故意做成一眼能看出不是产品设置的样子**：
@@ -5348,8 +5723,13 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 拆开（新编排器的 `isWorking` 是 false，而相机是真开着的），
   /// 那个态下「结束工作」也关不掉相机 —— 用一次模式切换换一个相机泄漏不值。
   ///
-  /// ⚠️ 语音播报是**例外**，而且必须在这里写明 —— 否则这块提示本身就成了假话。
+  /// ⚠️ 语音提示是**例外**，而且必须在这里写明 —— 否则这块提示本身就成了假话。
   /// 它不参与判定（只出声），关它是「现在太吵」而不是「下一段想这样录」。
+  ///
+  /// ⚠️ 2026-09-28 加的两项（**面单条码最短长度 / 录制声音**）都归
+  /// 「等下次『开始工作』」那一组：两者都是 `_buildCoordinator` 重建编排器时
+  /// 才被读一次（条码下限进 `ScanGate`、录制声音进 `startRecording` 的参数）。
+  /// 列在这里不是客套 —— 用户改完没反应，只会以为开关坏了。
   Widget _whenCard() {
     final working = _coordinator?.isWorking ?? false;
 
@@ -5359,12 +5739,15 @@ class _RecorderPageState extends State<RecorderPage> {
         padding: const EdgeInsets.all(16),
         child: Text(
           working
-              ? '⚠️ 正在工作中。上面【工作模式】【防忘停录】【录制规格】改了这一段不生效 —— '
+              ? '⚠️ 正在工作中。上面【工作模式】【忘记停止录制时的自动兜底】'
+                  '【录像编码/规格/方向】【面单条码最短长度】【录制声音】'
+                  '改了这一段不生效 —— '
                   '等下次「开始工作」重建编排器时才按新设置走。'
-                  '【语音播报】不受这条限制，它立刻生效。'
-              : '【工作模式】【防忘停录】【录制规格】在点「开始工作」时生效。'
+                  '【语音提示】不受这条限制，它立刻生效。'
+              : '【工作模式】【忘记停止录制时的自动兜底】【录像编码/规格/方向】'
+                  '【面单条码最短长度】【录制声音】在点「开始工作」时生效。'
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
-                  '【语音播报】是立刻生效的。\n'
+                  '【语音提示】是立刻生效的。\n'
                   '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
                   '要等清理执行层接通（M6），在那之前任何文件都不会被删。',
           style: const TextStyle(fontSize: 12),
@@ -5451,9 +5834,13 @@ class _RecorderPageState extends State<RecorderPage> {
     return (value: label.substring(0, split), unit: label.substring(split + 1));
   }
 
+  /// 日志里的模式名。
+  ///
+  /// ⚠️ 与设置页那三个胶囊**用同一批字**（2026-09-28 起）。两处各写一套的话，
+  /// 用户拿日志去对设置页会对不上 —— 同一个模式两个名字，是本仓反复警告过的坑。
   static String _modeLabel(WorkMode mode) => switch (mode) {
-        WorkMode.continuousScan => '连续扫',
-        WorkMode.sameWaybillStop => '同码停',
+        WorkMode.continuousScan => '连续扫码',
+        WorkMode.sameWaybillStop => '同码停录',
         WorkMode.scanThenStaticStop => '扫码静止停录',
       };
 
@@ -5466,5 +5853,150 @@ class _RecorderPageState extends State<RecorderPage> {
         StopTrigger.processKilled => '进程被杀',
         StopTrigger.nextWaybill => '换件',
       };
+}
+
+/// App 版本号。**必须与 `pubspec.yaml` 的 `version:` 逐字一致。**
+///
+/// ⚠️ **故意不引 `package_info_plus`**：为了一页上显示一次的字符串加一个
+/// 平台依赖不划算，而且那个包在 widget 测试里必然拿不到值（没有平台通道）——
+/// 「关于我们」就会在测试里永远显示「未知」，等于这一页唯一的内容测不到。
+///
+/// 换成「一个 const + 一条**读真文件对账**的测试」：不用依赖，漂了当场红。
+/// 测试见 `test/about_page_test.dart`。
+const String appVersion = '1.0.0+1';
+
+/// 「关于我们」二级页。
+///
+/// ⚠️ **只显示盘上真有的东西**（§13.1）—— 应用名、版本号、这产品是干什么的。
+/// **不摆**「检查更新」这类入口：没有更新服务就是没有，摆上去点不动
+/// （踩坑 #13，与 [NetdiskShellPage] 同一条规矩）。
+class AboutPage extends StatelessWidget {
+  const AboutPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('关于我们')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('VidLog 手机端',
+                      style:
+                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 4),
+                  const Text('版本 $appVersion',
+                      key: Key('about-version'),
+                      style: TextStyle(fontSize: 14)),
+                  const SizedBox(height: 12),
+                  const Text(
+                    '电商打包取证系统的现场采集端：扫面单开录、按件归档、'
+                    '备份到电脑端。\n'
+                    '录像按原始文件保存 —— 不裁剪、不模糊、不压缩，'
+                    '文件里带的就是当时拍到的。',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 「网盘视频」二级页 —— **需求方 2026-09-28 裁决：只做壳**。
+///
+/// ## ⚠️ 这一页为什么不摆一个能填的表单
+///
+/// 网盘那半**在电脑端都还没做**（规格 §3.4.6 还要求上层不得依赖某一种后端）。
+/// 做成「填了单号点搜索、没反应」的表单就是本仓明令禁止的踩坑 #13 ——
+/// 用户会以为是自己网络的问题，反复试。
+///
+/// 所以：**入口照图画出来、控件灰着、并且明说为什么灰。**
+/// 等网盘链路真通了，把这两个控件的回调接上就行，页面结构不用动。
+class NetdiskShellPage extends StatelessWidget {
+  const NetdiskShellPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('网盘视频')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            key: const Key('netdisk-not-connected'),
+            child: const Padding(
+              padding: EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('⚠️ 这一页还没接通',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(height: 4),
+                  Text(
+                    '下面两个入口现在都是灰的 —— 网盘上传那半还没做，'
+                    '点了也不会有任何反应，所以干脆不让点。\n'
+                    '录像本身不受影响：它们照常存在手机里、照常备份到电脑端。',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('网盘账号',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    key: const Key('netdisk-login'),
+                    onPressed: null,
+                    icon: const Icon(Icons.login, size: 18),
+                    label: const Text('登录网盘'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('按单号查找',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  const TextField(
+                    key: Key('netdisk-search'),
+                    enabled: false,
+                    decoration: InputDecoration(
+                      hintText: '扫或输入完整单号',
+                      prefixIcon: Icon(Icons.search),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 

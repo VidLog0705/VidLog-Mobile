@@ -31,6 +31,11 @@
 	     文案要说清用途：这是给用户看的，也是上架审核会看的。 -->
 	<key>NSCameraUsageDescription</key>
 	<string>VidLog 需要使用摄像头录制打包过程，作为售后纠纷时的凭证。</string>
+	<!-- 录制声音（需求方 2026-09-28）。与相机那条同一个道理：**没声明就
+	     请求麦克风权限，iOS 会直接终止进程**。
+	     口径与相机那条一致 —— 说清用途，且不夸大（录的是打包现场的声音）。 -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>VidLog 需要在录制打包过程时一并录下现场声音，作为售后纠纷时的凭证。可以在「设置——录制声音」里关闭。</string>
 	<!-- 让 App 沙盒里的 Documents 出现在「文件」App 里（On My iPhone → Vidlog Mobile）。
 	     录像、索引、打点都在那儿 —— 没有这两条，真机验收时**根本拿不到那些文件**，
 	     只能隔着界面猜。（LSSupportsOpeningDocumentsInPlace 是让「文件」能就地打开，

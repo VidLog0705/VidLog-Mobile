@@ -1,7 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 现场采集要录像（规格 §3.1）。录制中不需要麦克风：证据是画面的，
-         收一个用不上的权限只会让用户多一层顾虑。 -->
+    <!-- 现场采集要录像（规格 §3.1）。 -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- 录制声音（需求方 2026-09-28）。原来这里写的是「录制中不需要麦克风：
+         证据是画面的」—— **那条已经作废**，现在录像默认带声音（设置里可关）。
+         所以这是一条**真用得上的**权限，不是多收一层顾虑。
+         ⚠️ 被拒**不影响录像**（I4）：那一段照常录，只是没有音轨。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- 相机是核心功能，没有它这个应用没有意义。 -->
     <uses-feature android:name="android.hardware.camera.any" android:required="true"/>
 

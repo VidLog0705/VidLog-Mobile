@@ -55,6 +55,7 @@ class ScanGate {
     ViewfinderPreset preset = ViewfinderPreset.medium,
     double? aspectRatio,
     this.absenceThreshold = const Duration(seconds: 2),
+    this.minLength = 0,
   })  : _preset = preset,
         _viewfinder = viewfinder ??
             Viewfinder.forPreset(
@@ -98,6 +99,19 @@ class ScanGate {
   /// 每个单号最后一次被看见的单调毫秒时刻。
   final Map<String, int> _lastSeenAtMs = {};
 
+  /// 面单条码最短长度（需求方 2026-09-28）。**0 = 不限**。
+  ///
+  /// ⚠️ 比的是**归一化之后**的长度（[WaybillNumber.value]），不是原始字节数。
+  /// 见 `WaybillMinLength`。
+  final int minLength;
+
+  /// 一个条码因为**太短**被挡下时回调（不是框外、不是去重 —— 那两种是常态，
+  /// 报出去会把事件列表刷爆）。
+  ///
+  /// 存在的理由是**静默就是「相机像坏了」**：用户扫了一张真实面单却没反应，
+  /// 分不出「没扫到」和「扫到了但被长度挡了」。编排器接这个再把话说给界面。
+  void Function(String text, int minLength)? onTooShort;
+
   /// 喂一次识码；算作「新的扫码」时返回归一化后的单号，否则返回 null。
   WaybillNumber? accept(BarcodeSighting sighting, int monotonicMs) {
     // 规格 §3.2.2：框外一律忽略，防止扫到画面里其他包裹的面单。
@@ -117,6 +131,16 @@ class ScanGate {
     // **无论是否上报，都要刷新「最后见到」** —— 这是这个类最容易写错的一行。
     // 不刷新的话，持续摆在画面里的包裹会每过一个阈值被重新报一次。
     _lastSeenAtMs[key] = monotonicMs;
+
+    // 面单条码最短长度。⚠️ **排在去重判定之前、且共用同一套去重** ——
+    // 短码也会一直摆在画面里，每帧回调一次的话，事件列表会被它刷爆，
+    // 而那正是下面 `onBarcodeAccepted` 只记采纳者的理由。
+    if (minLength > 0 && key.length < minLength) {
+      if (lastSeen == null || monotonicMs - lastSeen >= absenceThreshold.inMilliseconds) {
+        onTooShort?.call(key, minLength);
+      }
+      return null;
+    }
 
     if (lastSeen != null && monotonicMs - lastSeen < absenceThreshold.inMilliseconds) {
       return null; // 还在画面里，不是复扫
