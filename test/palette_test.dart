@@ -49,6 +49,21 @@ void main() {
     );
   });
 
+  test('★ Chip 的底必须单独钉住 —— 不钉就等于隐形', () {
+    final theme = VidLogApp.theme;
+
+    // ⚠️ `_ChipDefaultsM3` **完全没有底色**（`_getBackgroundColor` 返回 null），
+    // Chip 于是落到 `canvasColor`（= `colorScheme.surface` = **页面底色**）。
+    // 两个筛选胶囊就贴在页面背景上 —— 同色 = 看不见。
+    // 这是这一版最容易漏的一处：它不报错、不溢出，只是**没了**。
+    expect(theme.chipTheme.backgroundColor, isNotNull);
+    expect(
+      theme.chipTheme.backgroundColor,
+      isNot(theme.colorScheme.surface),
+      reason: '胶囊的底和页面底同色的话，它在屏幕上就等于没有',
+    );
+  });
+
   test('★ 发货 / 退货两支色走调色板，不是 Material 内置的那两个', () {
     // ⚠️ 这一条同时钉住**「只有一处定义」**这件事：列表上的行首竖条、
     // 列表上的小标、详情页那颗胶囊读的都是这个函数。改版前详情页自己抄了
