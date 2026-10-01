@@ -667,7 +667,7 @@ final class CameraSegmentRecorder: NSObject {
     /// ⚠️ **它与录制那一路是完全独立的两套编码**：这里换档、坏掉、被停掉，
     /// 都不碰 [currentWriter] / [videoOutput] 那边的任何东西。
     /// 挂进来的只有相机帧（第二路输出），编码器是它自己的。
-    private var live: LiveStreamer?
+    private var liveStreamer: LiveStreamer?
 
     /// 状态锁保护 [running] 与 [currentWriter]（相机线程与调用方线程都会碰）。
     private let stateLock = NSLock()
@@ -824,7 +824,7 @@ final class CameraSegmentRecorder: NSObject {
         // 两边方向不一致的话，录出来的画面和识码看到的画面会差 90°。
         // ⚠️ 推流那一路（有的话）也要算进来：方向不一致的话，
         // 录出来的画面是正的、电脑端看到的是躺着的。
-        for output in [videoOutput, analysisOutput, live?.captureOutput].compactMap({ $0 }) {
+        for output in [videoOutput, analysisOutput, liveStreamer?.captureOutput].compactMap({ $0 }) {
             if let connection = output.connection(with: .video) {
                 applyOrientation(to: connection, spec: spec)
             }
@@ -947,7 +947,7 @@ final class CameraSegmentRecorder: NSObject {
         }
 
         session.addOutput(streamer.captureOutput)
-        live = streamer
+        liveStreamer = streamer
     }
 
     /// 开始往外推（用户打开了实时共享，并且相机是按「要推流」开的）。
@@ -962,27 +962,27 @@ final class CameraSegmentRecorder: NSObject {
     ) -> String? {
         guard cameraOpen else { return "相机还没开，推流起不来" }
 
-        guard let live else {
+        guard let liveStreamer else {
             // 开会话那一刻这个开关是关的 —— 而补挂要重新配置会话、
             // 会打断正在录的那一段。如实说，别偷偷做。
             return "还要等下一次【开始工作】才生效（推流那一路是开会话时接上的，"
                 + "中途接会打断正在录的那一段）"
         }
 
-        live.attach(lines: lines, onFrame: onFrame, onFailure: onFailure)
+        liveStreamer.attach(lines: lines, onFrame: onFrame, onFailure: onFailure)
         return nil
     }
 
     /// 停止往外推。**输出仍留在会话上**（摘掉它要重新配置会话）。
     func stopLive() {
-        live?.detach()
+        liveStreamer?.detach()
     }
 
     /// 换档（电脑端进/出全屏）。
     ///
     /// ⚠️ 只重建推流那一个编码器，录制那边一个字都不动（规格 §3.8）。
     func setLiveLines(_ lines: Int) {
-        live?.setLines(lines)
+        liveStreamer?.setLines(lines)
     }
 
     func closeCamera(_ completion: (() -> Void)? = nil) {
@@ -993,8 +993,8 @@ final class CameraSegmentRecorder: NSObject {
 
         // 推流那一路先收（规格 §3.8）。它自己那套编码器要显式 invalidate，
         // 而输出会随会话一起没了 —— 顺序是先收编码器、再停会话。
-        live?.close()
-        live = nil
+        liveStreamer?.close()
+        liveStreamer = nil
 
         stopRecording { [weak self] in
             guard let self else {
