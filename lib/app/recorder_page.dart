@@ -6135,7 +6135,7 @@ class _RecorderPageState extends State<RecorderPage> {
 ///
 /// 换成「一个 const + 一条**读真文件对账**的测试」：不用依赖，漂了当场红。
 /// 测试见 `test/about_page_test.dart`。
-const String appVersion = '1.0.0+1';
+const String appVersion = '1.0.0+2';
 
 /// 「关于我们」二级页。
 ///
