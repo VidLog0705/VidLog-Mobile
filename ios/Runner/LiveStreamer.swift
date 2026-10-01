@@ -206,7 +206,7 @@ final class LiveStreamer: NSObject {
     private func prepare(sourceWidth: Int, sourceHeight: Int) -> Bool {
         let (wantedWidth, wantedHeight) = targetSize(sourceWidth: sourceWidth, sourceHeight: sourceHeight)
         guard wantedWidth > 0, wantedHeight > 0 else {
-            onFailure?.("这一路量不出源画面的尺寸，推流起不来")
+            onFailure?("这一路量不出源画面的尺寸，推流起不来")
             return false
         }
 
@@ -223,7 +223,7 @@ final class LiveStreamer: NSObject {
             allocator: kCFAllocatorDefault, pixelTransferSessionOut: &transferSession) == noErr,
             let transferSession
         else {
-            onFailure?.("缩放器建不起来，推流起不来")
+            onFailure?("缩放器建不起来，推流起不来")
             return false
         }
 
@@ -241,7 +241,7 @@ final class LiveStreamer: NSObject {
             kCFAllocatorDefault, nil, poolAttributes as CFDictionary, &pixelPool) == noErr,
             let pixelPool
         else {
-            onFailure?.("帧池建不起来，推流起不来")
+            onFailure?("帧池建不起来，推流起不来")
             return false
         }
 
@@ -259,7 +259,7 @@ final class LiveStreamer: NSObject {
             compressionSessionOut: &session)
 
         guard status == noErr, let session else {
-            onFailure?.("编码器建不起来（VideoToolbox 回了 \(status)），推流起不来")
+            onFailure?("编码器建不起来（VideoToolbox 回了 \(status)），推流起不来")
             return false
         }
 
@@ -349,7 +349,7 @@ final class LiveStreamer: NSObject {
     private func handleEncoded(status: OSStatus, sampleBuffer: CMSampleBuffer?) {
         if status != noErr {
             // ⚠️ 只记一条：这一路坏了不该影响任何别的东西（第 2 条规则）。
-            onFailure?.("推流编码报了错（\(status)）")
+            onFailure?("推流编码报了错（\(status)）")
             return
         }
 
