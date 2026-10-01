@@ -182,6 +182,7 @@ class RecorderConfig {
     this.durationFallback = DurationFallbackSetting.fallback,
     this.waybillMinLength = WaybillMinLength.fallback,
     this.recordAudio = true,
+    this.liveShare = false,
     this.promptAfterOverride,
     this.durationPromptRepeatEvery = const Duration(minutes: 5),
     this.durationPromptGrace = const Duration(minutes: 1),
@@ -212,6 +213,17 @@ class RecorderConfig {
   /// ⚠️ 它**不改变这台手机出不出声** —— 那是 `voiceEnabled`。
   /// 这个只决定写进 mp4 的那条音轨。两者可以同时开（那时播报会被录进去）。
   final bool recordAudio;
+
+  /// 实时共享：把相机画面推给电脑端（规格 §3.8）。
+  ///
+  /// ## ⚠️ 与 [recordAudio] 同一类：**开会话时就定死的**
+  ///
+  /// 推流那一路上挂的是**相机会话的第二路输出**，而往一个正在跑的会话里
+  /// 加输出要让会话重新配置 —— 那一下帧会断一小截，断的是**正在录的证据**。
+  /// 规格 §3.8 写死了「录制是证据，推流是便利，两者冲突时无条件舍推流」，
+  /// 所以这里**不搞中途热插拔**：与录音、与录制规格同一条规矩，
+  /// **改了等下次「开始工作」**（设置页那张「什么时候生效」的卡上点着名）。
+  final bool liveShare;
 
   /// 首次询问时机的**覆盖值**。
   ///

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'redact.dart';
+import 'trace.dart';
 
 /// 日志级别。**顺序有意义**（`debug < info < warn < error`），阈值靠它比大小。
 ///
@@ -38,6 +39,7 @@ class AppLogLine {
     required this.message,
     this.data = const {},
     this.stack,
+    this.trace,
   });
 
   final DateTime at;
@@ -49,6 +51,12 @@ class AppLogLine {
   /// 未捕获异常的堆栈。**只有异常那几条有** —— 「哪一行」正是事后最想知道的。
   final String? stack;
 
+  /// 这一条属于哪一件事（见 [Trace]）。
+  ///
+  /// ⚠️ 字段名与**电脑端逐字相同**（`trace`）—— 它是一个跨端的查询口径，
+  /// 换个名字就等于两端的日志没法用同一个查询去筛。
+  final String? trace;
+
   /// 落盘用的 JSON。
   ///
   /// `ts` 带偏移量：不带的话，同一个诊断包里两台手机的 `17:10` 是歧义的，
@@ -58,6 +66,7 @@ class AppLogLine {
         'lvl': level.wire,
         'cat': tag,
         'msg': message,
+        if (trace != null) 'trace': trace,
         if (data.isNotEmpty) 'data': data,
         if (stack != null && stack!.isNotEmpty) 'stack': stack,
       };
@@ -131,6 +140,12 @@ class AppLog {
   /// 保留几天。与电脑端默认值一致。
   static const defaultRetainDays = 14;
 
+  /// 单个日志文件的上限。与电脑端同一个数。
+  ///
+  /// ⚠️ 现场那台手机是**一直开着**的，没有上限那个文件就一直涨 ——
+  /// 而它同时还会被打包进诊断包**外发**。0 = 不限（测试用得到）。
+  static const maxFileBytes = 16 * 1024 * 1024;
+
   final Redactor _redactor = Redactor();
   final List<String> _pending = [];
   final List<AppLogLine> _buffer = [];
@@ -144,6 +159,19 @@ class AppLog {
   String? _directory;
   AppLogLevel _minLevel = AppLogLevel.info;
   int _dropped = 0;
+
+  /// 保留天数。⚠️ **存下来**是为了长驻期间也能清（原来只是 `init` 的一个参数，
+  /// 清过一次就再也拿不到了）。
+  int _retainDays = defaultRetainDays;
+
+  /// init 传进来的那个时钟（滚动时要按它拼文件名，测试要用同一个）。
+  DateTime Function() _clock = DateTime.now;
+
+  /// 当前这个文件已经写了多少字符（够用来判上限）。
+  int _currentBytes = 0;
+
+  /// 上一次清过期文件是什么时候。
+  DateTime _lastPurge = DateTime.now();
 
   /// 当前日志文件。**每次 init 一个新文件**（文件名带时间戳）。
   String? _path;
@@ -174,6 +202,8 @@ class AppLog {
     DateTime Function() clock = DateTime.now,
   }) {
     _minLevel = minLevel;
+    _retainDays = retainDays;
+    _clock = clock;
 
     try {
       Directory(directory).createSync(recursive: true);
@@ -224,8 +254,42 @@ class AppLog {
           entry.key: _redactor.redactValue(entry.key, entry.value),
       },
       stack: stack,
+      // ⚠️ **调用点一个字都不用传** —— 从当前 zone 里取（见 `Trace`）。
+      // 每层多传一个参数的话，漏传一层就是那一段日志串不起来，
+      // 而串起来正是它存在的全部理由（与电脑端 `FileLogger` 同一个做法）。
+      trace: Trace.current,
     );
 
+    _emit(line);
+  }
+
+  /// 现在这一档。
+  AppLogLevel get minLevel => _minLevel;
+
+  /// 改档。
+  ///
+  /// ⚠️ <b>运行时就能改，不用重装。</b>这正是这一条的目的：用户在真机上遇到问题时
+  /// 要能把 DEBUG 打开，而不是等我们发一个新包 —— 而「等新包」等于那条日志永远拿不到。
+  void setMinLevel(AppLogLevel level) {
+    if (_minLevel == level) return;
+
+    final previous = _minLevel;
+    _minLevel = level;
+
+    // ⚠️ **这一条绕过阈值**（走 `_emit` 而不是 `log`）：把档调高（比如只留 error）时，
+    // 用 `log(info, …)` 记它会被它自己刚设的阈值滤掉 ——
+    // 而「怎么日志突然少了」恰恰是最需要解释的那一次。
+    _emit(AppLogLine(
+      at: DateTime.now(),
+      level: AppLogLevel.warn,
+      tag: '日志',
+      message: '日志级别 ${previous.wire} → ${level.wire}',
+      trace: Trace.current,
+    ));
+  }
+
+  /// 排队 / 缓冲。`log` 与「改档」那条都走它（阈值判定在 `log` 里，不在这）。
+  void _emit(AppLogLine line) {
     if (!isReady && _buffer.length < pendingLimit) {
       _buffer.add(line);
       _publishTail(line);
@@ -341,17 +405,63 @@ class AppLog {
       final path = _path;
       if (path == null) return;
 
-      final file = File(path);
+      _rollIfNeeded(batch.length);
+
+      final file = File(_path!);
       await file.parent.create(recursive: true);
 
       // flush: false —— 一行日志不值得每条都等一次 fsync。
       // 真掉了也只是一行；而 `flush()` 与生命周期暂停那两处会强制刷。
       await file.writeAsString('$batch\n', mode: FileMode.append);
+
+      _maybePurge();
     });
 
     // 闸门吞掉异常继续放行（见 `_gate` 的说明）。
     _gate = result.then((_) {}, onError: (_) {});
     return _gate;
+  }
+
+  /// 这个文件到上限了就换一个新的。
+  ///
+  /// ⚠️ <b>为什么需要上限</b>：原来只在**每次启动**时换文件，而现场那台手机是
+  /// **一直开着**的 —— 那个文件会一直涨，而它同时还会被打包进诊断包**外发**。
+  void _rollIfNeeded(int incomingChars) {
+    if (maxFileBytes <= 0) return;
+
+    _currentBytes += incomingChars;
+
+    if (_currentBytes <= maxFileBytes) return;
+
+    _currentBytes = 0;
+    _path = '$_directory/app-${_stamp(_clock())}.jsonl';
+
+    // ⚠️ 换文件要留痕 —— 不然「日志怎么突然分成两个」事后没人解释得了，
+    // 而看的人会以为中间丢了一段。
+    info('日志', '日志文件到 ${maxFileBytes ~/ (1024 * 1024)} MB 了，换了一个新的');
+  }
+
+  /// 长驻期间也要清过期的（原来只在**启动时**清一次）。
+  ///
+  /// ⚠️ 一台一直开着的手机，启动时那次清理之后再没清过 —— 「保留 N 天」对它等于没有。
+  /// 一小时看一次就够（这是删文件，不是热路径）。
+  void _maybePurge() {
+    final now = _clock();
+
+    if (now.difference(_lastPurge) < const Duration(hours: 1)) return;
+
+    _lastPurge = now;
+
+    final directory = _directory;
+    if (directory == null) return;
+
+    final before = Directory(directory).listSync().whereType<File>().length;
+
+    _purgeExpired(_retainDays, now);
+
+    final after = Directory(directory).listSync().whereType<File>().length;
+
+    if (before > after) info('日志', '清了 ${before - after} 个过期的日志文件');
   }
 
   /// 删掉超过 [retainDays] 天的日志。

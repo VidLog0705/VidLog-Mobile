@@ -57,6 +57,7 @@ class RecordingCoordinator {
     bool cameraAlreadyOpen = false,
     RecordingSpec? appliedSpec,
     bool? appliedAudio,
+    bool? appliedLive,
   })  : _gateway = gateway,
         _workspace = workspace,
         _finalizer = finalizer,
@@ -69,6 +70,9 @@ class RecordingCoordinator {
         // 这个决定录进文件的东西，中途换会让同一次工作里两段录像一条有一声
         // 一条没声音，事后没人说得清哪一段该有。
         _recordAudio = config.recordAudio,
+        // 实时共享（规格 §3.8）与录音**同一类**：推流的输出是开会话时挂上去的，
+        // 改了要等下次「开始工作」。理由写在 `RecorderConfig.liveShare` 上。
+        _liveShare = config.liveShare,
         _clock = clock ?? _defaultClock(),
         _scanGate = scanGate ?? ScanGate(minLength: config.waybillMinLength.length),
         _packageTracker = packageTracker ?? PackageTracker(),
@@ -92,6 +96,7 @@ class RecordingCoordinator {
     // 传 `null` 是合法的，表示「调用方也不知道」（测试、以及不关心这件事的装配）。
     _appliedSpec = appliedSpec;
     _appliedAudio = appliedAudio;
+    _appliedLive = appliedLive;
 
     // 太短的条码被闸挡下时说一声（见 `ScanGate.onTooShort`）。接在闸上而不是
     // 拿 `accept` 的返回值去猜 —— 它返回 null 有四种原因，只有这一种要说。
@@ -352,9 +357,17 @@ class RecordingCoordinator {
 
     final expected = excludeSelf ? _queuedEvents - 1 : _queuedEvents;
 
-    // 上界只是防止逻辑写错时无限等下去；正常情况几轮就够。
-    var guard = 0;
-    while (_completedEvents < expected && guard++ < 500) {
+    // ⚠️ 上界必须按**时间**算，不能按**轮数**算。
+    //
+    // 这里原来写的是「最多让 500 轮」，而一轮让出事件循环的代价**随机器负载变**：
+    // 忙的时候 500 轮还没等到处理器里那几段文件 I/O 落地，这个函数就提前返回了。
+    // 而它不只是测试用的 —— 界面层靠它「确保分段落盘了才做下一步」，
+    // 所以提前返回在真机上的表现是**收尾被漏掉**，在测试里则表现为
+    // 「并发一挤就红、单独跑就绿」。2026-10-01 由一次并发跑挂掉牵出来的。
+    //
+    // 10 秒是**兜底**，不是预期耗时：正常情况一两轮就返回了。
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (_completedEvents < expected && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(Duration.zero);
     }
   }
@@ -395,16 +408,22 @@ class RecordingCoordinator {
     // 原生那一趟 `openCamera` 会直接早退。不判的话录音开关永远只生效第一次。
     final needsReopen = _cameraOpen &&
         ((_appliedSpec != null && _appliedSpec != _effectiveSpec) ||
-            (_appliedAudio != null && _appliedAudio != _recordAudio));
+            (_appliedAudio != null && _appliedAudio != _recordAudio) ||
+            // 实时共享（规格 §3.8）也在这一组里：推流那一路上挂的是会话的
+            // **第二路输出**，中途加进去要让会话重新配置、断掉一小截录制。
+            // 宁可「改了等下次开始工作」，也不拿正在录的那一段去换。
+            (_appliedLive != null && _appliedLive != _liveShare));
     if (needsReopen) {
       await _gateway.closeCamera();
       _cameraOpen = false;
     }
 
-    await _gateway.openCamera(spec: _effectiveSpec, audio: _recordAudio);
+    await _gateway.openCamera(
+        spec: _effectiveSpec, audio: _recordAudio, live: _liveShare);
     _cameraOpen = true; // 上面失败会抛；抛了就不记成开着
     _appliedSpec = _effectiveSpec;
     _appliedAudio = _recordAudio;
+    _appliedLive = _liveShare;
     _scanGate.reset();
     _packageTracker.reset();
   }
@@ -473,6 +492,15 @@ class RecordingCoordinator {
   /// `null` = 还不知道（相机还没开过）。
   bool? _appliedAudio;
 
+  /// 相机开会话时那个实时共享开关（规格 §3.8）。与 [_appliedAudio] 同一类 ——
+  /// 推流那一路上挂的也是会话的一部分（第二路输出）。
+  ///
+  /// `null` = 还不知道（相机还没开过）。
+  bool? _appliedLive;
+
+  /// 实时共享开没开。**由构造参数定一次**，运行中不变（同 [_recordAudio]）。
+  final bool _liveShare;
+
   RecordingSpec get requestedSpec => _requestedSpec;
 
   /// 实际在用的规格。界面「实际按 X 录制」那一行读的就是它。
@@ -482,6 +510,7 @@ class RecordingCoordinator {
   /// 见构造里 `appliedSpec` / `appliedAudio` 那段说明。
   RecordingSpec? get appliedSpec => _appliedSpec;
   bool? get appliedAudio => _appliedAudio;
+  bool? get appliedLive => _appliedLive;
 
   /// 回落的原因；没回落过时为 null。
   String? _specFallbackReason;

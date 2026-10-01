@@ -6,6 +6,17 @@
          所以这是一条**真用得上的**权限，不是多收一层顾虑。
          ⚠️ 被拒**不影响录像**（I4）：那一段照常录，只是没有音轨。 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- ⚠️ **2026-10-01 补的一条，而且它一直是个真缺口。**
+         这里原先**没有** INTERNET —— 只有 Flutter 模板给 `debug` / `profile`
+         两个 manifest 各加了一份（注释写着「调试要用」）。
+         后果是：**debug 包一切正常、release 包连不上网** ——
+         上传录像、回查归档层、网盘页、局域网探测全部失败，
+         而这两件事在开发机上长得一模一样（本机跑的都是 debug）。
+         实时共享（规格 §3.8）还要它：手机端要**开一个 HTTP 服务**给电脑端拉，
+         而监听套接字同样属于网络访问。
+         ⚠️ 这一条**不影响任何判定**，只是让上面那些能连上 —— 少了它的表现
+         是「一直转圈」，没有任何一条日志会指到这里。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 相机是核心功能，没有它这个应用没有意义。 -->
     <uses-feature android:name="android.hardware.camera.any" android:required="true"/>
 

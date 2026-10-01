@@ -23,6 +23,8 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../diagnostics/app_log.dart';
+import '../diagnostics/trace.dart';
+import '../netdisk/netdisk_token.dart';
 import '../recording/device_identity.dart';
 import '../recording/label_store.dart';
 import '../recording/lan_probe.dart' show defaultHostPort;
@@ -311,6 +313,43 @@ class UploadClient {
       couldNotVerify: json['couldNotVerify'] == true,
       reason: json['reason'] as String?,
     );
+  }
+
+  /// 向电脑端**借**一个百度网盘令牌（`POST /api/v1/netdisk/token`）。
+  ///
+  /// ⚠️ 手机端不自己登录网盘：换令牌那一步非要 `client_secret`，而
+  /// `AGENTS.md` §2 写死「客户端**绝不内置** secret」—— 手机是发给工人随身带的，
+  /// 那正是这一条要防的东西。所以向**已经登着的电脑端**要一个现成的。
+  ///
+  /// ⚠️ **这个方法的答复里带着令牌原文**，所以它绝不能把答复体写进日志。
+  /// 这个类本来只记方法 / 路径 / 状态 / 耗时（见 `_send` 上面那段），别在这里破例。
+  ///
+  /// ⚠️ 回的是**状态**不是异常：电脑端「没登着」「这一档没启用」都是正常答复
+  /// （与入网、改名那两条同一个口径），由 `NetdiskSession` 去决定要不要退回落盘那份。
+  Future<NetdiskGrant> netdiskToken() async {
+    final json = await _send('POST', 'netdisk/token');
+
+    return NetdiskGrant.fromJson(json);
+  }
+
+  /// 报到：告诉电脑端「我的实时推流在这个端口上」（规格 §3.8 的机位发现）。
+  ///
+  /// ⚠️ **只报端口**，地址由电脑端从**请求的来源地址**取 —— 手机自报 IP 的话，
+  /// 报一个连不上的地址就成了「电脑端那一格永远黑着，而两边都没得查」。
+  ///
+  /// ⚠️ 回的是**一条原因或 null**，不抛：报到失败是常态
+  /// （手机离开局域网、电脑端没开、还没配对），而它**不该让任何调用方进错误分支**
+  /// —— 手机照样录制、照样推流，只是电脑端的多画面里不出现这台机位。
+  ///
+  /// ⚠️ 它**要凭据**（与回查、改名同一个口径）：这是一份「哪台手机现在能看」的
+  /// 机位名单，不对局域网里任何人开放。
+  Future<String?> announceLive(int port) async {
+    try {
+      await _send('POST', 'live/announce', body: {'port': port}, timeout: connectTimeout);
+      return null;
+    } on UploadFailure catch (error) {
+      return error.detail ?? error.userHint;
+    }
   }
 
   Future<ProbeResult> probe({
@@ -613,7 +652,22 @@ class Uploader {
   ///
   /// [manual] = 用户点了「重试」：**计数清零**、状态回待传，并忽略退避期。
   /// 规格 §3.4.3 要的正是这个入口 —— 没有它，一条耗尽重试的录像就再也救不回来了。
+  /// ⚠️ 这一层只是**开一次关联 id**（见 `Trace`），真正的活在 [_upload] 里。
+  ///
+  /// 一次上传 = 一件事：探测、分片、提交、回执**全在这一个 zone 里**，
+  /// 于是它们记的每一行日志都自动带上**这条录像的 id**。
+  /// 用 `evidenceId` 而不是随机串 —— 「这条日志是哪条录像的」才是事后要问的。
   Future<UploadOutcome> upload(
+    RecordingEntry entry, {
+    ArchiveRecord? record,
+    bool manual = false,
+  }) =>
+      Trace.run(
+        () => _upload(entry, record: record, manual: manual),
+        id: entry.evidenceId,
+      );
+
+  Future<UploadOutcome> _upload(
     RecordingEntry entry, {
     ArchiveRecord? record,
     bool manual = false,

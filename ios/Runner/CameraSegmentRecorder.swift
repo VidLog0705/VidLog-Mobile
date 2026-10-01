@@ -369,6 +369,22 @@ final class WatermarkOverlay {
         // 顶部居中：**不得遮挡取景框**（规格 §3.6.2）—— 取景框在画面中间，
         // 水印在最上方那一条里。
         //
+        // ## ⚠️ 这里**不需要**按方向做坐标变换 —— 与安卓那边**不一样**，别照抄
+        //
+        // 规格 §3.1.7 ② 要求「水印的绘制坐标要按方向做一次变换」。安卓那边**必须**
+        // 做（`WatermarkGlRenderer.rotatedAboutCenter`）：它的成片像素永远是**传感器
+        // 方向**的，竖屏只是 `MediaMuxer.setOrientationHint` 写了一个标记，播放器
+        // 转整帧时会把烧进去的字一起转 —— 不抵消就会出现「水印跑到侧边、字躺倒 90°」。
+        //
+        // **iOS 不是那个形状**：旋转加在 `AVCaptureConnection` 上
+        //（`applyOrientation`：`videoRotationAngle` / `videoOrientation`），
+        // 也就是**交付出来的像素本身就是正的了**；而且全文没有 `AVAssetWriterInput
+        // .transform` 那一层元数据旋转。所以这个 buffer 的「上」就是成片的「上」，
+        // 画在顶部居中即正确。
+        //
+        // ⚠️ 谁要是照安卓的样子在这里也加一次反向旋转，**竖屏时水印会歪**。
+        // 两边形状不同，是因为两个平台交付像素的方式不同，不是因为谁漏了一段。
+        //
         // ⚠️ **横坐标要取偶**（`/ 2 * 2`）：色度平面是 2×2 下采样的，贴的时候
         // 按 `(originX / 2) * 2` 算偏移 —— 奇数原点会被它舍掉一个像素，
         // 于是**色度整体错开一列**（画面看着像在字边上蒙了一层彩边）。
@@ -646,6 +662,13 @@ final class CameraSegmentRecorder: NSObject {
     /// 停止时等最后一段封完。
     private var pendingStopCompletion: (() -> Void)?
 
+    /// 实时推流那一路（规格 §3.8）。
+    ///
+    /// ⚠️ **它与录制那一路是完全独立的两套编码**：这里换档、坏掉、被停掉，
+    /// 都不碰 [currentWriter] / [videoOutput] 那边的任何东西。
+    /// 挂进来的只有相机帧（第二路输出），编码器是它自己的。
+    private var live: LiveStreamer?
+
     /// 状态锁保护 [running] 与 [currentWriter]（相机线程与调用方线程都会碰）。
     private let stateLock = NSLock()
     private var running = false
@@ -727,7 +750,7 @@ final class CameraSegmentRecorder: NSObject {
     /// 是 `beginConfiguration` 里加进会话的，会话建好之后补不进来。
     /// 缺参数按 **false** 走 —— 老版本 Dart 不带它 = 老行为 = 不录音。
     /// </param>
-    func openCamera(spec: RecorderSpec = .standard, audio: Bool = false) -> Bool {
+    func openCamera(spec: RecorderSpec = .standard, audio: Bool = false, live: Bool = false) -> Bool {
         guard !cameraOpen else { return true }
 
         guard let device = Self.pickBackCamera() else {
@@ -769,6 +792,18 @@ final class CameraSegmentRecorder: NSObject {
         }
         addAnalysisOutput()
 
+        // ── 实时推流（规格 §3.8）──────────────────────────────────
+        //
+        // ⚠️ **在这里挂，不在用户打开开关时挂**：往一个跑着的会话里加输出
+        // 会让它重新配置，那一下断的是**正在录的证据**。规格写死了
+        // 「录制是证据，推流是便利，两者冲突时无条件舍推流」。
+        // 所以开关是「改了等下次开始工作」那一组里的（与录音同一条）。
+        //
+        // ⚠️ 挂上 ≠ 在推：不推的时候这个输出没有 delegate，帧不会送到它那里。
+        if live {
+            addLiveOutput()
+        }
+
         // ── 麦克风（录制声音，需求方 2026-09-28）──────────────────────
         //
         // ⚠️ **整段都在 I4 的保护之下**：音频这一路出任何问题都只是
@@ -787,7 +822,9 @@ final class CameraSegmentRecorder: NSObject {
         //
         // **分析那一路也要设同样的方向**：识码是在那一路的帧上跑的，
         // 两边方向不一致的话，录出来的画面和识码看到的画面会差 90°。
-        for output in [videoOutput, analysisOutput].compactMap({ $0 }) {
+        // ⚠️ 推流那一路（有的话）也要算进来：方向不一致的话，
+        // 录出来的画面是正的、电脑端看到的是躺着的。
+        for output in [videoOutput, analysisOutput, live?.captureOutput].compactMap({ $0 }) {
             if let connection = output.connection(with: .video) {
                 applyOrientation(to: connection, spec: spec)
             }
@@ -896,11 +933,68 @@ final class CameraSegmentRecorder: NSObject {
     }
 
     /// 关闭相机（结束工作）。会先把在录的那段收干净。
+    // MARK: - 实时推流（规格 §3.8）
+
+    /// 把推流那一路的输出挂进会话。**只在 [openCamera] 里调**（见那里的说明）。
+    private func addLiveOutput() {
+        let streamer = LiveStreamer(lines: LiveStreamer.tileLines)
+
+        guard session.canAddOutput(streamer.captureOutput) else {
+            // ⚠️ 加不上**只是没有推流**（设备给不了第三路输出）。
+            // **绝不 return false** —— 录制不受影响，而那才是要紧的那件事。
+            NSLog("VidLog: 无法加入实时推流输出，实时共享将不可用")
+            return
+        }
+
+        session.addOutput(streamer.captureOutput)
+        live = streamer
+    }
+
+    /// 开始往外推（用户打开了实时共享，并且相机是按「要推流」开的）。
+    ///
+    /// 返回 nil 表示起来了；非 nil 是给用户看的原因。
+    ///
+    /// ⚠️ **不碰会话**：只把 delegate 接上（见 `LiveStreamer.attach`）。
+    func startLive(
+        lines: Int,
+        onFrame: @escaping (Bool, Data) -> Void,
+        onFailure: @escaping (String) -> Void
+    ) -> String? {
+        guard cameraOpen else { return "相机还没开，推流起不来" }
+
+        guard let live else {
+            // 开会话那一刻这个开关是关的 —— 而补挂要重新配置会话、
+            // 会打断正在录的那一段。如实说，别偷偷做。
+            return "还要等下一次【开始工作】才生效（推流那一路是开会话时接上的，"
+                + "中途接会打断正在录的那一段）"
+        }
+
+        live.attach(lines: lines, onFrame: onFrame, onFailure: onFailure)
+        return nil
+    }
+
+    /// 停止往外推。**输出仍留在会话上**（摘掉它要重新配置会话）。
+    func stopLive() {
+        live?.detach()
+    }
+
+    /// 换档（电脑端进/出全屏）。
+    ///
+    /// ⚠️ 只重建推流那一个编码器，录制那边一个字都不动（规格 §3.8）。
+    func setLiveLines(_ lines: Int) {
+        live?.setLines(lines)
+    }
+
     func closeCamera(_ completion: (() -> Void)? = nil) {
         // 待回弹的自动放大要撤掉：会话马上就要拆了，那个闭包会在两秒后
         // 去改一台 `captureDevice` 已经是 nil 的设备（或更糟 —— 改到
         // 下一次开相机的新设备上）。
         cancelPendingAutoZoomRestore()
+
+        // 推流那一路先收（规格 §3.8）。它自己那套编码器要显式 invalidate，
+        // 而输出会随会话一起没了 —— 顺序是先收编码器、再停会话。
+        live?.close()
+        live = nil
 
         stopRecording { [weak self] in
             guard let self else {

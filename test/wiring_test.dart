@@ -1,0 +1,81 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+
+/// 装配的**最后一跳**：方法写对了、测过了，而**没人调它**。
+///
+/// 这个项目在这种毛病上栽过三次（电脑端 `docs/实现决策.md` §35.1 记着），
+/// 那边因此有一条绊线测试（`组合根把日志器递给了三处边界`）。
+///
+/// ⚠️ 这一端**没有依赖注入**（刻意用单例，理由见 §28.1），所以绊线只能
+/// **按源码文本**读 —— 与 `DesktopServicesTests` 按文本读 `MainWindow.xaml`
+/// 同一个路数。它管的是「有没有人调」，**管不了「调得对不对」**。
+void main() {
+  String source(String path) => File(path).readAsStringSync();
+
+  test('⚠️ 组合根真的把日志器 init 了', () {
+    // ⚠️ 不调 init 的话 `AppLog` **永远停在缓冲模式**：照记，只写在内存里，
+    // 进程一退就没 —— 而磁盘上一条都不会有，**编译器一个字都不会说**。
+    expect(
+      source('lib/app/recorder_page.dart'),
+      contains('AppLog.instance.init('),
+      reason: '没人调 init = 磁盘上没有日志',
+    );
+  });
+
+  test('⚠️ 一次上传真的包在 Trace.run 里', () {
+    // 不包的话 `Trace.current` 恒为 null，那一段日志**串不起来** ——
+    // 而它存在的全部理由就是串起来。
+    expect(
+      source('lib/upload/uploader.dart'),
+      contains('Trace.run('),
+      reason: '不包 = 关联 id 永远为空',
+    );
+  });
+
+  test('⚠️ 实时共享真的接上了原生，而且报到走的是当前那个客户端', () {
+    // 推流那一层（`lib/live/`）写完之后**一个调用点都没有**的话，
+    // 设置页上那个开关就是一颗按下去什么也不发生的假开关 ——
+    // 而「假开关」正是踩坑 #13 明令禁止的。
+    final page = source('lib/app/recorder_page.dart');
+
+    expect(page, contains('ChannelLiveGateway()'),
+        reason: '没人建真的通道实现 = 开关点了不会有任何事发生');
+    expect(page, contains('_applyLiveShare()'),
+        reason: '没人调用 = 开关与推流之间是断的');
+
+    // ⚠️ 报到必须**读当前那个 `_client`**，不能捕获建服务时的那一个：
+    // 重新配对 / 改地址之后上传器会整个重建，捕获旧的那个会把报到
+    // 打到一台已经不用的电脑上（而且那里没人报错）。
+    expect(
+      source('lib/live/live_service.dart'),
+      contains('announce'),
+      reason: '报到那一路是机位发现的全部来源',
+    );
+  });
+
+  test('⚠️ 全仓不许出现 print / debugPrint', () {
+    // 规格第一条就是「用成熟日志库替代 print/console.log」。而这一端的
+    // `print` 在 Flutter 里**不打进日志文件**（只在 debug 控制台），
+    // 于是它是一条**绕过落盘**的暗道 —— 写了就等于那条信息在真机上不存在。
+    //
+    // ⚠️ 注释里提到 `print` 不算（这一条测试自己就在提它），所以跳过注释行。
+    final offenders = <String>[];
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        final trimmed = lines[index].trimLeft();
+        if (trimmed.startsWith('//')) continue;
+
+        if (trimmed.contains('print(') || trimmed.contains('debugPrint(')) {
+          offenders.add('${entity.path}:${index + 1}');
+        }
+      }
+    }
+
+    expect(offenders, isEmpty, reason: '这些地方绕过落盘：$offenders');
+  });
+}

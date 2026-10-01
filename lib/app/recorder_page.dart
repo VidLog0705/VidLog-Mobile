@@ -8,6 +8,9 @@ import 'package:path_provider/path_provider.dart';
 import '../diagnostics/app_log.dart';
 import '../diagnostics/diagnostics_package.dart';
 import '../diagnostics/error_handlers.dart';
+import '../live/live_counts.dart';
+import '../live/live_gateway.dart';
+import '../live/live_service.dart';
 import '../primitives.dart';
 import '../recording/business_type.dart';
 import '../recording/cleanup_audit.dart';
@@ -39,10 +42,12 @@ import '../upload/enrollment.dart';
 import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
 import 'camera_preview.dart';
+import 'netdisk_page.dart';
 import 'palette.dart';
 import 'record_detail_page.dart';
 import 'scan_connect_page.dart';
 import 'scan_waybill_page.dart';
+import 'video_player_page.dart';
 import 'zoom_dial.dart';
 
 /// 采集页底部抽屉里正在展开哪一块。`null` = 三块都收着。
@@ -211,6 +216,9 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 启动时收尾的孤儿。
   List<FinalizeOutcome> _recovered = const [];
+
+  /// 诊断面板里那个日志级别的**界面镜像**（真正的档在 `AppLog` 里）。
+  final _logLevel = ValueNotifier<AppLogLevel>(AppLog.instance.minLevel);
 
   /// 当前变焦倍率（规格 §3.1.2）。
   ///
@@ -408,6 +416,9 @@ class _RecorderPageState extends State<RecorderPage> {
     _retryTimer?.cancel();
     _lifecycle?.dispose();
     unawaited(_coordinator?.dispose() ?? Future<void>.value());
+    // 推流那一路也要收（HTTP 服务、编码器、报到定时器）——
+    // 不收的话进程还在的时候，那一格在电脑端会一直挂着。
+    unawaited(_liveShare?.dispose() ?? Future<void>.value());
     _waybillController.dispose();
     _recordsSearch.dispose();
     super.dispose();
@@ -439,6 +450,9 @@ class _RecorderPageState extends State<RecorderPage> {
         durationFallback: _durationFallback,
         waybillMinLength: _waybillMinLength,
         recordAudio: _recordAudio,
+        // 实时共享（规格 §3.8）：**开会话时读一次**，与录音同一条规矩 ——
+        // 推流那一路是会话的第二路输出，中途补不上（补 = 断录制）。
+        liveShare: _liveShareOn,
         promptAfterOverride: _accelerated ? const Duration(seconds: 20) : null,
         durationPromptRepeatEvery:
             _accelerated ? const Duration(seconds: 30) : const Duration(minutes: 5),
@@ -657,11 +671,81 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  /// 实时共享开着没有（设置里那一项；读不出来时按**关**算）。
+  bool get _liveShareOn => _settings?.liveShareEnabled ?? false;
+
+  /// 按设置与相机状态**对齐**推流那一路。
+  ///
+  /// 三条规矩：
+  ///
+  /// 1. **相机开着 + 开关开着 ⇒ 起**；任一条不成立 ⇒ 停。
+  ///    相机是录制那边管的，推流只借它的画面（规格 §3.8：推流不得影响录制）。
+  /// 2. **关掉立刻停**；**打开要等下次【开始工作】** —— 推流那一路是开会话时
+  ///    挂上去的**第二路输出**，往一个跑着的会话里加输出会让它重新配置，
+  ///    那一下断的是**正在录的证据**。宁可不热插拔。
+  /// 3. 起不来**不影响录制**：原因记日志 + 显示在设置页那张卡上（I3 不静默）。
+  Future<void> _applyLiveShare() async {
+    final wanted = _liveShareOn && (_coordinator?.isWorking ?? false);
+
+    if (!wanted) {
+      await _liveShare?.stop();
+      return;
+    }
+
+    final service = _liveShare ??= LiveService(
+      gateway: ChannelLiveGateway(),
+      counts: () => _liveCounter.counts(),
+      announce: _announceToDesktop,
+    );
+
+    if (service.isRunning) return;
+
+    final failure = await service.start();
+    if (failure != null && mounted) {
+      // ⚠️ 说给用户听：设置页那张卡上写的就是这句。
+      setState(() => _liveShareProblem = failure);
+      return;
+    }
+
+    if (mounted) setState(() => _liveShareProblem = null);
+  }
+
+  /// 向电脑端报到（规格 §3.8 的机位发现）。
+  ///
+  /// ⚠️ **读的是当前那个 `_client`，不是建服务时捕获的那个** ——
+  /// 重新配对 / 改地址之后上传器会整个重建，捕获旧的那个会把报到打到
+  /// 一台已经不用的电脑上。
+  Future<String?> _announceToDesktop(int port) async {
+    final client = _client;
+    if (client == null) return '还没配好电脑端';
+
+    return client.announceLive(port);
+  }
+
   /// 当前那个客户端。**手动删除要拿它回查归档层**（规格 §3.5.6③）。
   ///
   /// 与 `_uploader` 同时建、同时换 —— 拿它自己再 new 一个的话，
   /// 地址或凭据一改就会出现「上传用的是新的、回查用的是旧的」那种错位。
   UploadClient? _client;
+
+  /// 实时共享（规格 §3.8）：推流那一路的接线。
+  ///
+  /// ⚠️ **它不认识相机**。起停由这一页安排（开始工作后起、结束工作停），
+  /// 因为它与录制共用同一台相机 —— 相机归编排器管。
+  LiveService? _liveShare;
+
+  /// 多画面每格下面那对 `F` / `T` 的来源（规格 §3.8）。
+  ///
+  /// 起算点是需求方 2026-10-01 定的：**本次开始工作以来，且按北京时间自然日重算**
+  /// （见 [LiveCounter]）。所以开始工作那一刻要 `reset()`，
+  /// 而扫码那一路要 `record(...)`。
+  final _liveCounter = LiveCounter();
+
+  /// 推流起不来 / 被录制压力停掉时，给用户看的那句话（null = 现在没事）。
+  ///
+  /// ⚠️ 一定要显示出来：规格 §3.8 第 3 条明写「自动把推流停掉**并在界面说明
+  /// 为什么停**」—— 悄悄停掉的话，用户看到的就是「刚才还有画面，怎么没了」。
+  String? _liveShareProblem;
 
   /// 跑一趟上传队列。
   ///
@@ -1083,6 +1167,7 @@ class _RecorderPageState extends State<RecorderPage> {
     final cameraWasOpen = _coordinator?.isCameraOpen ?? false;
     final appliedSpec = _coordinator?.appliedSpec;
     final appliedAudio = _coordinator?.appliedAudio;
+    final appliedLive = _coordinator?.appliedLive;
     await _coordinator?.dispose(releaseCamera: false);
 
     _coordinator = RecordingCoordinator(
@@ -1097,6 +1182,7 @@ class _RecorderPageState extends State<RecorderPage> {
       cameraAlreadyOpen: cameraWasOpen,
       appliedSpec: appliedSpec,
       appliedAudio: appliedAudio,
+      appliedLive: appliedLive,
       // ⚠️ 可信时钟（规格 §3.6.4）——**未校准不得开始录制**。
       // 传真的那个（不是 null）：`null` 是给测试留的「不设闸」。
       trustedClock: _clock,
@@ -1241,6 +1327,16 @@ class _RecorderPageState extends State<RecorderPage> {
         setState(() => _status = '资源告警（$reason）· 正在收尾');
         _log('⚠️ 资源告警 · $reason');
 
+        // 规格 §3.8 第 3 条（该让就让）：录制侧报压力 ⇒ **自动停掉推流**。
+        //
+        // ⚠️ 前两条（不阻塞、不传染）只挡得住**代码层面**的互相拖累；
+        // 推流白耗的 CPU 与热量是**整机共享**的，那会实打实地让录制掉帧。
+        // 这一条是三条里最后一道闸。**录制是证据，推流是便利。**
+        if (_liveShare?.isRunning ?? false) {
+          setState(() => _liveShareProblem = '录制吃紧（$reason），已自动停掉实时共享。');
+          unawaited(_liveShare?.notifyRecordingPressure(reason));
+        }
+
       case Speak(:final prompt):
         // 播报本身在编排层里发给原生（`VoicePrompt.spokenText` 是唯一措辞来源），
         // 这里只留一条可见的日志。
@@ -1265,6 +1361,14 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 真正决定采纳与否的是 `ScanGate`（框外忽略 + 去重），那层有测试。
   void _onBarcodeAccepted(WaybillNumber waybill) {
     _log('📷 扫到 $waybill');
+
+    // 多画面每格下面那对 `F` / `T`（规格 §3.8 ⑥）。
+    //
+    // ⚠️ 用的是**粘性的** `_businessType`（跟着 `_workTab` 走），不是 `_tab`：
+    // 人切到设置页翻一眼时换件也会开新段，那个新段落的标签用的就是 `_workTab`
+    // —— 计数必须与**这段录像最后被打上什么标签**是同一个来源，
+    // 否则屏幕上那个 `F` 会比录像里的标签多一件或少一件。
+    _liveCounter.record(_businessType);
   }
 
   /// 扫到了，但**太短**，于是没录。
@@ -1439,6 +1543,14 @@ class _RecorderPageState extends State<RecorderPage> {
       // 位置在 `startWorking` **之后**：相机没开起来就不该说「开始工作」。
       await _coordinator!.speak(VoicePrompt.startWorking);
 
+      // 计数器从这一刻起算（需求方 2026-10-01：「本次开始工作以来，到结束」）。
+      // ⚠️ 在 `startWorking` **之后**归零：相机没开起来就不算开始工作，
+      // 而那一条路径会 `return`（上面几处），不该把上一班的数字抹掉。
+      _liveCounter.reset();
+
+      // 实时共享（规格 §3.8）：相机刚开起来，现在才推得动。
+      unawaited(_applyLiveShare());
+
       _log('开始工作 · 模式 ${_modeLabel(_mode)}');
       _startHeartbeat();
 
@@ -1578,6 +1690,11 @@ class _RecorderPageState extends State<RecorderPage> {
   Future<void> _stopWorking() async {
     _heartbeat?.cancel();
     _heartbeat = null;
+
+    // 实时共享跟着停：相机马上要关了，没有画面可推（规格 §3.8）。
+    // ⚠️ **不等它**：推流的收尾（收编码器、关 HTTP）是几百毫秒的事，
+    // 而用户按了【结束】要立刻听到那句播报 —— 等它就是把「滞」加到反馈上。
+    unawaited(_liveShare?.stop());
 
     // 规格 §3.3.6：点【结束】→ 播「停止工作」，**不滴**（同上）。
     //
@@ -2348,10 +2465,16 @@ class _RecorderPageState extends State<RecorderPage> {
                       '这些录像现在只在这台手机上，手机丢了就没了。'
                   : (online
                       // I1 的原文口径：**收到回执之前不清理**。这里说的是同一件事，
-                      // 只是用用户的话说。清理本身是 M6 的事，所以末句如实写着。
+                      // 只是用用户的话说。
+                      //
+                      // ⚠️ 末句原来写着「按保留期自动清理还没做（M6）」，那句**已经过期**：
+                      // 执行层 2026-09-27 就补上了（`cleanup_executor.dart`），
+                      // 触发点在启动时（本文件 `_offerCleanup`）。
+                      // 而且按规格 §3.5.5「禁止静默清理」，它**永远**不会「自动」跑 ——
+                      // 所以这里不能说「以后会自动清」，那是给用户一个不会兑现的承诺。
                       ? '收尾好的录像会自己传到电脑端。'
                           '在收到电脑端的回执之前，手机上那份不会删 —— '
-                          '按保留期自动清理还没做（M6）。'
+                          '按保留期的清理也不会自己跑：每次开 App 会先算一遍、问过你才删。'
                       : '电脑端现在不在线，可重新连接。'
                           '收尾好的录像会在连上之后自己传过去。'),
               style: const TextStyle(fontSize: 12),
@@ -3355,14 +3478,17 @@ class _RecorderPageState extends State<RecorderPage> {
     }
   }
 
-  /// 交给系统播放器。**播不了要当场说清楚**（I3）。
-  Future<void> _play(RecordingSession session, String videoPath) async {
-    try {
-      await _gateway.playVideo(videoPath);
-    } on Object catch (error) {
-      _log('⚠️ 这一段打不开：$error');
-    }
-  }
+  /// 播放这一段。
+  ///
+  /// ⚠️ 走的是**自建播放器**（`VideoPlayerPage`），不再是原生那个 `playVideo`
+  /// （系统播放器）。换掉的理由：安卓那边 `ACTION_VIEW` 是彻底失控的 ——
+  /// 倍速 / 全屏 / 自动横屏 16:9 一样都做不了（需求方 2026-10-01 裁决）。
+  /// 原生那个通道先留着不删，见 `VideoPlayerPage` 的类注释。
+  ///
+  /// ⚠️ 播不了**不在这里兜**：那一页自己会把原因显示在画面上（**它才知道**
+  /// 是哪一条文件、什么错）。这里再弹一次只会盖住那句话。
+  Future<void> _play(RecordingSession session, String videoPath) =>
+      VideoPlayerPage.open(context, path: videoPath, title: session.waybill.value);
 
   /// 归档状态 → 那一格的字与色。
   ///
@@ -4609,10 +4735,40 @@ class _RecorderPageState extends State<RecorderPage> {
   ///
   /// 这些数字真机验收时**要盯着看**，所以给它们一个固定的去处，
   /// 而不是散在各处等人找。
+  /// 日志级别。
+  ///
+  /// ⚠️ <b>放在**诊断面板**里，不是设置页</b>：设置页是照设计图做的，图上没有这一项
+  /// （「不许有任何未经我允许的更改」）。而这一格是**本仓自己的诊断面** ——
+  /// 真机上遇到问题时人本来就会翻到这里。
+  ///
+  /// ⚠️ 改完**立刻生效、不必重装** —— 那正是它存在的理由：
+  /// 等我们发一个新包就等于那条日志永远拿不到。
+  Widget _logLevelRow() => ValueListenableBuilder<AppLogLevel>(
+        valueListenable: _logLevel,
+        builder: (context, current, _) => Wrap(
+          spacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            const Text('日志级别', style: TextStyle(fontSize: 12)),
+            for (final level in AppLogLevel.values)
+              ChoiceChip(
+                label: Text(level.wire),
+                selected: level == current,
+                onSelected: (_) {
+                  AppLog.instance.setMinLevel(level);
+                  _logLevel.value = level;
+                },
+              ),
+          ],
+        ),
+      );
+
   Widget _diagnosticsBody() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _logLevelRow(),
+        const Divider(height: 20),
         Text('工作区 $_sessionCount 个会话（未收尾 $_pendingCount）'),
         Text('索引 $_entryCount 条 · 打点 $_punchCount 条'),
         const SizedBox(height: 8),
@@ -4713,6 +4869,7 @@ class _RecorderPageState extends State<RecorderPage> {
     RecordingOrientation? orientation,
     WaybillMinLength? waybillMinLength,
     bool? recordAudio,
+    bool? liveShareEnabled,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -4742,6 +4899,7 @@ class _RecorderPageState extends State<RecorderPage> {
       // 与 [_recordAudio]），所以这里只写回 settings 一处。
       if (waybillMinLength != null) settings.waybillMinLength = waybillMinLength;
       if (recordAudio != null) settings.recordAudio = recordAudio;
+      if (liveShareEnabled != null) settings.liveShareEnabled = liveShareEnabled;
 
       settings.mode = _mode;
       settings.staticStop = _staticStop;
@@ -4755,10 +4913,18 @@ class _RecorderPageState extends State<RecorderPage> {
       settings.orientation = _orientation;
     });
 
-    // ⚠️ **播报是唯一立刻生效的一项。** 它不参与任何判定（只出声），
-    // 而人是嫌吵才关的 —— 让他「先结束工作再开始」是不合理的。
-    // 其余三项等下次「开始工作」，理由见设置页底部那块提示与 `实现决策.md` §17.3。
+    // ⚠️ **播报是唯一立刻生效的一项。**
+    // 它不参与任何判定（只出声），而人是嫌吵才关的 ——
+    // 让他「先结束工作再开始」是不合理的。
+    // 其余各项（含**实时共享**）等下次「开始工作」，
+    // 理由见设置页底部那块提示与 `实现决策.md` §17.3。
     if (voiceEnabled != null) _applyVoice();
+
+    // 实时共享：**关掉是立刻就停的**，打开要等下次【开始工作】
+    // （推流那一路是开会话时挂上去的第二路输出）。这里叫一下是为了
+    // 让「关掉」当场生效、「打开」当场得到那句实话 —— 而不是让用户
+    // 对着一个没有反应的开关猜。
+    if (liveShareEnabled != null) unawaited(_applyLiveShare());
 
     // **不等它写完。** 写盘是几十毫秒的 I/O，而这是点一下开关就要走的路；
     // 失败了也不该拦住任何事 —— 设置读不出来/写不进去都不影响录制（I4）。
@@ -4820,6 +4986,8 @@ class _RecorderPageState extends State<RecorderPage> {
         _orientationCard(),
         const SizedBox(height: 12),
         _recordAudioCard(),
+        const SizedBox(height: 12),
+        _liveShareCard(),
         const SizedBox(height: 12),
         _fallbackCard(),
         const SizedBox(height: 12),
@@ -5079,6 +5247,88 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
+  /// 实时共享（规格 §3.8）：把这台手机的相机画面推给电脑端的多画面。
+  ///
+  /// ⚠️ 这一张卡上**每一句都是实话**，因为这个开关最容易让人误解：
+  /// 「开了是不是一直在录」「会不会影响录像」「为什么电脑端看不到」——
+  /// 三个问题各有一句回答，缺一句用户就会自己瞎猜。
+  Widget _liveShareCard() {
+    final running = _liveShare?.isRunning ?? false;
+
+    return _settingCard(
+      icon: Icons.cast,
+      title: '实时共享',
+      blurb: '把这台手机的相机画面推给电脑端看（电脑端那边叫「实时多画面」）。',
+      children: [
+        SwitchListTile(
+          key: const Key('settings-live-share-switch'),
+          contentPadding: EdgeInsets.zero,
+          value: _liveShareOn,
+          onChanged: _settingsReady
+              ? (value) => _updateSettings(liveShareEnabled: value)
+              : null,
+          title: Text(_liveShareOn ? '开启' : '关闭'),
+          subtitle: Text(
+            // ⚠️ 这三句是这一页上最容易写错的地方：把「推流」说成「录像」
+            // 会让人以为关掉它录像就没了，反过来会让人以为录像是靠它传的。
+            // ⚠️ **界面上不要写 `**粗体**`** —— 那不是 Markdown，用户看到的是
+            // 四个星号。这一页其它说明文字也一律是纯文本。
+            '只往外推画面：不录音、不落盘，也不写进录像文件。\n'
+            '点【开始工作】之后才会推；结束工作就停。\n'
+            '录制吃紧（过热 / 低电量 / 存储将满）时它会被自动停掉 —— 录像优先。\n'
+            '⚠️ 改成「开」要等**下次【开始工作】**才真的开始推（推流那一路是'
+            '开会话时接上的，中途接会打断正在录的那一段）；改成「关」是立刻停的。\n'
+            '手机不在电脑端那个局域网里、或者电脑端没开时，推不出去'
+            '（手机上照常录像，只是电脑端的多画面里不会出现这台机位）。',
+          ),
+        ),
+
+        // 起不来 / 被压力停掉时的那句话。**平时不占地方**（null 就整块不画）。
+        if (_liveShareProblem != null) ...[
+          const SizedBox(height: 4),
+          _liveShareNotice(_liveShareProblem!),
+        ] else if (_liveShareOn) ...[
+          const SizedBox(height: 4),
+          _liveShareNotice(
+            running
+                ? '正在推流（${_liveShare!.quality.label}）。'
+                : '开关是开的，但要等【开始工作】之后才开始推。',
+            warning: false,
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 实时共享那张卡下面的一行状态/告警。
+  ///
+  /// ⚠️ 「正在推流」与「起不来」用的**不是**同一个颜色深浅 ——
+  /// 一个正常的绿字和一个正常的灰字，用户分不出哪句是坏消息。
+  Widget _liveShareNotice(String text, {bool warning = true}) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          warning ? Icons.warning_amber_rounded : Icons.info_outline,
+          size: 16,
+          color: warning ? scheme.error : scheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 12,
+              color: warning ? scheme.error : scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   // ── ②e 网盘视频 / 关于我们：两个二级页的入口 ───
 
   /// 一行 + 右箭头 → 二级页。**不改 `_tab` 那套** —— 照本页已有的先例
@@ -5121,7 +5371,23 @@ class _RecorderPageState extends State<RecorderPage> {
 
   void _openNetdiskPage() {
     Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (context) => const NetdiskShellPage()),
+      MaterialPageRoute<void>(
+        // ⚠️ 把 `_client` 与 `_rootPath` 带过去：借令牌要走前者（没配对时是
+        // null，那一页会如实说明并只留「自己登录」），令牌与下载都落在后者下面。
+        builder: (context) => NetdiskPage(
+          client: _client,
+          rootPath: _rootPath,
+          // 扫面单复用同一个页面与同一套相机协调 —— 尤其
+          // `closeCameraWhenDone`：录制中、或发货栏取景框开着时**不能关**相机，
+          // 那会掐掉别人的会话。
+          onScan: (pageContext) => ScanWaybillPage.open(
+            pageContext,
+            gateway: _gateway,
+            closeCameraWhenDone: _coordinator?.isCameraOpen != true,
+            spec: _coordinator?.effectiveSpec ?? _requestedSpec(),
+          ),
+        ),
+      ),
     );
   }
 
@@ -5738,14 +6004,20 @@ class _RecorderPageState extends State<RecorderPage> {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Text(
+          // ⚠️ 全称句每加一个例外都要回头改一遍（踩坑 21）：2026-10-01 加
+          // 【实时共享】时核对过一次 —— 它**属于**这一组（要等下次开始工作），
+          // 不是例外，所以这两句只多列了一个名字，别的地方一个字没动。
           working
               ? '⚠️ 正在工作中。上面【工作模式】【忘记停止录制时的自动兜底】'
                   '【录像编码/规格/方向】【面单条码最短长度】【录制声音】'
+                  '【实时共享】'
                   '改了这一段不生效 —— '
                   '等下次「开始工作」重建编排器时才按新设置走。'
+                  '（【实时共享】改成「关」是立刻停的。）'
                   '【语音提示】不受这条限制，它立刻生效。'
               : '【工作模式】【忘记停止录制时的自动兜底】【录像编码/规格/方向】'
-                  '【面单条码最短长度】【录制声音】在点「开始工作」时生效。'
+                  '【面单条码最短长度】【录制声音】【实时共享】'
+                  '在点「开始工作」时生效。'
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
                   '【语音提示】是立刻生效的。\n'
                   '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
@@ -5911,92 +6183,14 @@ class AboutPage extends StatelessWidget {
   }
 }
 
-/// 「网盘视频」二级页 —— **需求方 2026-09-28 裁决：只做壳**。
+/// 「网盘视频」这一页**已经真接上了**，实现搬到 `lib/app/netdisk_page.dart`
+/// （`NetdiskPage`）。
 ///
-/// ## ⚠️ 这一页为什么不摆一个能填的表单
+/// 2026-10-01 之前它是这里的一个壳：入口照图画出来、控件全灰着、并明说
+/// 「网盘那半在电脑端都还没做」。**那个理由已经过期** —— 电脑端批次 5 把网盘
+/// 那半做完了，手机端也跟着接上了（登录 / 按后 6 位查 / 下载 / 播放）。
 ///
-/// 网盘那半**在电脑端都还没做**（规格 §3.4.6 还要求上层不得依赖某一种后端）。
-/// 做成「填了单号点搜索、没反应」的表单就是本仓明令禁止的踩坑 #13 ——
-/// 用户会以为是自己网络的问题，反复试。
-///
-/// 所以：**入口照图画出来、控件灰着、并且明说为什么灰。**
-/// 等网盘链路真通了，把这两个控件的回调接上就行，页面结构不用动。
-class NetdiskShellPage extends StatelessWidget {
-  const NetdiskShellPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('网盘视频')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            key: const Key('netdisk-not-connected'),
-            child: const Padding(
-              padding: EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('⚠️ 这一页还没接通',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  SizedBox(height: 4),
-                  Text(
-                    '下面两个入口现在都是灰的 —— 网盘上传那半还没做，'
-                    '点了也不会有任何反应，所以干脆不让点。\n'
-                    '录像本身不受影响：它们照常存在手机里、照常备份到电脑端。',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('网盘账号',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  FilledButton.icon(
-                    key: const Key('netdisk-login'),
-                    onPressed: null,
-                    icon: const Icon(Icons.login, size: 18),
-                    label: const Text('登录网盘'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('按单号查找',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  const TextField(
-                    key: Key('netdisk-search'),
-                    enabled: false,
-                    decoration: InputDecoration(
-                      hintText: '扫或输入完整单号',
-                      prefixIcon: Icon(Icons.search),
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+/// ⚠️ 有一条规矩**跟着搬过去了、没有放松**：这一页**不许出现任何许可相关的
+/// 东西**（L8，手机端整条链路没有许可判断）。那条断言还在
+/// `test/about_page_test.dart` 里钉着。
 

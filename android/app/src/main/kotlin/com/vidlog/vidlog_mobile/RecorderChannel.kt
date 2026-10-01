@@ -332,6 +332,12 @@ class RecorderChannel(private val activity: FlutterActivity) :
         // 麦克风这一路」，那里决定「这一段文件里写不写音轨」，两个都要传。
         val audio = call.argument<Boolean>("audio") ?: false
 
+        // 实时共享那一路（规格 §3.8）。与 `audio` 同一类：**开会话时定死**，
+        // 中途补不上 —— 相机的输出集是 `createCaptureSession` 定的，
+        // 中途加一路要重建会话，那一下会打断正在录的证据。
+        // 缺参数 = false = 老行为（不推流）。
+        val live = call.argument<Boolean>("live") ?: false
+
         // 已经开着（相机 + 预览都在跑）就直接回成功，与 iOS 一致。
         // ⚠️ 但**识码范围要顺手换掉**：就这么返回的话，录制页把相机开着、
         // 用户切到扫码连接那一下，屏幕上是一维码的白名单在扫一张二维码 ——
@@ -354,7 +360,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
         )
         created.qrOnly = qrOnly
 
-        if (!created.openCamera(spec, audio)) {
+        if (!created.openCamera(spec, audio, live)) {
             result.error("camera_failed", "相机未能打开", null)
             return
         }

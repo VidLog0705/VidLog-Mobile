@@ -88,6 +88,12 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             CameraPreviewFactory(recorderProvider: { [weak instance] in instance?.recorder }),
             withId: previewViewType)
 
+        // 实时推流那条通道（规格 §3.8）—— **另开一条**，不并进上面那条。
+        // 理由见 `LiveChannel` 的类注释（第 2 条隔离规则）。
+        let live = LiveChannel(recorderProvider: { [weak instance] in instance?.recorder })
+        live.attach(messenger: registrar.messenger())
+        registrar.publish(live)
+
         // 让注册表持住实例 —— 否则它会被释放，通道就成了哑的。
         registrar.publish(instance)
     }
@@ -626,6 +632,11 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         // 会话建好之后补不进来。
         let audio = (call.arguments as? [String: Any])?["audio"] as? Bool ?? false
 
+        // 实时共享那一路（规格 §3.8）。与 `audio` 同一类：**开会话时定死**，
+        // 中途补不上 —— 往跑着的会话里加输出会让它重新配置，
+        // 那一下断的是正在录的证据。缺参数 = false = 老行为（不推流）。
+        let live = (call.arguments as? [String: Any])?["live"] as? Bool ?? false
+
         if let recorder, recorder.captureSession.isRunning {
             // ⚠️ 相机已经开着时**只能换识码范围**，不能就这么返回：
             // 录制页把相机开着、用户切到扫码连接那一下，返回早退的话
@@ -645,7 +656,7 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         })
         created.qrOnly = qrOnly
 
-        guard created.openCamera(spec: spec, audio: audio) else {
+        guard created.openCamera(spec: spec, audio: audio, live: live) else {
             result(FlutterError(code: "camera_failed", message: "相机未能打开", details: nil))
             return
         }
@@ -764,6 +775,133 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                     "message": message,
                 ])
             }
+        }
+    }
+}
+
+/// 实时推流那条通道（规格 §3.8，需求方 2026-10-01 定的方案）。
+///
+/// ## ⚠️ 为什么**另开一条通道**，不并进 `vidlog/recorder`
+///
+/// 规格第 2 条（不许传染）：两条通道的失败面分开之后，推流起不来
+/// **不会**让录制那条通道上的任何一次调用跟着进错误分支 ——
+/// 并进去的话，`RecorderGateway` 的每一个调用点都要开始考虑
+/// 「这次失败是不是推流引起的」。
+///
+/// ## 两条路
+///
+/// | 通道 | 给什么 |
+/// |---|---|
+/// | `vidlog/live`（方法） | `startLive(height)` / `stopLive()` / `setLiveQuality(height)` |
+/// | `vidlog/live/frames`（事件） | `{type:"frame", key:是否关键帧, data:字节}` 与 `{type:"failed", message}` |
+///
+/// ⚠️ **失败要回 `FlutterError`，不能回一个字符串** —— Dart 那边
+/// `invokeMethod<void>` 会把返回值丢掉，回字符串等于「这边失败了、那边以为成了」。
+///
+/// ⚠️ **本机编不了**（Windows 上没有 Xcode）。唯一的验证途径是 CI 的
+/// `ios-compile-check.yml` 与真机 `.ipa`。
+final class LiveChannel: NSObject, FlutterStreamHandler {
+
+    private static let methodChannelName = "vidlog/live"
+    private static let eventChannelName = "vidlog/live/frames"
+
+    /// 当前那台录制器。**每次调用现取**：相机会关掉重开，录制器实例会换
+    /// （与 `CameraPreviewFactory` 同一个路数）。
+    private let recorderProvider: () -> CameraSegmentRecorder?
+
+    private var sink: FlutterEventSink?
+
+    init(recorderProvider: @escaping () -> CameraSegmentRecorder?) {
+        self.recorderProvider = recorderProvider
+        super.init()
+    }
+
+    /// 注册通道。**由 `RecorderPlugin.register` 调**，不由注册表直接发现 ——
+    /// 它要拿到同一个 `recorder` 实例（那个实例会随相机关开而换）。
+    func attach(messenger: FlutterBinaryMessenger) {
+        let methods = FlutterMethodChannel(name: Self.methodChannelName, binaryMessenger: messenger)
+        methods.setMethodCallHandler { [weak self] call, result in
+            self?.handle(call, result: result)
+        }
+
+        let events = FlutterEventChannel(name: Self.eventChannelName, binaryMessenger: messenger)
+        events.setStreamHandler(self)
+    }
+
+    // MARK: - EventChannel
+
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        sink = events
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        sink = nil
+        return nil
+    }
+
+    // MARK: - MethodChannel
+
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any]
+
+        switch call.method {
+        case "startLive":
+            guard let recorder = recorderProvider() else {
+                result(FlutterError(
+                    code: "live_failed", message: "相机还没开，推流起不来", details: nil))
+                return
+            }
+
+            let lines = args?["height"] as? Int ?? LiveStreamer.tileLines
+
+            let failure = recorder.startLive(
+                lines: lines,
+                onFrame: { [weak self] isKey, data in self?.emitFrame(isKey: isKey, data: data) },
+                onFailure: { [weak self] message in self?.emitFailure(message) })
+
+            if let failure {
+                // ⚠️ **回 FlutterError，不是回那个字符串**：Dart 那边
+                // `invokeMethod<void>` 会把返回值丢掉。
+                result(FlutterError(code: "live_failed", message: failure, details: nil))
+            } else {
+                result(nil)
+            }
+
+        case "stopLive":
+            recorderProvider()?.stopLive()
+            result(nil)
+
+        case "setLiveQuality":
+            let lines = args?["height"] as? Int ?? LiveStreamer.tileLines
+            recorderProvider()?.setLiveLines(lines)
+            result(nil)
+
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
+
+    // MARK: - 事件投递
+
+    private func emitFrame(isKey: Bool, data: Data) {
+        // ⚠️ 没有订阅者时**一个字节都不发**：这条路每帧都要拷一次内存
+        // （30fps × 几万字节），而没人看的时候那些拷贝是白花的 ——
+        // 本仓已经因为「白跑的活儿」吃过一次亏。
+        guard sink != nil else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.sink?([
+                "type": "frame",
+                "key": isKey,
+                "data": FlutterStandardTypedData(bytes: data),
+            ])
+        }
+    }
+
+    private func emitFailure(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.sink?(["type": "failed", "message": message])
         }
     }
 }

@@ -2123,12 +2123,20 @@ class FakeGateway implements RecorderGateway {
     bool qrOnly = false,
     RecordingSpec? spec,
     bool audio = false,
+    bool live = false,
   }) async {
     cameraOpened = true;
     cameraQrOnly = qrOnly;
     openedSpec = spec;
     openedAudio = audio;
+    openedLive = live;
   }
+
+  /// 最近一次开相机带着的实时共享开关（规格 §3.8）。
+  ///
+  /// ⚠️ 与 `audio` 同一类：**开会话时定死**。推流那一路上挂的是相机会话的
+  /// 第二路输出，中途加进去会让会话重新配置、断掉一小截录制。
+  bool? openedLive;
 
   /// 最近一次开相机带着的规格。**「规格改了要重开相机」那条要靠它验** ——
   /// 不重开的话，用户改了规格、回来按开始，录的仍是上一档（改了没反应）。

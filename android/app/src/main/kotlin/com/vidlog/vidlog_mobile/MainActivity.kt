@@ -12,12 +12,19 @@ import io.flutter.embedding.engine.FlutterEngine
 class MainActivity : FlutterActivity() {
 
     private var recorderChannel: RecorderChannel? = null
+    private var liveChannel: LiveChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         val channel = RecorderChannel(this)
         channel.attach(flutterEngine.dartExecutor.binaryMessenger)
+
+        // 实时推流那条通道（规格 §3.8）—— **另开一条**，不并进上面那条。
+        // 理由见 `LiveChannel` 的类注释（第 2 条隔离规则）。
+        // ⚠️ 录制器**每次调用现取**：相机会关掉重开，实例会换。
+        val live = LiveChannel { channel.currentRecorder }
+        live.attach(flutterEngine.dartExecutor.binaryMessenger)
 
         // 预览视图（规格 §3.2.2：取景框要看得见）。
         //
@@ -34,6 +41,7 @@ class MainActivity : FlutterActivity() {
         )
 
         recorderChannel = channel
+        liveChannel = live
     }
 
     override fun onRequestPermissionsResult(
@@ -52,6 +60,9 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        liveChannel?.dispose()
+        liveChannel = null
+
         recorderChannel?.dispose()
         recorderChannel = null
         super.onDestroy()

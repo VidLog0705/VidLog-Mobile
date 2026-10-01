@@ -123,8 +123,18 @@ abstract interface class RecorderGateway {
   /// ⚠️ 会话**已经开着**时这个值不生效 —— 原生直接早退。改它要重开会话，
   /// 由 [RecordingCoordinator.openCamera] 自己判（它会先 closeCamera）。
   ///
+  /// [live] 决定**开会话时要不要挂上实时推流那一路**（规格 §3.8）。
+  /// 与 [audio] 同一类：**开会话时定死**，会话建好之后补不上 ——
+  /// 往一个跑着的会话里加输出会让它重新配置，那一下断的是正在录的证据。
+  /// 所以它也是「改了等下次开始工作」的那一组。
+  ///
   /// 相机已经开着时调用它：只换识码范围，不重开相机。
-  Future<void> openCamera({bool qrOnly = false, RecordingSpec? spec, bool audio = false});
+  Future<void> openCamera({
+    bool qrOnly = false,
+    RecordingSpec? spec,
+    bool audio = false,
+    bool live = false,
+  });
 
   /// 录制前那次**真实的可用性检查**（规格 §3.1.7）。
   ///
@@ -332,6 +342,7 @@ class ChannelRecorderGateway implements RecorderGateway {
     bool qrOnly = false,
     RecordingSpec? spec,
     bool audio = false,
+    bool live = false,
   }) =>
       _methods.invokeMethod<void>('openCamera', {
         'qrOnly': qrOnly,
@@ -339,6 +350,9 @@ class ChannelRecorderGateway implements RecorderGateway {
         // ⚠️ **不带 `if`** —— 与会话里那一路的存在与否直接相关，
         // 这个键必须每次都发出去（同一个理由见 [startRecording]）。
         'audio': audio,
+        // 实时共享那一路（规格 §3.8）。与 `audio` 同一类：**开会话时定死**，
+        // 中途补不上（往跑着的会话里加输出会让录制断一小截）。
+        'live': live,
       });
 
   @override

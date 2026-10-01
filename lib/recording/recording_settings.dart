@@ -9,10 +9,11 @@ import 'work_mode.dart';
 
 /// 用户选的录制设置（`<root>/settings.json`）。
 ///
-/// 落盘的十三项：工作模式、静止停录档位、时长兜底档位、语音播报开关、
+/// 落盘的十四项：工作模式、静止停录档位、时长兜底档位、语音播报开关、
 /// 录制规格三项（编码 / 分辨率 / 方向，规格 §3.1.7）、
-/// 归档后的本地保留期四项（发货 / 退货 × 已备份 / 未备份，规格 §3.5.2.1），
-/// 以及 2026-09-28 加的两项：面单条码最短长度、录制声音。
+/// 归档后的本地保留期四项（发货 / 退货 × 已备份 / 未备份，规格 §3.5.2.1）、
+/// 2026-09-28 加的两项（面单条码最短长度、录制声音），
+/// 以及 2026-10-01 加的实时共享开关（规格 §3.8）。
 ///
 /// ## 为什么单独一个文件，不并进 `device.json`
 ///
@@ -53,6 +54,7 @@ class RecordingSettings {
     this.orientation = RecordingOrientation.portrait,
     this.waybillMinLength = WaybillMinLength.fallback,
     this.recordAudio = true,
+    this.liveShareEnabled = false,
   });
 
   final String path;
@@ -129,6 +131,20 @@ class RecordingSettings {
   /// 不认字符串 `'false'`。
   bool recordAudio;
 
+  /// 实时共享：把这台手机的相机画面推给电脑端看（规格 §3.8）。
+  ///
+  /// ## ⚠️ 默认**关**，而且读不出来也回落成关
+  ///
+  /// 与 [voiceEnabled] / [recordAudio] 的方向**相反**，理由值得写下来：
+  /// 那两项的默认值是在「静默关掉一个已有功能」与「静默开着」之间选，
+  /// 静默关掉更糟。而这一项**开了才会发生一件事** ——
+  /// 相机画面开始在局域网上传出去，同时多烧一份编码的 CPU 与电。
+  /// 读坏了就替用户决定「把相机推出去」，那是替他做主，不是保守。
+  ///
+  /// ⚠️ 它**不影响录制**：推流那一路是独立的编码器，关它 / 开它都不碰
+  /// 录制那条链路（规格 §3.8 的三条隔离规则）。
+  bool liveShareEnabled;
+
   /// 用户选的那一档 —— 落盘与界面都按它走。
   ///
   /// ⚠️ 它与**实际启用**的那一档可能不一样：规格 §3.1.7 要求录制前做
@@ -189,6 +205,13 @@ class RecordingSettings {
         final bool value => value,
         _ => true,
       },
+      // 2026-10-01 新增。⚠️ 老文件里没有这个键 ⇒ 走 `false`（关）——
+      // 「升级之后行为变了吗」的答案是：**没有**。谁也没在不知情的时候
+      // 开始把画面推出去。
+      liveShareEnabled: switch (json['liveShareEnabled']) {
+        final bool value => value,
+        _ => false,
+      },
     );
   }
 
@@ -241,6 +264,8 @@ class RecordingSettings {
         'waybillMinLength': waybillMinLength.length,
 
         'recordAudio': recordAudio,
+
+        'liveShareEnabled': liveShareEnabled,
       }),
     );
   }

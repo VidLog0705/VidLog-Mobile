@@ -455,6 +455,46 @@ void main() {
     });
   });
 
+  group('实时共享（2026-10-01 新增，规格 §3.8）', () {
+    test('★ 默认**关**：这一项的兜底方向与播报/录音相反', () async {
+      // ⚠️ 那两项读不出来时按「开」算（静默关掉一个已有功能更糟），
+      // 而这一项**开了才会发生一件事**：相机画面开始在局域网上传出去，
+      // 同时多烧一份编码的 CPU 与电。读坏了就替用户决定把画面推出去，
+      // 那是替他做主，不是保守。
+      expect((await RecordingSettings.load(path())).liveShareEnabled, isFalse);
+    });
+
+    test('★ 改了要落盘，重开还在（含「开」）', () async {
+      final settings = await RecordingSettings.load(path());
+      settings.liveShareEnabled = true;
+      await settings.save();
+
+      final raw = jsonDecode(File(path()).readAsStringSync()) as Map<String, Object?>;
+      expect(raw['liveShareEnabled'], true);
+
+      expect((await RecordingSettings.load(path())).liveShareEnabled, isTrue);
+    });
+
+    test('⚠️ 没有这一项（老设置文件）→ 按**关**算：升级不许悄悄把画面推出去', () async {
+      // 「升级之后行为变了吗」的答案必须是「没有」。这条就是那个答案。
+      File(path()).writeAsStringSync(jsonEncode({'mode': 'sameWaybillStop'}));
+
+      expect((await RecordingSettings.load(path())).liveShareEnabled, isFalse);
+    });
+
+    test('⚠️ 只认真正的 bool —— 不认字符串「true」', () async {
+      // ⚠️ 方向与上面那条不同，所以单独钉：这里写的是 `'true'`（字符串），
+      // 认它就意味着任何一段垃圾都会被读成「推流开着」—— 而每多认一种写法，
+      // 就多一种**在用户不知情时把相机推出去**的机会。
+      for (final garbage in <Object?>['true', '1', 1, 0, <int>[], null]) {
+        File(path()).writeAsStringSync(jsonEncode({'liveShareEnabled': garbage}));
+
+        expect((await RecordingSettings.load(path())).liveShareEnabled, isFalse,
+            reason: '「$garbage」不是 bool，该按关算');
+      }
+    });
+  });
+
   group('两个兜底档位下拉里显示的字', () {
     test('「关闭」不显示成「0 分钟」', () {
       // 摆一个写着 0 的档位，用户得自己翻译「0 分钟是什么意思」。

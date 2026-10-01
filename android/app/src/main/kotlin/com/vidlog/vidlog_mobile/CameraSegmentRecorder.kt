@@ -514,6 +514,18 @@ class CameraSegmentRecorder(
     private var muxer: MediaMuxer? = null
     private var analysisReader: ImageReader? = null
 
+    /**
+     * 实时推流那一路（规格 §3.8）。
+     *
+     * ⚠️ **它与录制那一路完全是两套**：它有自己的 `ImageReader`、
+     * 自己的 `MediaCodec`、自己的线程。它坏掉、被摘掉、被停掉，
+     * 都不碰 [encoder] / [muxer] / 水印那一层 —— 规格第 2 条「不许传染」。
+     *
+     * 开会话时按 [openCamera] 的 `live` 参数决定挂不挂；挂了之后
+     * **不再中途摘除**（摘它同样要重建会话）。
+     */
+    private var liveStreamer: LiveStreamer? = null
+
     /** 预览 Surface。相机可以开着而不录，那时它是**唯一**看得见的输出。 */
     private var previewTexture: SurfaceTexture? = null
     private var previewSurface: Surface? = null
@@ -710,6 +722,7 @@ class CameraSegmentRecorder(
     fun openCamera(
         spec: RecorderSpec = RecorderSpec.STANDARD,
         audio: Boolean = false,
+        live: Boolean = false,
     ): Boolean {
         if (cameraOpen) return true
 
@@ -748,6 +761,26 @@ class CameraSegmentRecorder(
         }
         videoSize = pickVideoSize(characteristics, spec) ?: Size(1280, 720)
         videoAspect = videoSize.width.toDouble() / videoSize.height
+
+        // ── 实时推流那一路（规格 §3.8）─────────────────────────────
+        //
+        // ⚠️ **在开会话这一刻挂上去，不在用户打开开关时挂**：相机的 target 集
+        // 是 `createCaptureSession` 定死的，中途加一路要**重建会话** ——
+        // 那一下断的是正在录的证据。规格写死了「录制是证据，推流是便利，
+        // 两者冲突时无条件舍推流」，所以它与录音、与录制规格同一条规矩：
+        // **改了等下次「开始工作」**。
+        //
+        // ⚠️ **挂上 ≠ 在推**：不推的时候这一路没人接回调，
+        // `ImageReader` 也不会有消费者（连编码器都不建）。
+        //
+        // ⚠️ 建不起来**只是没有推流** —— 绝不 return false。
+        liveStreamer = if (live) {
+            LiveStreamer.create(characteristics)?.also {
+                Log.i(TAG, "实时推流这一路已挂上：${it.imageReader.width}x${it.imageReader.height}")
+            }
+        } else {
+            null
+        }
 
         startCameraThread()
 
@@ -839,9 +872,59 @@ class CameraSegmentRecorder(
         // 去改一台已经关掉的设备（或更糟 —— 改到下一次开相机的新设备上）。
         cancelPendingAutoZoomRestore()
 
+        // 推流那一路先收（规格 §3.8）。它自己那一套（编码器、线程、Reader）
+        // 要显式收干净 —— 会话拆掉不会替它收，而**没收干净的编码器会一直转**。
+        liveStreamer?.close()
+        liveStreamer = null
+
         stopRecording()
         release()
     }
+
+    // ── 实时推流（规格 §3.8）────────────────────────────────────
+
+    /**
+     * 开始往外推（用户打开了实时共享，并且相机是按「要推流」开的）。
+     *
+     * 返回 null 表示起来了；非 null 是给用户看的原因。
+     *
+     * ⚠️ **不碰相机会话**：`ImageReader` 早在开会话时就挂上去了，
+     * 这里只是接回调、起编码器。所以起停推流不会打断录制。
+     */
+    fun startLive(
+        lines: Int,
+        onFrame: (ByteArray, Boolean) -> Unit,
+        onFailure: (String) -> Unit,
+    ): String? {
+        if (!cameraOpen) return "相机还没开，推流起不来"
+
+        val streamer = liveStreamer
+            ?: return "还要等下一次【开始工作】才生效（推流那一路是开会话时接上的，" +
+                "中途接会打断正在录的那一段）"
+
+        val handler = cameraHandler
+            ?: return "相机那条线程还没起来，推流起不来"
+
+        return if (streamer.attach(onFrame, onFailure, handler)) {
+            Log.i(TAG, "实时推流开始了：${streamer.encodedSize}")
+            null
+        } else {
+            "推流编码器没起来（录像照常）"
+        }
+    }
+
+    /** 停止往外推。**`ImageReader` 仍留在会话上**（摘掉它要重建会话）。 */
+    fun stopLive() {
+        liveStreamer?.detach()
+    }
+
+    /**
+     * 换档。返回 null 表示换成了；非 null 是不换的原因。
+     *
+     * ⚠️ 安卓这边**尺寸是开会话时钉死的**（见 `LiveStreamer` 的类注释），
+     * 所以只有格子那一档换得动。别的档**如实拒绝** —— 绝不假装换了。
+     */
+    fun setLiveLines(lines: Int): String? = liveStreamer?.setLines(lines) ?: "推流没开着"
 
     /**
      * 挂上 / 摘掉预览输出。
@@ -1126,6 +1209,10 @@ class CameraSegmentRecorder(
                 outputSurface = inputSurface!!,
                 videoWidth = videoSize.width,
                 videoHeight = videoSize.height,
+                // 水印要**反向**抵消这一转 —— 像素是传感器方向的，播放器会按
+                // `setOrientationHint` 把整帧转正，烧进去的字会跟着一起转。
+                // 见 `WatermarkGlRenderer` 的「水印为什么要反向转一次」。
+                displayRotation = displayRotation,
                 onFrame = { texture -> onWatermarkFrame(texture) },
             ).also { it.setup() }
         } catch (error: Throwable) {
@@ -1192,6 +1279,11 @@ class CameraSegmentRecorder(
 
         analysisReader?.let { targets.add(it.surface) }
         previewSurface?.let { targets.add(it) }
+
+        // 实时推流那一路（规格 §3.8）。它在开会话时就挂上去了 ——
+        // 中途加要重建会话，那一下会打断录制。
+        liveStreamer?.let { targets.add(it.imageReader.surface) }
+
         return targets
     }
 
@@ -1218,6 +1310,32 @@ class CameraSegmentRecorder(
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
+                    // ⚠️ **推流那一路加不进去时，先把它摘掉、再建一次会话。**
+                    //
+                    // 相机能同时喂几路输出是**硬件定的**（这里已经有录制、
+                    // 识码、预览三路，再加推流可能就超了）。超了的时候
+                    // 整个会话都建不起来 —— 而那意味着**连录制都起不来**，
+                    // 正是规格 §3.8 第 2 条最不能容忍的那种后果
+                    // （推流坏掉只能表现成「这一格黑着」）。
+                    //
+                    // 只重试这一次：摘掉推流之后还失败，那就是录制自己的问题，
+                    // 照原来的话如实报。
+                    val dropped = liveStreamer
+
+                    if (dropped != null) {
+                        liveStreamer = null
+                        dropped.close()
+
+                        onEvent(
+                            RecorderEvent.Failed(
+                                "实时共享这一路加不进去（这台设备的相机输出路数不够），录制照常。",
+                            ),
+                        )
+
+                        createSession(device)
+                        return
+                    }
+
                     onEvent(RecorderEvent.Failed("相机会话配置失败"))
                 }
             },
@@ -1250,6 +1368,7 @@ class CameraSegmentRecorder(
         (watermarkRenderer?.inputSurface() ?: inputSurface)?.let { builder.addTarget(it) }
         analysisReader?.let { builder.addTarget(it.surface) }
         previewSurface?.let { builder.addTarget(it) }
+        liveStreamer?.let { builder.addTarget(it.imageReader.surface) }
     }
 
     /// GL 那一层画完一帧的回调（相机每来一帧调一次）。

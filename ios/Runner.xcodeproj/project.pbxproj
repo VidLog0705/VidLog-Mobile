@@ -15,6 +15,7 @@
 		A1B2C3D4000000000000E002 /* CameraSegmentRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000E001 /* CameraSegmentRecorder.swift */; };
 		A1B2C3D4000000000000E004 /* RecorderPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000E003 /* RecorderPlugin.swift */; };
 		A1B2C3D4000000000000E006 /* CameraPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000E005 /* CameraPreviewView.swift */; };
+		A1B2C3D4000000000000E008 /* LiveStreamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4000000000000E007 /* LiveStreamer.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
@@ -56,6 +57,7 @@
 		A1B2C3D4000000000000E001 /* CameraSegmentRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSegmentRecorder.swift; sourceTree = "<group>"; };
 		A1B2C3D4000000000000E003 /* RecorderPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderPlugin.swift; sourceTree = "<group>"; };
 		A1B2C3D4000000000000E005 /* CameraPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreviewView.swift; sourceTree = "<group>"; };
+		A1B2C3D4000000000000E007 /* LiveStreamer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveStreamer.swift; sourceTree = "<group>"; };
 		78E0A7A72DC9AD7400C4905E /* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = FlutterGeneratedPluginSwiftPackage; path = Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 				A1B2C3D4000000000000E001 /* CameraSegmentRecorder.swift */,
 				A1B2C3D4000000000000E003 /* RecorderPlugin.swift */,
 				A1B2C3D4000000000000E005 /* CameraPreviewView.swift */,
+				A1B2C3D4000000000000E007 /* LiveStreamer.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
 			path = Runner;
@@ -296,6 +299,7 @@
 				A1B2C3D4000000000000E002 /* CameraSegmentRecorder.swift in Sources */,
 				A1B2C3D4000000000000E004 /* RecorderPlugin.swift in Sources */,
 				A1B2C3D4000000000000E006 /* CameraPreviewView.swift in Sources */,
+				A1B2C3D4000000000000E008 /* LiveStreamer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

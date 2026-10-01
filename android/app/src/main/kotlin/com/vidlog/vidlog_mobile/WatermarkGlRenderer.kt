@@ -40,11 +40,56 @@ import java.nio.FloatBuffer
  * ⚠️ **失败必须降级到「无水印」而不是「录不了」**：建不起来时调用方会退回
  * 原来的直连通路（见 `CameraSegmentRecorder.openDevice`）。没有水印是遗憾，
  * 录不出来是事故（I2 的同一条精神）。
+ *
+ * ## 水印为什么要**反向转一次**（规格 §3.6.2 + §3.1.7 ②）
+ *
+ * 规格原话：「成片（无论横竖）里，水印**始终在视觉上的顶部中间**，且**文字正向
+ * 可读** —— 横屏时**不得**跑到侧边，也**不得**跟着旋转 90°。这意味着**水印的
+ * 绘制坐标要按方向做一次变换**。」
+ *
+ * 为什么这里非做不可：**成片的像素永远是传感器方向（横向）的**，
+ * 竖屏那件事只是 `MediaMuxer.setOrientationHint` 写了一个标记
+ * （`CameraSegmentRecorder.spec.size` 的注释：「相机这边的输出尺寸始终是
+ * 传感器方向的那一个」）。播放器读到那个标记，把**整帧**转正 ——
+ * 而水印是**烧进像素**的，会跟着一起转。
+ *
+ * 结果就是（不修的话）：竖屏时水印落在**显示画面的左边**，而且**文字躺倒 90°** ——
+ * 正对着 §3.6.2 那两句「不得跑到侧边」「不得跟着旋转 90°」。
+ *
+ * 做法：照规格说的「按方向做一次变换」—— 先在传感器坐标系里按**顶部居中**摆好
+ * （`uploadBitmap` 里那四个点），再**绕画面中心反向转 `displayRotation` 度**。
+ * 播放器顺时针转多少，这里就先逆时针转多少，转完正好落回视觉上的顶部中间、
+ * 文字也正。
+ *
+ * ### 一张对照（竖屏、`displayRotation = 90`）
+ *
+ * | | 传感器坐标系 | 播放器转 90° 之后 |
+ * |---|---|---|
+ * | 顶部中间 | 左边中点 | **顶部中间** ✅ |
+ * | 文字正向 | 逆时针躺 90° | **正向** ✅ |
+ *
+ * ⚠️ **方向没在真机上验过**（开发机是 Windows、不跑模拟器）。真机上若发现水印
+ * 落在**别的边**上，要动的是 [rotatedAboutCenter] 那个角度的**正负号**
+ * —— 与 `CameraSegmentRecorder.spec.orientationHint` 里那句
+ * 「两个方向反了就调换 `-90` 与 `+90`」同一个性质：**只改这一处，别去动别的地方**。
+ *
+ * ## ⚠️ iOS **不做**这一转，两边形状本来就不同
+ *
+ * iOS 的旋转加在 `AVCaptureConnection` 上（`videoRotationAngle`），交付出来的像素
+ * **本身就是正的**，也没有 writer 的 `transform` —— 所以那边画在顶部居中即正确。
+ * 这不是谁漏了一段：两个平台交付像素的方式不同。细节见
+ * `CameraSegmentRecorder.swift` 里 `originX` 那一段的说明。
  */
 class WatermarkGlRenderer(
     private val outputSurface: Surface,
     private val videoWidth: Int,
     private val videoHeight: Int,
+    /**
+     * 成片要**顺时针**转多少度才是正的（= `setOrientationHint` 那个值）。
+     *
+     * ⚠️ 水印必须知道这个数 —— 见类文档「水印为什么要反向转一次」。
+     */
+    private val displayRotation: Int,
     private val onFrame: (SurfaceTexture) -> Unit,
 ) {
     companion object {
@@ -294,12 +339,18 @@ class WatermarkGlRenderer(
 
         watermarkAspect = bitmap.width.toFloat() / bitmap.height
 
-        watermarkQuad = floatBufferOf(
+        // ① 先在**传感器坐标系**里按「顶部居中」摆好。
+        val base = floatArrayOf(
             -width / 2f, top - height,
             width / 2f, top - height,
             -width / 2f, top,
             width / 2f, top,
         )
+
+        // ② 再绕画面中心**反向**转回去 —— 播放器会按 `setOrientationHint`
+        // 顺时针转整帧，水印得先把那一转抵消掉，转完才落在视觉上的顶部中间。
+        // 完整的理由与没验过的部分见类文档「水印为什么要反向转一次」。
+        watermarkQuad = rotatedAboutCenter(base, displayRotation)
 
         // 纹理坐标要**上下翻**：Bitmap 的第一行是图像顶部，而 GL 的 v=0 在底部。
         watermarkTexCoord = floatBufferOf(
@@ -343,6 +394,32 @@ class WatermarkGlRenderer(
 
     private fun identityMatrix(): FloatArray = FloatArray(16).also {
         android.opengl.Matrix.setIdentityM(it, 0)
+    }
+
+    /**
+     * 把一组 NDC 顶点（两两一组）**绕画面中心逆时针**转 [degrees] 度。
+     *
+     * ⚠️ NDC 是 -1..1、**y 轴朝上**，而屏幕坐标 y 朝下 —— 所以「屏幕上顺时针转 θ」
+     * 换算到 NDC 里就是**逆时针 θ**，这里因此直接按逆时针公式算，
+     * 传入的仍然是那个「顺时针」的 `displayRotation`。
+     *
+     * ⚠️ **正负号没在真机上验过**。真机上若水印落在别的边上，改的就是这里
+     * （把 `displayRotation` 取负，或者调换 sin 的两处符号），别去动摆放那一段。
+     */
+    private fun rotatedAboutCenter(corners: FloatArray, degrees: Int): FloatBuffer {
+        val radians = Math.toRadians(degrees.toDouble())
+        val cos = kotlin.math.cos(radians).toFloat()
+        val sin = kotlin.math.sin(radians).toFloat()
+
+        val out = FloatArray(corners.size)
+        for (i in corners.indices step 2) {
+            val x = corners[i]
+            val y = corners[i + 1]
+            out[i] = x * cos - y * sin
+            out[i + 1] = x * sin + y * cos
+        }
+
+        return floatBufferOf(*out)
     }
 
     private fun floatBufferOf(vararg values: Float): FloatBuffer = ByteBuffer
