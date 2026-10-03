@@ -730,13 +730,32 @@ class _RecorderPageState extends State<RecorderPage> {
     if (service.isRunning) return;
 
     final failure = await service.start();
-    if (failure != null && mounted) {
-      // ⚠️ 说给用户听：设置页那张卡上写的就是这句。
-      setState(() => _liveShareProblem = failure);
+    if (failure != null) {
+      _reportLiveShareProblem(failure);
       return;
     }
 
-    if (mounted) setState(() => _liveShareProblem = null);
+    _reportLiveShareProblem(null);
+  }
+
+  /// 推流出事时**当场说一句**（起不来、被录制压力停掉）。
+  ///
+  /// ⚠️ 2026-10-03（需求方）：设置页那张「实时共享」卡整个删掉了 ——
+  /// 那句话原先只有那张卡说得出口。改成**出事那一刻弹一条**，
+  /// 采集页右上角那颗图标继续用变色表示「它现在有事」（按下去也还会再说一遍）。
+  ///
+  /// ⚠️ 删了卡还不出声，就成了规格 §3.8 第 3 条明禁的那种：
+  /// 「刚才还有画面，怎么没了」而界面上一个字都没有。
+  void _reportLiveShareProblem(String? problem) {
+    if (!mounted) return;
+
+    // 没变就别刷 —— 这条在每次「开始工作」上都会走一遍。
+    if (_liveShareProblem != problem) {
+      setState(() => _liveShareProblem = problem);
+    }
+
+    // 自愈了不打扰（图标自己会恢复）；出事才说。
+    if (problem != null) _snack(problem);
   }
 
   /// 向电脑端报到（规格 §3.8 的机位发现）。
@@ -1375,7 +1394,7 @@ class _RecorderPageState extends State<RecorderPage> {
         // 推流白耗的 CPU 与热量是**整机共享**的，那会实打实地让录制掉帧。
         // 这一条是三条里最后一道闸。**录制是证据，推流是便利。**
         if (_liveShare?.isRunning ?? false) {
-          setState(() => _liveShareProblem = '录制吃紧（$reason），已自动停掉实时共享。');
+          _reportLiveShareProblem('录制吃紧（$reason），已自动停掉实时共享。');
           unawaited(_liveShare?.notifyRecordingPressure(reason));
         }
 
@@ -4445,8 +4464,9 @@ class _RecorderPageState extends State<RecorderPage> {
           key: const Key('work-live-share'),
           icon: liveOn ? Icons.cast_connected : Icons.cast,
           on: liveOn,
-          // ⚠️ 起不来 / 被录制压力停掉时**换颜色**：这个按钮是采集页上唯一
-          // 能看见推流出事的入口（设置页那张卡还是那句话的全文）。
+          // ⚠️ 起不来 / 被录制压力停掉时**换颜色**：原因那句话已经当场弹过了
+          // （见 `_reportLiveShareProblem`；设置页那张卡 2026-10-03 删了）。
+          // 这里留着是让「它现在有事」这个状态**一直看得见** —— 弹窗会自己走掉。
           // 不说的话，用户看到的就是「图标亮着，而电脑端没有我这台机位」。
           warning: _liveShareProblem != null,
           tooltip: liveOn ? '关掉实时共享' : '打开实时共享',
@@ -5219,8 +5239,6 @@ class _RecorderPageState extends State<RecorderPage> {
         const SizedBox(height: 12),
         _recordAudioCard(),
         const SizedBox(height: 12),
-        _liveShareCard(),
-        const SizedBox(height: 12),
         _fallbackCard(),
         const SizedBox(height: 12),
         _voiceCard(),
@@ -5473,90 +5491,6 @@ class _RecorderPageState extends State<RecorderPage> {
             '与「语音提示」是两件事：那一项管这台手机出不出声，'
             '这一项只管录像文件里有没有音轨。两个可以同时开 —— '
             '那时播报会被录进录像里。',
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// 实时共享（规格 §3.8）：把这台手机的相机画面推给电脑端的多画面。
-  ///
-  /// ⚠️ 这一张卡上**每一句都是实话**，因为这个开关最容易让人误解：
-  /// 「开了是不是一直在录」「会不会影响录像」「为什么电脑端看不到」——
-  /// 三个问题各有一句回答，缺一句用户就会自己瞎猜。
-  Widget _liveShareCard() {
-    final running = _liveShare?.isRunning ?? false;
-
-    return _settingCard(
-      icon: Icons.cast,
-      title: '实时共享',
-      blurb: '把这台手机的相机画面推给电脑端看（电脑端那边叫「实时多画面」）。',
-      children: [
-        // ⚠️ **这一页已经没有开关了**（需求方 2026-10-03）：它搬到
-        // 【发货】/【退货】两页的右上角去了（那个投屏图标）。
-        // 卡片留着，是因为下面这几句只有这里说得清 —— 图标按钮上写不下，
-        // 而这几句正是最容易误解的地方（把「推流」当成「录像」）。
-        Text(
-          '开关在【发货】/【退货】两页的右上角（投屏图标）。现在：'
-          '${_liveShareOn ? '开' : '关'}。',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          // ⚠️ 这三句是这一页上最容易写错的地方：把「推流」说成「录像」
-          // 会让人以为关掉它录像就没了，反过来会让人以为录像是靠它传的。
-          // ⚠️ **界面上不要写 `**粗体**`** —— 那不是 Markdown，用户看到的是
-          // 四个星号。这一页其它说明文字也一律是纯文本。
-          '只往外推画面：不录音、不落盘，也不写进录像文件。\n'
-          '点【开始工作】之后才会推；结束工作就停。\n'
-          '录制吃紧（过热 / 低电量 / 存储将满）时它会被自动停掉 —— 录像优先。\n'
-          '⚠️ 打开要等下次【开始工作】才真的开始推（推流那一路是开会话时接上的，'
-          '中途接会打断正在录的那一段）；关掉是立刻停的。\n'
-          '手机不在电脑端那个局域网里、或者电脑端没开时，推不出去'
-          '（手机上照常录像，只是电脑端的多画面里不会出现这台机位）。',
-          style: TextStyle(fontSize: 12),
-        ),
-
-        // 起不来 / 被压力停掉时的那句话。**平时不占地方**（null 就整块不画）。
-        if (_liveShareProblem != null) ...[
-          const SizedBox(height: 4),
-          _liveShareNotice(_liveShareProblem!),
-        ] else if (_liveShareOn) ...[
-          const SizedBox(height: 4),
-          _liveShareNotice(
-            running
-                ? '正在推流（${_liveShare!.quality.label}）。'
-                : '开关是开的，但要等【开始工作】之后才开始推。',
-            warning: false,
-          ),
-        ],
-      ],
-    );
-  }
-
-  /// 实时共享那张卡下面的一行状态/告警。
-  ///
-  /// ⚠️ 「正在推流」与「起不来」用的**不是**同一个颜色深浅 ——
-  /// 一个正常的绿字和一个正常的灰字，用户分不出哪句是坏消息。
-  Widget _liveShareNotice(String text, {bool warning = true}) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(
-          warning ? Icons.warning_amber_rounded : Icons.info_outline,
-          size: 16,
-          color: warning ? scheme.error : scheme.onSurfaceVariant,
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            text,
-            style: TextStyle(
-              fontSize: 12,
-              color: warning ? scheme.error : scheme.onSurfaceVariant,
-            ),
           ),
         ),
       ],

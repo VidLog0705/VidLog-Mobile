@@ -637,6 +637,13 @@ void main() {
     expect(find.textContaining('时长兜底加速'), findsOneWidget);
     expect(find.textContaining('不用退出去重进'), findsOneWidget);
 
+    // ⚠️ **「实时共享」这一整块不许再出现在设置页上**（需求方 2026-10-03）。
+    // 开关早就搬到【发货】/【退货】两页的右上角了，卡片却留到了被报出来才删；
+    // 那句「录制吃紧，已自动停掉实时共享」改成出事那一刻弹一条
+    // （见 `_reportLiveShareProblem`）。留着这条是让它**不会悄悄回来**。
+    expect(find.text('实时共享'), findsNothing,
+        reason: '设置页那块「实时共享」该删了 —— 开关和说明都在采集页右上角');
+
     // ⚠️ 下面这一整段是实质的。`_settings` 是 `_bootstrap` 里异步读出来的，
     // 读出来之前改设置会被随后读到盘上值直接覆盖 —— 用户看到的是
     // 「开关点了没反应」，而且下一次打开发现改的没了。
