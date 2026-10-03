@@ -43,6 +43,7 @@ void main() {
       rootPath: root.path,
       settings: {'mode': 'sameWaybillStop', 'voiceEnabled': true},
       deviceName: '打包手机-1',
+      appVersion: '1.0.0+4',
       sessionCount: 3,
       orphanCount: 1,
       entries: entries,
@@ -63,6 +64,11 @@ void main() {
     final lines = await build();
 
     expect(section(lines, 'header')['app'], 'vidlog-mobile');
+
+    // ⚠️ **版本号**：手上两份日志分不出哪份是哪版时，「这个缺陷还在不在」就答不上来
+    //（2026-10-03 就真栽过这一次，`+3` 与 `+4` 同一天同一台手机）。
+    expect(section(lines, 'header')['version'], '1.0.0+4');
+
     expect(section(lines, 'settings')['deviceName'], '打包手机-1');
     expect(section(lines, 'index-summary')['sessions'], 3);
     expect(section(lines, 'index-summary')['orphans'], 1);
@@ -133,6 +139,7 @@ void main() {
       rootPath: root.path,
       settings: const {},
       deviceName: 'x',
+      appVersion: '1.0.0+4',
       sessionCount: 0,
       orphanCount: 0,
       entries: const [],

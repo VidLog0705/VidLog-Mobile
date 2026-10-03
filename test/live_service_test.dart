@@ -138,6 +138,26 @@ void main() {
     expect(bytes, [1, 2, 3, 4]);
   });
 
+  test('★ 停一段再开一段：第二段**照样**把帧送出去', () async {
+    // ⚠️ 这条是 2026-10-03「推流没有画面」的回归判据。
+    // 那一段推流的缓存被 `stop()` 关死之后又被第二段复用，于是第二段：
+    // 报到照发、`/live` 照回 200、**一帧都不来** —— 电脑端那一格永远黑着，
+    // 而手机这边每一条日志看起来都正常。
+    await service.start();
+    await service.stop();
+
+    await service.start();
+
+    gateway.push([1, 2, 3, 4], isKey: true);
+    await settle();
+
+    // ⚠️ 用 `last` 不是 `single`：这里报到了**两次**，要连的是第二段那个端口。
+    final response = await fetch('/live', announced.last);
+    final bytes = await response.expand((chunk) => chunk).take(4).toList();
+
+    expect(bytes, [1, 2, 3, 4]);
+  });
+
   test('电脑端改档 → 只叫原生换档，手机上那一档跟着变', () async {
     await service.start();
 
@@ -153,6 +173,33 @@ void main() {
     // 而电脑端那边只是双击进全屏。
     expect(gateway.stopCount, 0);
     expect(service.isRunning, isTrue);
+  });
+
+  test('⚠️ 换档 = 编码器重开：这一刻接入的客户端不许再收到老编码器那一段', () async {
+    await service.start();
+
+    gateway.push([1], isKey: true);
+    gateway.push([2]);
+    await settle();
+
+    final response = await fetch('/quality?p=720', announcedPort());
+    await response.drain<void>();
+    await settle();
+
+    // 老编码器的尾巴 + 新编码器的关键帧（真机上新编码器的第一帧就是关键帧）。
+    gateway.push([3]);
+    gateway.push([4], isKey: true);
+    gateway.push([5]);
+    await settle();
+
+    final live = await fetch('/live', announcedPort());
+    final bytes = await live.expand((chunk) => chunk).take(2).toList();
+
+    expect(
+      bytes,
+      [4, 5],
+      reason: '一路裸流里混着两种尺寸（[1,2] 老画面 + [3]），ffmpeg 那边就是花屏',
+    );
   });
 
   test('认不出的档：原生一个字都不该收到（400 且不改）', () async {

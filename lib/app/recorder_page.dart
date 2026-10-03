@@ -476,6 +476,12 @@ class _RecorderPageState extends State<RecorderPage> {
       // ⚠️ `init` 自己吞掉建目录的失败并退化成纯内存，所以这里不 try。
       AppLog.instance.init(directory: '${root.path}/logs');
 
+      // ⚠️ **版本号要落在日志里**，而且是数据目录一确定就说 ——
+      // 光靠 `pubspec.yaml` 答不上「手上这份日志是哪个构建出的」：
+      // 手机上展示的版本是「展示版本 + 构建号」双轨，而**归档下来的日志
+      // 只有一个文件名和一行行 JSON**（2026-10-03 分不出 `+3` 与 `+4` 那一次）。
+      _log('VidLog 手机端 $appVersion 起来了');
+
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
       // 与电脑端同一个位置（`<root>/labels.jsonl`），键名也逐字相同 ——
@@ -5055,6 +5061,9 @@ class _RecorderPageState extends State<RecorderPage> {
           'retentionUnarchivedReturn': _retentionUnarchivedReturn.days,
         },
         deviceName: _identity?.deviceName ?? '',
+        // ⚠️ 头部那个版本号：`appVersion` 与 `pubspec.yaml` 逐字一致
+        //（`test/about_page_test.dart` 守着），所以它就是这一份日志是哪个构建出的。
+        appVersion: appVersion,
         sessionCount: _sessionCount,
         orphanCount: _pendingCount,
         entries: entries,
@@ -6307,7 +6316,7 @@ class _RecorderPageState extends State<RecorderPage> {
 ///
 /// 换成「一个 const + 一条**读真文件对账**的测试」：不用依赖，漂了当场红。
 /// 测试见 `test/about_page_test.dart`。
-const String appVersion = '1.0.0+4';
+const String appVersion = '1.0.0+5';
 
 /// 「关于我们」二级页。
 ///

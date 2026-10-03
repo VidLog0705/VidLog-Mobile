@@ -37,11 +37,9 @@ class LiveService {
     required this.gateway,
     required this.counts,
     required this.announce,
-    LiveStreamHub? hub,
     AppLog? log,
     this.announceInterval = const Duration(seconds: 20),
-  })  : _hub = hub ?? LiveStreamHub(),
-        _log = log ?? AppLog.instance;
+  }) : _log = log ?? AppLog.instance;
 
   final LiveGateway gateway;
   final LiveCounts Function() counts;
@@ -52,7 +50,16 @@ class LiveService {
   /// 没有电脑端的测试里验（报到失败 / 恢复各记一条那条判据就在那儿）。
   final Future<String?> Function(int port) announce;
 
-  final LiveStreamHub _hub;
+  /// 当前这一段推流的那一层（没在推就是 null）。
+  ///
+  /// ⚠️ **它是「一段推流一个」，不是「一个进程一个」。** [LiveStreamHub] 的
+  /// `close()` 是**不可逆**的（关掉之后 `push` 一个字都不收），而本类与它
+  /// 都只被创建一次（见 `recorder_page` 里那处 `??=`）—— 共用一个的话，
+  /// 第一次【停止工作】之后，后面每一段推流都会：报一个新端口、`/live` 回 200、
+  /// **一帧都不来**。2026-10-03 那个「推流没有画面」正是这个形状。
+  /// 所以 [start] 里新建、[stop] 里丢掉。
+  LiveStreamHub? _hub;
+
   final AppLog _log;
 
   /// 多久报一次到。
@@ -94,6 +101,10 @@ class LiveService {
 
     _pressureReason = null;
 
+    // ⚠️ **这一段推流用新的一层**（见 [_hub] 的说明）：上一段停掉时把它关死了，
+    // 复用它等于这一段一帧都推不出去。
+    final hub = LiveStreamHub();
+
     // ⚠️ 高度取**格子那一档**（480P）：手机一开始总是被当成格子里的一个，
     // 直到电脑端双击进全屏才会来改档（规格 §3.8）。
     final failure = await gateway.startLive(_quality.height);
@@ -105,15 +116,18 @@ class LiveService {
 
     final server = LiveServer(
       counts: counts,
-      video: _hub.subscribe,
+      // 直接用局部那个 hub（不是字段）：`/live` 随时可能有人连上来，
+      // 而字段要等下面几行才赋值 —— 这中间进来的那一路会拉到 null。
+      video: hub.subscribe,
       onQuality: _onQualityRequested,
     );
 
     try {
       final port = await server.start();
       _server = server;
+      _hub = hub;
 
-      _listenToNative();
+      _listenToNative(hub);
 
       _log.info('推流', '实时共享开了：端口 $port、${_quality.label}');
       _announceNow(port);
@@ -146,7 +160,11 @@ class LiveService {
     _server = null;
     if (server != null) await server.stop();
 
-    _hub.close();
+    // ⚠️ **先摘下来再关**：关掉之后这一层就废了（`push` 一个字都不收），
+    // 留着它下次 [start] 就会以为还能用（见 [_hub]）。
+    final hub = _hub;
+    _hub = null;
+    hub?.close();
 
     try {
       await gateway.stopLive();
@@ -174,12 +192,15 @@ class LiveService {
     await stop();
   }
 
-  void _listenToNative() {
+  /// [hub] 是**这一段推流**的那一层（调用点传进来，不是读字段）——
+  /// 事件流与 [start]/[stop] 之间没有别的闸，直接在闭包里钉住这一段，
+  /// 就不会有「上一段的帧被推给下一段」这种串台。
+  void _listenToNative(LiveStreamHub hub) {
     _events = gateway.events.listen(
       (event) {
         switch (event) {
           case LiveEncoded(:final frame):
-            _hub.push(frame);
+            hub.push(frame);
           case LiveFailed(:final message):
             // 原生自己停了（编码器崩、相机被收走）—— 留痕，并让这一格黑着。
             // ⚠️ **不在这里调 stop()**：那会把 HTTP 服务也拆了，而电脑端
@@ -217,6 +238,15 @@ class LiveService {
     try {
       await gateway.setLiveQuality(wanted.height);
       _log.info('推流', '档位换成 ${wanted.label}');
+
+      // ⚠️ **换档 = 原生那边重开一个编码器**，而缓存里还留着**老编码器**那些帧：
+      // 尺寸与参数集都不同，这一刻接入的电脑端会先拿到一段老画面、紧接着新的 ——
+      // 一路裸流里混着两种尺寸，ffmpeg 那边就是花屏 + 一串解码错误
+      //（2026-10-03 的日志里正是这个形状）。丢掉，让新接入的等下一个关键帧。
+      //
+      // 已经在看的那几路不受影响：它们收到过的老帧已经过去了，新编码器的关键帧
+      // 里带着新的 SPS/PPS，ffmpeg 认得出来（裸流换分辨率本来就是这么走的）。
+      _hub?.clear();
       return null;
     } on Object catch (error) {
       // 改不动就继续用旧档 —— 那比把推流整个搞坏好（规格 §3.8 明写）。

@@ -44,10 +44,14 @@ class DiagnosticsPackage {
   /// ⚠️ **本函数只收「安全的零件」**（设置、摘要、条数），
   /// **不收 `DeviceIdentity`**：那里面有凭据，而诊断包是要发出去的。
   /// 要显示设备名就单独传 `deviceName`。
+  ///
+  /// [appVersion] 由调用方传（页面里那个 `appVersion` 常量），**不在这里另写一个**：
+  /// 它已经有一条读 `pubspec.yaml` 对账的测试守着，多写一份就是让那个数有两个来源。
   static Future<String> build({
     required String rootPath,
     required Map<String, Object?> settings,
     required String deviceName,
+    required String appVersion,
     required int sessionCount,
     required int orphanCount,
     required List<RecordingEntry> entries,
@@ -62,6 +66,11 @@ class DiagnosticsPackage {
       'kind': 'header',
       'schema': 1,
       'app': 'vidlog-mobile',
+      // ⚠️ **版本号必须在这里**：诊断包是用户发回来的唯一凭据，而问题常常
+      // 「只有某个构建有」。2026-10-03 就真栽过这一次 —— 手上两份日志分不出
+      // 哪一份是 `+3`、哪一份是 `+4`（同一天、同一台手机、展示版本一模一样），
+      // 于是「这个缺陷在新包里还在不在」根本答不上来。
+      'version': appVersion,
       'generatedAt': now.toUtc().toIso8601String(),
       'os': Platform.operatingSystem,
       'osVersion': Platform.operatingSystemVersion,
