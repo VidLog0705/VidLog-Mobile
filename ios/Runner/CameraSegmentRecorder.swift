@@ -991,6 +991,11 @@ final class CameraSegmentRecorder: NSObject {
         // 下一次开相机的新设备上）。
         cancelPendingAutoZoomRestore()
 
+        // ⚠️ 手电筒显式关掉。设备跟着会话一起放掉时灯**通常**会灭，但那是「通常」——
+        // 而灯关不掉是最难解释的一种故障（用户手里亮着一盏找不到开关的灯）。
+        // 必须在 `captureDevice = nil` **之前**调：它要拿设备。
+        setTorch(false)
+
         // 推流那一路先收（规格 §3.8）。它自己那套编码器要显式 invalidate，
         // 而输出会随会话一起没了 —— 顺序是先收编码器、再停会话。
         liveStreamer?.close()
@@ -1038,6 +1043,43 @@ final class CameraSegmentRecorder: NSObject {
     /// 表盘的左半圈（比初始画面更广的那一半）只有它小于 1 时才存在。
     var minZoomRatio: CGFloat? {
         captureDevice?.minAvailableVideoZoomFactor
+    }
+
+    /// 这台设备的后置相机**有没有闪光灯**。相机没开时为 nil。
+    ///
+    /// 采集页右上角那个手电筒按钮**画不画**看它 ——
+    /// 没有闪光灯的设备上画一个按下去什么都不发生的按钮，就是踩坑 #13。
+    var hasTorch: Bool? {
+        captureDevice?.hasTorch
+    }
+
+    /// 开关手电筒（后置闪光灯常亮，照亮面单）。
+    ///
+    /// ⚠️ 它**只管灯**：不进录像、不改曝光。
+    ///
+    /// **尽力而为，什么都不抛**：与 `focusNow` 同一条。
+    func setTorch(_ on: Bool) {
+        guard let device = captureDevice, device.hasTorch else { return }
+
+        // ⚠️ `isTorchAvailable` 是**运行时**的（机身热了、别处在用灯时会变假），
+        // 而给不可用的设备赋 `torchMode` 会**抛 NSException** —— 那个是这个
+        // `catch` 接不住的（它不是 Swift 的 error）。所以先判再赋。
+        //
+        // ⚠️ 只在**开**的时候判，关的那条路照走：灯可能真的亮着
+        // （开的时候还好好的，之后机身热了）—— 那时更要把它关掉。
+        if on && !device.isTorchAvailable {
+            NSLog("VidLog: 手电筒现在开不了（灯被别的用着，或机身过热）")
+            return
+        }
+
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.torchMode = on ? .on : .off
+        } catch {
+            // 灯开不起来不该中断任何事（与变焦失败同一条）。
+            NSLog("VidLog: 开关手电筒失败 %@", error.localizedDescription)
+        }
     }
 
     /// 设置缩放倍率。规格 §3.1.2：倍率不得超过设备能力上限。

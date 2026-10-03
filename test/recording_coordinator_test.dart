@@ -2254,6 +2254,19 @@ class FakeGateway implements RecorderGateway {
   int focusCalls = 0;
 
   @override
+  Future<bool?> hasTorch() async => torchAvailable;
+
+  /// 这台设备有没有闪光灯。**默认给 true**（有）——
+  /// 给 false 的话「设备没有就不画那个按钮」那条分支之外就没事可验了。
+  bool? torchAvailable = true;
+
+  @override
+  Future<void> setTorch(bool on) async => torchOn = on;
+
+  /// 手电筒最后被设成什么样（null = 一次都没设过）。
+  bool? torchOn;
+
+  @override
   Future<bool> generateThumbnail(String videoPath, String outputPath) async => false;
 
   /// 成品校验（规格 §3.1.4）。
@@ -2280,6 +2293,18 @@ class FakeGateway implements RecorderGateway {
 
   @override
   Future<String?> shareVideo(String videoPath) async => null;
+
+  @override
+  Future<String?> shareFile(String path, {String? mime, String? title}) async {
+    sharedFiles.add(path);
+    return shareFileProblem;
+  }
+
+  /// 交给系统分享面板过的那些路径（诊断包那一路）。
+  final List<String> sharedFiles = [];
+
+  /// 非 null 时假装「分享面板没弹出来」。
+  String? shareFileProblem;
 
   @override
   Future<void> playDetentSound() async {

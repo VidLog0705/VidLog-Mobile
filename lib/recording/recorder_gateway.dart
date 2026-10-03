@@ -228,6 +228,29 @@ abstract interface class RecorderGateway {
   /// **尽力而为**：与 [setZoom] 一样，失败不抛（设备可能不支持对焦）。
   Future<void> focusNow();
 
+  /// 这台设备**有没有闪光灯**（采集页右上角那个手电筒按钮要不要画）。
+  ///
+  /// ⚠️ **必须问，不能假定有**：没有闪光灯的设备（部分三防/工业机）上
+  /// 画一个按下去什么都不发生的按钮，就是踩坑 #13 那个假开关。
+  /// 问不到就**不画**。
+  ///
+  /// **相机没开时拿不到**（返回 null）—— 与 [maxZoom] 同一个道理：
+  /// 有没有闪光灯是相机设备本身的属性，而设备要开会话时才拿得到。
+  ///
+  /// **实现可以抛**（老包没有这个方法）：调用方按「没有」处理。
+  Future<bool?> hasTorch();
+
+  /// 开关手电筒（后置闪光灯常亮，照亮面单）。
+  ///
+  /// ⚠️ 它**只管灯**：不进录像文件、不改变曝光 —— 与 `autoFocusAndZoom`
+  /// 那类「让画面更好认」的调整是一类东西，所以同样是**尽力而为**，
+  /// 失败不抛（设备没有闪光灯、相机没开、系统不让）。
+  ///
+  /// ⚠️ 灯是**相机设备**的，所以相机关掉时它自己就灭了。原生那边在
+  /// 收尾时也要把它显式置回关 —— 灯关不掉是最难解释的一种故障
+  /// （用户手里亮着一盏找不到开关的灯）。
+  Future<void> setTorch(bool on);
+
   /// 拨一下齿轮的模拟声（表盘滑过一个刻度）。规格 §3.1.2。
   ///
   /// 用系统的**输入点击音**，**不带任何音频资源** —— 洁净室与许可证
@@ -298,6 +321,18 @@ abstract interface class RecorderGateway {
   ///
   /// 返回 null 表示成功；非 null 是给用户看的原因（存不进相册、没有分享面板…）。
   Future<String?> shareVideo(String videoPath);
+
+  /// 把一个**文件**原样交给系统分享面板（诊断包走这条，需求方 2026-10-03）。
+  ///
+  /// ⚠️ 与 [shareVideo] 是**两条路**，不能合成一条：那条是「先存进系统相册、
+  /// 再弹面板」（视频要的是「留在手机里也能看」），而诊断包是个 jsonl —
+  /// **不该进相册**，也不该出现在别人的看图应用里。这里只做「交出去」。
+  ///
+  /// [mime] 是**给对方应用看的**（安卓按它筛能接收的应用）；
+  /// [title] 是分享面板顶上那句话。两个都可以不给，原生各有默认值。
+  ///
+  /// 返回 null 表示成功；非 null 是给用户看的原因（文件不在了、没有分享面板…）。
+  Future<String?> shareFile(String path, {String? mime, String? title});
 
   /// 原生事件流。
   Stream<NativeRecorderEvent> get events;
@@ -400,6 +435,13 @@ class ChannelRecorderGateway implements RecorderGateway {
   Future<void> focusNow() => _methods.invokeMethod<void>('focusNow');
 
   @override
+  Future<bool?> hasTorch() => _methods.invokeMethod<bool>('hasTorch');
+
+  @override
+  Future<void> setTorch(bool on) =>
+      _methods.invokeMethod<void>('setTorch', {'on': on});
+
+  @override
   Future<void> playDetentSound() =>
       _methods.invokeMethod<void>('playDetentSound');
 
@@ -461,6 +503,25 @@ class ChannelRecorderGateway implements RecorderGateway {
       return null;
     } on PlatformException catch (error) {
       // 失败要**说得出原因**（存不进相册 / 没有分享面板），由界面显示给用户。
+      return error.message ?? '分享没能进行（${error.code}）';
+    } on MissingPluginException {
+      return '这一端还没有接上分享。';
+    }
+  }
+
+  @override
+  Future<String?> shareFile(String path, {String? mime, String? title}) async {
+    // ⚠️ 没给就不带那个键，让**原生那边**的默认值说了算 ——
+    // 不在这里再写一份默认值（两份默认迟早会走岔）。
+    final args = <String, Object?>{'path': path};
+    if (mime != null) args['mime'] = mime;
+    if (title != null) args['title'] = title;
+
+    try {
+      await _methods.invokeMethod<void>('shareFile', args);
+      return null;
+    } on PlatformException catch (error) {
+      // 与 [shareVideo] 同一条：失败要**说得出原因**，由界面显示给用户。
       return error.message ?? '分享没能进行（${error.code}）';
     } on MissingPluginException {
       return '这一端还没有接上分享。';

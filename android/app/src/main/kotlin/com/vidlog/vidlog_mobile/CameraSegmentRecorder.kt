@@ -672,6 +672,21 @@ class CameraSegmentRecorder(
     val minZoomRatio: Float?
         get() = if (cameraOpen) 1.0f else null
 
+    /** 这台设备的后置相机**有没有闪光灯**（开会话时从设备能力里读）。 */
+    private var flashAvailable = false
+
+    /** 手电筒开着没有。**相机一收就归 false**（见 [release]）。 */
+    @Volatile
+    private var torchOn = false
+
+    /**
+     * 设备有没有闪光灯。**相机没开时是 null**（与 [minZoomRatio] 同一个口径）——
+     * Dart 侧据此决定采集页右上角那个手电筒按钮**画不画**
+     * （画一个按下去什么都不发生的假按钮，就是踩坑 #13）。
+     */
+    val hasFlash: Boolean?
+        get() = if (cameraOpen) flashAvailable else null
+
     /** 预览视图要用它算缩放，[CameraPreviewView] 读。 */
     val currentVideoSize: Size get() = videoSize
 
@@ -759,6 +774,10 @@ class CameraSegmentRecorder(
         } else {
             characteristics.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1.0f
         }
+        // 有没有闪光灯也是**设备能力**，与变焦上限同一个地方读。
+        // 相机每开一次都重读：`release()` 之后这些字段都该重新问过设备。
+        flashAvailable = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        torchOn = false
         videoSize = pickVideoSize(characteristics, spec) ?: Size(1280, 720)
         videoAspect = videoSize.width.toDouble() / videoSize.height
 
@@ -983,13 +1002,41 @@ class CameraSegmentRecorder(
                 CaptureRequest.CONTROL_AF_TRIGGER_START,
                 CaptureRequest.CONTROL_AF_TRIGGER_CANCEL,
             )) {
-                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                applyTargets(builder)
+                // ⚠️ 用 [buildRequest]（与重复请求**同一套设置**），不是另起一个
+                // 只带 targets 的请求：这几次是**单发**请求，它自己那份设置会盖住
+                // 那一帧 —— 不带手电筒就是「面单进框自动对焦的那一下灯闪一下」，
+                // 而那正是开着灯用它的时刻。倍率同理（会闪一下没放大）。
+                val builder = buildRequest(device)
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, trigger)
                 session.capture(builder.build(), null, cameraHandler)
             }
         } catch (error: Exception) {
             Log.w(TAG, "触发自动对焦失败", error)
+        }
+    }
+
+    /**
+     * 开关手电筒（后置闪光灯常亮，照亮面单）。
+     *
+     * ⚠️ 它**只管灯**：不进录像、不改曝光 —— 与 [setZoom] 那类「让画面更好认」
+     * 的调整是一类东西，所以同样是**尽力而为，什么都不抛**。
+     *
+     * 改的是**重复请求**里的 `FLASH_MODE`，所以要像 [applyZoomRatio] 一样
+     * 重发一次；下一次 [buildRequest]（换档、改倍率、重开会话）也会带上它。
+     */
+    fun setTorch(on: Boolean) {
+        // 没有闪光灯的设备上什么都不做 —— 界面那边压根不会画这个按钮。
+        if (!flashAvailable) return
+
+        torchOn = on
+
+        val session = captureSession ?: return
+        val device = cameraDevice ?: return
+
+        try {
+            session.setRepeatingRequest(buildRequest(device).build(), null, cameraHandler)
+        } catch (error: Exception) {
+            Log.w(TAG, "开关手电筒失败", error)
         }
     }
 
@@ -1029,6 +1076,9 @@ class CameraSegmentRecorder(
     /** 由 [RecorderChannel] 在 `dispose` 时调用。 */
     fun release() {
         running = false
+        // 灯跟着相机设备走：设备一关它自己就灭了，但这个字段得跟着归位 ——
+        // 不然下一次开相机读出来的「灯开着」是上一趟的。
+        torchOn = false
         closeCurrentSegment()
 
         try {
@@ -1361,7 +1411,24 @@ class CameraSegmentRecorder(
         val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
         applyTargets(builder)
         applyZoom(builder)
+        applyTorch(builder)
         return builder
+    }
+
+    /**
+     * 应用手电筒。
+     *
+     * ⚠️ **开和关都显式写一个值**，不留空：`TEMPLATE_RECORD` 的默认虽然是
+     * `FLASH_MODE_OFF`，但别的请求（对焦那几次 `capture`）会不会把它带走
+     * 说不清 —— 灯这一格写死最省事。
+     */
+    private fun applyTorch(builder: CaptureRequest.Builder) {
+        if (!flashAvailable) return
+
+        builder.set(
+            CaptureRequest.FLASH_MODE,
+            if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF,
+        )
     }
 
     private fun applyTargets(builder: CaptureRequest.Builder) {

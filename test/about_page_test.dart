@@ -23,6 +23,15 @@ import 'package:vidlog_mobile/app/recorder_page.dart';
 void main() {
   Widget wrap(Widget child) => MaterialApp(home: child);
 
+  /// 这一页的导出那件事**由采集页注入**（包里那几样只有那一页有）——
+  /// 测试里给一个记账的桩，验「按了会叫它、它说的话会显示出来」。
+  AboutPage page({List<int>? calls, String note = '（测试）已生成'}) => AboutPage(
+        onExportLogs: () async {
+          calls?.add(1);
+          return note;
+        },
+      );
+
   group('关于我们', () {
     test('★ 版本号与 pubspec.yaml 逐字一致', () {
       // `pubspec.yaml` 里那一行形如 `version: 1.0.0+1`。
@@ -44,7 +53,7 @@ void main() {
     });
 
     testWidgets('页上显示的就是那个版本号', (tester) async {
-      await tester.pumpWidget(wrap(const AboutPage()));
+      await tester.pumpWidget(wrap(page()));
 
       expect(find.text('关于我们'), findsOneWidget, reason: 'AppBar 上得有标题');
       expect(find.text('版本 $appVersion'), findsOneWidget);
@@ -55,10 +64,51 @@ void main() {
 
     testWidgets('⚠️ 不摆「检查更新」这类点不动的入口', (tester) async {
       // 没有更新服务就是没有。摆上去就是个点了没反应的按钮（踩坑 #13）。
-      await tester.pumpWidget(wrap(const AboutPage()));
+      await tester.pumpWidget(wrap(page()));
 
       expect(find.textContaining('检查更新'), findsNothing);
       expect(find.textContaining('检查新版本'), findsNothing);
+    });
+
+    testWidgets('★ 导出日志：按下去真的调到采集页那件事，且把那句话显示出来',
+        (tester) async {
+      final calls = <int>[];
+      await tester
+          .pumpWidget(wrap(page(calls: calls, note: '（测试）已生成并弹了分享面板')));
+
+      expect(find.byKey(const Key('about-export-logs')), findsOneWidget);
+      // 生成之前**不摆**那一行结果 —— 摆一句占位的话会被当成真的结果读。
+      expect(find.byKey(const Key('about-export-note')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('about-export-logs')));
+      await tester.pumpAndSettle();
+
+      expect(calls, hasLength(1), reason: '按一下只该叫一次');
+      expect(find.text('（测试）已生成并弹了分享面板'), findsOneWidget);
+    });
+
+    testWidgets('⚠️ 导出中那颗按钮变灰（连点会生成好几份）', (tester) async {
+      final calls = <int>[];
+      // 一个**不立刻返回**的桩：导出要读几百行日志，这中间按钮必须是灰的。
+      await tester.pumpWidget(wrap(AboutPage(onExportLogs: () async {
+        calls.add(1);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        return '（测试）好了';
+      })));
+
+      await tester.tap(find.byKey(const Key('about-export-logs')));
+      await tester.pump();
+
+      expect(
+        tester
+            .widget<FilledButton>(find.byKey(const Key('about-export-logs')))
+            .onPressed,
+        isNull,
+      );
+
+      await tester.pumpAndSettle();
+      expect(calls, hasLength(1));
+      expect(find.text('（测试）好了'), findsOneWidget);
     });
   });
 

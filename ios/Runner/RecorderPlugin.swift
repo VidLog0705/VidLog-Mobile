@@ -207,6 +207,22 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             recorder?.focusNow()
             result(nil)
 
+        case "hasTorch":
+            // 相机没开时给 nil —— Dart 侧据此**不画**采集页右上角那个
+            // 手电筒按钮（踩坑 #13：不画按下去什么都不发生的假开关）。
+            result(recorder?.hasTorch)
+
+        case "setTorch":
+            guard let args = call.arguments as? [String: Any],
+                  let on = args["on"] as? Bool
+            else {
+                result(FlutterError(code: "bad_args", message: "缺少 on", details: nil))
+                return
+            }
+            // 尽力而为：没有闪光灯、相机没开都不是错误（与 `focusNow` 同一条）。
+            recorder?.setTorch(on)
+            result(nil)
+
         case "playDetentSound":
             // 拨轮声。同样尽力而为 —— 用户关掉系统「键盘反馈」时就该没声，
             // 那不是失败，是用户自己的选择。
@@ -237,6 +253,9 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
         case "shareVideo":
             shareVideo(call, result: result)
+
+        case "shareFile":
+            shareFile(call, result: result)
 
         case "speak":
             speak(call, result: result)
@@ -523,6 +542,39 @@ final class RecorderPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 DispatchQueue.main.async {
                     completion(success ? nil : "存进相册失败：\(error?.localizedDescription ?? "未知原因")")
                 }
+            }
+        }
+    }
+
+    /// 把一个**文件**原样交给系统分享面板（诊断包走这条，需求方 2026-10-03）。
+    ///
+    /// ⚠️ 与 `shareVideo` 的区别只有「不存相册」：诊断包是个 jsonl，
+    /// 不该出现在照片 App 里。所以这里只有一步 —— 把文件 URL 交出去。
+    ///
+    /// ⚠️ 文件在 app 的 documents 下不影响分享：`UIActivityViewController`
+    /// 拿到 file URL 会自己复制给对方应用，不需要任何额外授权。
+    /// （`Info.plist` 里那两个键是给「文件」App 用的，与这条无关。）
+    private func shareFile(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String, !path.isEmpty
+        else {
+            result(FlutterError(code: "bad_args", message: "缺少 path", details: nil))
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            result(FlutterError(code: "missing", message: "这个文件不在盘上了：\(path)", details: nil))
+            return
+        }
+
+        presentShareSheet(URL(fileURLWithPath: path)) { presented in
+            // ⚠️ 弹不出来**算失败**（与 `shareVideo` 相反的那一条）：
+            // 那边东西已经进相册了，用户从相册里自己发是一条走得通的路；
+            // 这里没有第二条路 —— 面板没弹出来就是「点了没反应」（I3）。
+            if presented {
+                result(nil)
+            } else {
+                result(FlutterError(code: "share_failed", message: "弹不出分享面板。", details: nil))
             }
         }
     }

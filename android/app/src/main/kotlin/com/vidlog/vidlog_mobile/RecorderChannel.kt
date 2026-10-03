@@ -49,6 +49,8 @@ import java.util.Locale
  * | `closeCamera` | Dart → 原生 | 关相机（结束工作） |
  * | `setZoom` / `maxZoom` / `minZoom` | Dart → 原生 | 变焦与表盘刻度（规格 §3.1.2） |
  * | `focusNow` / `autoFocusAndZoom` | Dart → 原生 | 对焦；面单进框自动放大两秒 |
+ * | `hasTorch` / `setTorch` | Dart → 原生 | 有没有闪光灯；开关手电筒（2026-10-03） |
+ * | `shareFile` | Dart → 原生 | 把任意文件交给系统分享面板（诊断包那一路，2026-10-03） |
  * | `playDetentSound` | Dart → 原生 | 表盘拨轮声 |
  * | `speak` | Dart → 原生 | 语音播报，`beep` 为真时先滴一声（规格 §3.3.2 / §3.3.4 / §3.3.6） |
  * | `segmentClosed` | 原生 → Dart | 一个分段已封闭（**Dart 必须立刻写进 manifest**） |
@@ -278,6 +280,21 @@ class RecorderChannel(private val activity: FlutterActivity) :
                 result.success(null)
             }
 
+            // 相机没开时回 null（与 iOS 一致）—— Dart 侧据此**不画**采集页
+            // 右上角那个手电筒按钮（不画按下去什么都不发生的假开关）。
+            "hasTorch" -> result.success(recorder?.hasFlash)
+
+            "setTorch" -> {
+                val on = call.argument<Boolean>("on")
+                if (on == null) {
+                    result.error("bad_args", "缺少 on", null)
+                } else {
+                    // 尽力而为：没有闪光灯、相机没开都不是错误（与 focusNow 一致）。
+                    recorder?.setTorch(on)
+                    result.success(null)
+                }
+            }
+
             "playDetentSound" -> {
                 // 拨轮声。同样尽力而为 —— 用户关掉系统「触感/提示音」时就该没声，
                 // 那不是失败，是用户自己的选择。
@@ -297,6 +314,7 @@ class RecorderChannel(private val activity: FlutterActivity) :
             "readResources" -> readResources(call, result)
             "playVideo" -> playVideo(call, result)
             "shareVideo" -> shareVideo(call, result)
+            "shareFile" -> shareFile(call, result)
 
             "speak" -> speak(call, result)
 
@@ -755,10 +773,50 @@ class RecorderChannel(private val activity: FlutterActivity) :
 
                 // 弹系统分享面板。**没弹出来也算成功** —— 东西已经进相册了，
                 // 用户从相册里自己发是一条走得通的路。
-                shareUri(uri)
+                shareUri(uri, "video/mp4", "把这段录像发出去")
                 result.success(null)
             }
         }.start()
+    }
+
+    /**
+     * 把一个**文件**原样交给系统分享面板（诊断包走这条，需求方 2026-10-03）。
+     *
+     * ⚠️ 与 [shareVideo] 的区别只有「不存相册」：诊断包是个 jsonl，
+     * 不该出现在相册/看图应用里。所以这里只有一步 —— 交给系统。
+     *
+     * ⚠️ 路径走 **FileProvider**（`content://`）：诊断包在 app 私有目录下，
+     * 直接给 `file://` 会在安卓 7+ 上被 `FileUriExposedException` 打死。
+     * 清单与 `res/xml/file_paths.xml` 早就为播放那一路配好了
+     *（`<files-path>` + `<external-files-path>`，诊断包的两份都在这两处之下）。
+     */
+    private fun shareFile(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        val mime = call.argument<String>("mime") ?: "application/octet-stream"
+        val title = call.argument<String>("title") ?: "把这个文件发出去"
+
+        if (path.isNullOrBlank()) {
+            result.error("bad_args", "缺少 path", null)
+            return
+        }
+
+        val file = File(path)
+        if (!file.exists()) {
+            // I3：交不出去要当场说清楚，而不是「点了没反应」。
+            result.error("missing", "这个文件不在盘上了：$path", null)
+            return
+        }
+
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                activity, "${activity.packageName}.fileprovider", file)
+
+            shareUri(uri, mime, title)
+            result.success(null)
+        } catch (error: Throwable) {
+            Log.w(TAG, "分享文件失败", error)
+            result.error("share_failed", "弹不出分享面板：${error.message}", null)
+        }
     }
 
     /** 把文件复制进系统相册（`MediaStore`），返回它的 uri；失败返回 null。 */
@@ -808,15 +866,16 @@ class RecorderChannel(private val activity: FlutterActivity) :
     }
 
     /** 弹系统分享面板。 */
-    private fun shareUri(uri: android.net.Uri) {
+    private fun shareUri(uri: android.net.Uri, mime: String, title: String) {
         try {
             val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "video/mp4"
+                // ⚠️ mime 决定**哪些应用会出现在面板里**（视频那条是 video/mp4）。
+                type = mime
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
 
-            activity.startActivity(Intent.createChooser(intent, "把这段录像发出去"))
+            activity.startActivity(Intent.createChooser(intent, title))
         } catch (error: Throwable) {
             Log.w(TAG, "弹分享面板失败", error)
         }

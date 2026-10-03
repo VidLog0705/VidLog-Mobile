@@ -684,7 +684,36 @@ class _RecorderPageState extends State<RecorderPage> {
   ///    挂上去的**第二路输出**，往一个跑着的会话里加输出会让它重新配置，
   ///    那一下断的是**正在录的证据**。宁可不热插拔。
   /// 3. 起不来**不影响录制**：原因记日志 + 显示在设置页那张卡上（I3 不静默）。
+  ///
+  /// ⚠️ **挡住重入、但不能把后来的那次丢掉**（2026-10-03）。两条叠着跑的话，
+  /// 两边都会看到 `isRunning == false`，于是各起一个 HTTP 服务（各占一个端口、
+  /// 各推一路），后一个把 `_server` 覆盖掉之后**前一个就没人收它了** ——
+  /// 那是个一直跑着、一直在推流的孤儿。
+  ///
+  /// 所以后到的那次**排队**，等当前这次跑完再补一次 —— 直接 `return` 是不行的：
+  /// 用户「开着的时候又按一下关」（第一条还在起服务、慢一点）会被丢掉，
+  /// 结果是**设置写着关、推流还在推**，而且没人会再来对齐一次。
+  bool _applyingLiveShare = false;
+  bool _liveShareAgain = false;
+
   Future<void> _applyLiveShare() async {
+    if (_applyingLiveShare) {
+      _liveShareAgain = true;
+      return;
+    }
+
+    _applyingLiveShare = true;
+    try {
+      do {
+        _liveShareAgain = false;
+        await _applyLiveShareOnce();
+      } while (_liveShareAgain);
+    } finally {
+      _applyingLiveShare = false;
+    }
+  }
+
+  Future<void> _applyLiveShareOnce() async {
     final wanted = _liveShareOn && (_coordinator?.isWorking ?? false);
 
     if (!wanted) {
@@ -746,6 +775,19 @@ class _RecorderPageState extends State<RecorderPage> {
   /// ⚠️ 一定要显示出来：规格 §3.8 第 3 条明写「自动把推流停掉**并在界面说明
   /// 为什么停**」—— 悄悄停掉的话，用户看到的就是「刚才还有画面，怎么没了」。
   String? _liveShareProblem;
+
+  /// 手电筒（后置闪光灯常亮）开着没有。
+  ///
+  /// ⚠️ 它**只跟相机设备走**：相机关掉灯就灭了，所以每次开相机时都会被
+  /// 强制归回 `false`（见 [_readDeviceCapabilities]）——
+  /// 图标亮着而灯没亮，是最难解释的一种「坏了」。
+  bool _torchOn = false;
+
+  /// 这台设备的相机**有没有闪光灯**。
+  ///
+  /// `null` = 还不知道（相机没开、或者装的是没有这个方法的旧包）——
+  /// 不知道就**不画**那个按钮（踩坑 #13：不画按下去什么都不发生的假开关）。
+  bool? _torchUsable;
 
   /// 跑一趟上传队列。
   ///
@@ -1482,7 +1524,7 @@ class _RecorderPageState extends State<RecorderPage> {
       await coordinator.openCamera();
 
       // 相机开起来之后才问得到设备范围（规格 §3.1.2）。
-      await _readDeviceZoomRange();
+      await _readDeviceCapabilities();
 
       if (!mounted) return;
       setState(() {
@@ -1556,7 +1598,7 @@ class _RecorderPageState extends State<RecorderPage> {
 
       // 相机开起来之后才问得到设备上限（规格 §3.1.2）——
       // 表盘的刻度要画到设备的真实上限，不然划到底是 8 倍、画面却停在 2 倍。
-      await _readDeviceZoomRange();
+      await _readDeviceCapabilities();
 
       if (mounted) {
         setState(() => _status = '把面单放进取景框');
@@ -1586,14 +1628,15 @@ class _RecorderPageState extends State<RecorderPage> {
         : '取不到公网时间。连上电脑端成功备份一次也能校准（那条路不需要公网）');
   }
 
-  /// 问一次设备支持的变焦范围，用来定表盘两端（规格 §3.1.2）。
+  /// 相机开起来之后问一次设备能力：变焦范围（定表盘两端，规格 §3.1.2）
+  /// 与**有没有闪光灯**（定右上角那个手电筒按钮画不画）。
   ///
   /// **拿不到就用默认值**：问了不代表问得到（Android 端的通道还没接上、
   /// 或者相机刚开、设备还没报能力）。为这个把「开始工作」弄失败是本末倒置。
   ///
   /// 范围的取舍与不变量收在 [zoomRangeFrom] 里（有测试）——
   /// 这里只负责把问到的两个数递过去。
-  Future<void> _readDeviceZoomRange() async {
+  Future<void> _readDeviceCapabilities() async {
     double? min;
     double? max;
     try {
@@ -1605,11 +1648,28 @@ class _RecorderPageState extends State<RecorderPage> {
       max = null;
     }
 
+    // ⚠️ **单独一个 try**：闪光灯那一条在装的是旧包时必然抛
+    // （通道上没这个方法），而那时变焦范围是问得到的 ——
+    // 合成一个 try 会让「手电筒没有」连带把表盘刻度也打回默认值。
+    bool? torch;
+    try {
+      torch = await _gateway.hasTorch();
+    } on Object catch (error) {
+      // 不留痕的话，「这台手机为什么没有手电筒按钮」就没有任何地方能回答
+      //（旧包、通道没接上都走到这儿）。一次【开始工作】一条，淹不了日志。
+      _log('⚠️ 问不到这台设备有没有闪光灯：$error');
+      torch = null;
+    }
+
     if (!mounted) return;
     setState(() {
       final (lower, upper) = zoomRangeFrom(min, max);
       _minZoom = lower;
       _maxZoom = upper;
+      // ⚠️ 灯跟着相机设备：新会话起来时它**一定是灭的**，所以这里无条件归位。
+      // 不归位的话，上一趟开着灯、这一趟图标亮着而灯不亮。
+      _torchOn = false;
+      _torchUsable = torch;
     });
   }
 
@@ -4260,6 +4320,14 @@ class _RecorderPageState extends State<RecorderPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ── 右上角：两个图标开关（需求方 2026-10-03）──
+            //
+            // ⚠️ 它们**独占一行**，不挤进时钟那一行、也不挤进状态行：
+            // 时钟是 26 号字（一行几乎占满宽度），状态行还要放
+            // 「录制中 / 已录 00:00 / 发货-退货」—— 再塞两个按钮进去，
+            // 状态字会被挤成一两个字加省略号。代价是时钟往下让一行。
+            _workSwitches(),
+
             // ── 画面**正上方**：实时时间 → 完整单号（规格 §3.2.6）──
             //
             // 居中、两行，压在状态行**上面**。放在这儿是因为它俩是同一类东西：
@@ -4343,6 +4411,131 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
       ),
     );
+  }
+
+  // ── 采集页右上角那两个图标开关（需求方 2026-10-03）──
+
+  /// 右上角那一排：实时共享、手电筒。
+  ///
+  /// ⚠️ **两个都是真开关，画之前先问清楚**：
+  /// - 实时共享：**一直画**。它是一条设置（按下去立刻有句实话回你，
+  ///   见 [_toggleLiveShare]），相机没开也照样能开；
+  /// - 手电筒：**设备没有闪光灯就不画**（[_torchUsable] 为假、或者还没问出来
+  ///   都算没有）。踩坑 #13：不画按下去什么都不发生的假开关。
+  ///
+  /// 顺序是**手电筒在左、实时共享在右**：投屏那个常年开着不动，灯是一时一开
+  /// 的，靠边的位置留给「平时不碰」的那个。
+  Widget _workSwitches() {
+    final liveOn = _liveShareOn;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        if (_torchUsable == true) ...[
+          _overlaySwitch(
+            key: const Key('work-torch'),
+            icon: _torchOn ? Icons.flashlight_on : Icons.flashlight_off,
+            on: _torchOn,
+            tooltip: _torchOn ? '关掉手电筒' : '打开手电筒',
+            onPressed: _toggleTorch,
+          ),
+          const SizedBox(width: 8),
+        ],
+        _overlaySwitch(
+          key: const Key('work-live-share'),
+          icon: liveOn ? Icons.cast_connected : Icons.cast,
+          on: liveOn,
+          // ⚠️ 起不来 / 被录制压力停掉时**换颜色**：这个按钮是采集页上唯一
+          // 能看见推流出事的入口（设置页那张卡还是那句话的全文）。
+          // 不说的话，用户看到的就是「图标亮着，而电脑端没有我这台机位」。
+          warning: _liveShareProblem != null,
+          tooltip: liveOn ? '关掉实时共享' : '打开实时共享',
+          onPressed: _toggleLiveShare,
+        ),
+      ],
+    );
+  }
+
+  /// 压在取景画面上的那个圆形图标开关。
+  ///
+  /// ⚠️ 底色必须是**半透明深色**：压在实景上（顶灯、白墙、白面单），
+  /// 一块不透明的浅底会在白面单上糊成一片 —— 与 [_strokedText] 同一个理由。
+  /// 「开着」用主色（与表盘、抽屉同一支蓝），「出事了」用橙色。
+  Widget _overlaySwitch({
+    required Key key,
+    required IconData icon,
+    required bool on,
+    required String tooltip,
+    required VoidCallback onPressed,
+    bool warning = false,
+  }) {
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return IconButton(
+      key: key,
+      onPressed: onPressed,
+      tooltip: tooltip,
+      icon: Icon(icon, size: 22),
+      style: IconButton.styleFrom(
+        backgroundColor: warning
+            ? Colors.orange.withValues(alpha: 0.9)
+            : on
+                ? primary.withValues(alpha: 0.9)
+                : Colors.black.withValues(alpha: 0.45),
+        foregroundColor: (on || warning) ? Colors.white : Colors.white70,
+      ),
+    );
+  }
+
+  /// 手电筒开关。
+  ///
+  /// ⚠️ **先翻图标、失败再翻回来**：原生那边与对焦一样是尽力而为
+  /// （相机可能刚好在关、系统可能不让），而图标亮着而灯没亮是最难解释的
+  /// 一种「坏了」—— 用户会以为这台机器的手电筒坏了。
+  Future<void> _toggleTorch() async {
+    final wanted = !_torchOn;
+    setState(() => _torchOn = wanted);
+
+    try {
+      await _gateway.setTorch(wanted);
+      _log('手电筒${wanted ? '开' : '关'}了');
+    } on Object catch (error) {
+      if (mounted) setState(() => _torchOn = !wanted);
+      _log('⚠️ 手电筒${wanted ? '开' : '关'}不了：$error');
+    }
+  }
+
+  /// 实时共享开关。**2026-10-03 从设置页搬到这里**（需求方）：
+  /// 工人是在取景的时候想开就开，不该为它跑一趟设置页。
+  ///
+  /// ⚠️ 它改的是**设置**，不是一个当场动作 —— 打开要等下次【开始工作】
+  /// （推流那一路是开会话时接上的，中途接会打断正在录的那一段），
+  /// 关掉是立刻停的。所以按完**必须说一句实话**：不说的话，这个按钮看起来
+  /// 就是「亮了但什么都没发生」的假开关（踩坑 #13）。
+  ///
+  /// 那句实话**优先用原生给的**：安卓那边会说「还要等下一次【开始工作】才生效」，
+  /// 这里再编一句就成了第二份说法。
+  Future<void> _toggleLiveShare() async {
+    // 盘上的设置还没读出来（开机头一两秒）—— 这时改不了任何设置，
+    // 说了「已开」就是假话。如实说一句，与设置页那些控件禁用同一个道理。
+    if (!_settingsReady) {
+      _snack('设置还没读出来，稍等一下再按。');
+      return;
+    }
+
+    final wanted = !_liveShareOn;
+
+    _updateSettings(liveShareEnabled: wanted, applyLiveShare: false);
+    await _applyLiveShare();
+
+    if (!mounted) return;
+
+    _snack(wanted
+        ? (_liveShareProblem ??
+            ((_liveShare?.isRunning ?? false)
+                ? '实时共享已开：正在推流。'
+                : '实时共享已开：下次点【开始工作】时开始推流。'))
+        : '实时共享已关，已经停了。');
   }
 
   /// 白色描边字：**画两层** —— 底下那层只描边，上面那层只填充。
@@ -4784,29 +4977,42 @@ class _RecorderPageState extends State<RecorderPage> {
         const Divider(height: 20),
         // 一键诊断包（`AGENTS.md` §6：日志要能导出为诊断包，用户一键打包发回）。
         // 放在**已有的**诊断抽屉里，不新增界面面。
+        //
+        // ⚠️ 2026-10-03 起生成后**顺手弹系统分享面板**（与【关于我们】那一颗
+        // 同一件事）。改这一下的理由：Android 那边这个文件落在 app 私有目录，
+        // 以前只有一句「自己去找」——而**那句提示分不出「用户找不到」和
+        // 「用户没找」**，等于这条路上只有 iOS 走得通（见
+        // `DiagnosticsPackage` 的类注释）。多这一步就条条路都走得通了。
         FilledButton.tonal(
-          onPressed: _exportDiagnostics,
+          onPressed: () async {
+            final note = await _exportDiagnostics(share: true);
+            if (mounted) setState(() => _diagnosticsNote = note);
+          },
           child: const Text('导出诊断包'),
         ),
         const SizedBox(height: 4),
         Text(
-          _diagnosticsNote ?? '遇到问题时点它，然后把生成的那个文件发回来。',
+          _diagnosticsNote ?? '遇到问题时点它，把它发回来。',
           style: const TextStyle(fontSize: 12),
         ),
       ],
     );
   }
 
-  /// 生成诊断包并说清**它落在哪**。
+  /// 生成诊断包并说清**它落在哪**。返回要在界面上显示的那句话。
   ///
   /// ⚠️ iOS 上路径不用解释：`Info.plist` 里已有 `UIFileSharingEnabled`，
   /// 那个目录就是「文件 → 我的 iPhone → VidLog」。Android 是弱侧，
   /// 所以顺带把路径**显示出来并可复制**（用户能自己去找）。
-  Future<void> _exportDiagnostics() async {
+  ///
+  /// [share] 为真时**顺手把它交给系统分享面板**（需求方 2026-10-03：
+  /// 「手机端日志导出后可以使用手机自带分享功能」）。
+  /// ⚠️ 分享没成**不等于没导出** —— 两句话分开说，路径照给：
+  /// 笼统说一句「失败」会让用户以为文件也没了。
+  Future<String> _exportDiagnostics({bool share = false}) async {
     final root = _rootPath;
     if (root.isEmpty) {
-      setState(() => _diagnosticsNote = '还没读出数据目录，稍等一下再点。');
-      return;
+      return '还没读出数据目录，稍等一下再点。';
     }
 
     try {
@@ -4835,11 +5041,31 @@ class _RecorderPageState extends State<RecorderPage> {
         now: DateTime.now(),
       );
 
-      if (!mounted) return;
-      setState(() => _diagnosticsNote =
-          describeDiagnosticsPackage(path, hasScanErrors: errors.isNotEmpty));
+      final note = describeDiagnosticsPackage(path, hasScanErrors: errors.isNotEmpty);
+      if (!share) return note;
+
+      // ⚠️ mime 用 `application/octet-stream`：它是个 `.jsonl`，
+      // 说成 `text/plain` 会让某些应用拿它当文本消息**改写/截断**，
+      // 而这一份是要原样发回来的。
+      final problem = await _gateway.shareFile(
+        path,
+        mime: 'application/octet-stream',
+        title: '把日志发出去',
+      );
+
+      if (problem == null) {
+        _log('诊断包已生成，也弹了分享面板：$path');
+        return '$note\n已弹出分享面板 —— 选一个应用（微信 / 邮件…）发出去就行。';
+      }
+
+      // 分享没成**不算导出失败**（文件确实在盘上）—— 所以这样说。
+      _log('⚠️ 诊断包生成了，但分享面板没弹出来：$problem');
+      return '$note\n⚠️ 分享面板没弹出来（$problem）。文件就在上面那个路径下，'
+          '可以自己从「文件」里取出来发。';
     } on Object catch (error) {
-      if (mounted) setState(() => _diagnosticsNote = '导出失败：$error');
+      // catch 不静默：界面上那句 + 日志里一条（AGENTS.md §6.1）。
+      _log('⚠️ 导出诊断包失败：$error');
+      return '导出失败：$error';
     }
   }
 
@@ -4870,6 +5096,10 @@ class _RecorderPageState extends State<RecorderPage> {
     WaybillMinLength? waybillMinLength,
     bool? recordAudio,
     bool? liveShareEnabled,
+    // 采集页右上角那个实时共享按钮**自己**去对齐推流那一路（它要在按完之后
+    // 拿到结果说一句实话），所以它传 false 跳过这里那一跳 ——
+    // 两条 `_applyLiveShare` 叠着跑会各起一个 HTTP 服务，第二个必然端口被占。
+    bool applyLiveShare = true,
   }) {
     final settings = _settings;
     if (settings == null) return;
@@ -4924,7 +5154,9 @@ class _RecorderPageState extends State<RecorderPage> {
     // （推流那一路是开会话时挂上去的第二路输出）。这里叫一下是为了
     // 让「关掉」当场生效、「打开」当场得到那句实话 —— 而不是让用户
     // 对着一个没有反应的开关猜。
-    if (liveShareEnabled != null) unawaited(_applyLiveShare());
+    if (liveShareEnabled != null && applyLiveShare) {
+      unawaited(_applyLiveShare());
+    }
 
     // **不等它写完。** 写盘是几十毫秒的 I/O，而这是点一下开关就要走的路；
     // 失败了也不该拦住任何事 —— 设置读不出来/写不进去都不影响录制（I4）。
@@ -5260,27 +5492,29 @@ class _RecorderPageState extends State<RecorderPage> {
       title: '实时共享',
       blurb: '把这台手机的相机画面推给电脑端看（电脑端那边叫「实时多画面」）。',
       children: [
-        SwitchListTile(
-          key: const Key('settings-live-share-switch'),
-          contentPadding: EdgeInsets.zero,
-          value: _liveShareOn,
-          onChanged: _settingsReady
-              ? (value) => _updateSettings(liveShareEnabled: value)
-              : null,
-          title: Text(_liveShareOn ? '开启' : '关闭'),
-          subtitle: Text(
-            // ⚠️ 这三句是这一页上最容易写错的地方：把「推流」说成「录像」
-            // 会让人以为关掉它录像就没了，反过来会让人以为录像是靠它传的。
-            // ⚠️ **界面上不要写 `**粗体**`** —— 那不是 Markdown，用户看到的是
-            // 四个星号。这一页其它说明文字也一律是纯文本。
-            '只往外推画面：不录音、不落盘，也不写进录像文件。\n'
-            '点【开始工作】之后才会推；结束工作就停。\n'
-            '录制吃紧（过热 / 低电量 / 存储将满）时它会被自动停掉 —— 录像优先。\n'
-            '⚠️ 改成「开」要等**下次【开始工作】**才真的开始推（推流那一路是'
-            '开会话时接上的，中途接会打断正在录的那一段）；改成「关」是立刻停的。\n'
-            '手机不在电脑端那个局域网里、或者电脑端没开时，推不出去'
-            '（手机上照常录像，只是电脑端的多画面里不会出现这台机位）。',
-          ),
+        // ⚠️ **这一页已经没有开关了**（需求方 2026-10-03）：它搬到
+        // 【发货】/【退货】两页的右上角去了（那个投屏图标）。
+        // 卡片留着，是因为下面这几句只有这里说得清 —— 图标按钮上写不下，
+        // 而这几句正是最容易误解的地方（把「推流」当成「录像」）。
+        Text(
+          '开关在【发货】/【退货】两页的右上角（投屏图标）。现在：'
+          '${_liveShareOn ? '开' : '关'}。',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          // ⚠️ 这三句是这一页上最容易写错的地方：把「推流」说成「录像」
+          // 会让人以为关掉它录像就没了，反过来会让人以为录像是靠它传的。
+          // ⚠️ **界面上不要写 `**粗体**`** —— 那不是 Markdown，用户看到的是
+          // 四个星号。这一页其它说明文字也一律是纯文本。
+          '只往外推画面：不录音、不落盘，也不写进录像文件。\n'
+          '点【开始工作】之后才会推；结束工作就停。\n'
+          '录制吃紧（过热 / 低电量 / 存储将满）时它会被自动停掉 —— 录像优先。\n'
+          '⚠️ 打开要等下次【开始工作】才真的开始推（推流那一路是开会话时接上的，'
+          '中途接会打断正在录的那一段）；关掉是立刻停的。\n'
+          '手机不在电脑端那个局域网里、或者电脑端没开时，推不出去'
+          '（手机上照常录像，只是电脑端的多画面里不会出现这台机位）。',
+          style: TextStyle(fontSize: 12),
         ),
 
         // 起不来 / 被压力停掉时的那句话。**平时不占地方**（null 就整块不画）。
@@ -5365,7 +5599,7 @@ class _RecorderPageState extends State<RecorderPage> {
   Widget _aboutCard() => _linkCard(
         icon: Icons.info_outline,
         title: '关于我们',
-        blurb: '版本号与一句话介绍。',
+        blurb: '版本号、一句话介绍，以及把日志导出来发给我们。',
         onTap: _openAboutPage,
       );
 
@@ -5393,7 +5627,11 @@ class _RecorderPageState extends State<RecorderPage> {
 
   void _openAboutPage() {
     Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (context) => const AboutPage()),
+      MaterialPageRoute<void>(
+        // 导出那件事**借这里的 state 干**（包里那几样只有这一页有）。
+        builder: (context) =>
+            AboutPage(onExportLogs: () => _exportDiagnostics(share: true)),
+      ),
     );
   }
 
@@ -6135,15 +6373,50 @@ class _RecorderPageState extends State<RecorderPage> {
 ///
 /// 换成「一个 const + 一条**读真文件对账**的测试」：不用依赖，漂了当场红。
 /// 测试见 `test/about_page_test.dart`。
-const String appVersion = '1.0.0+2';
+const String appVersion = '1.0.0+3';
 
 /// 「关于我们」二级页。
 ///
 /// ⚠️ **只显示盘上真有的东西**（§13.1）—— 应用名、版本号、这产品是干什么的。
 /// **不摆**「检查更新」这类入口：没有更新服务就是没有，摆上去点不动
 /// （踩坑 #13，与 [NetdiskShellPage] 同一条规矩）。
-class AboutPage extends StatelessWidget {
-  const AboutPage({super.key});
+class AboutPage extends StatefulWidget {
+  const AboutPage({super.key, required this.onExportLogs});
+
+  /// 「导出日志」那一颗点了干什么：**生成诊断包 + 交给系统分享面板**，
+  /// 返回要在这一页上显示的那句话。
+  ///
+  /// ⚠️ 做成回调、而不是在这一页自己干，是因为包里那几样东西
+  ///（会话数 / 未收尾数 / 索引条目 / 设备名 / 当前设置）**只有采集页那一份状态有**。
+  /// 在这里重读一遍盘等于把同一件事写第二份，两边的口径迟早会走岔
+  /// （诊断包的口径错了，拿到它的人也看不出错）。
+  final Future<String> Function() onExportLogs;
+
+  @override
+  State<AboutPage> createState() => _AboutPageState();
+}
+
+class _AboutPageState extends State<AboutPage> {
+  /// 导出/分享那一步的结果（生成之前是 null）。
+  String? _note;
+
+  /// 正在导出。**按下去要变灰** —— 生成包要读几百行日志，连点会生成好几份。
+  bool _busy = false;
+
+  Future<void> _exportAndShare() async {
+    setState(() {
+      _busy = true;
+      _note = null;
+    });
+
+    final note = await widget.onExportLogs();
+
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _note = note;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6177,7 +6450,55 @@ class AboutPage extends StatelessWidget {
               ),
             ),
           ),
+
+          // ── 日志导出（需求方 2026-10-03）─────────────────────
+          //
+          // ⚠️ 生成之后**直接弹手机自带的分享面板**（微信 / 邮件 / 网盘都行），
+          // 不再让用户去「文件」App 里自己翻 —— 那一步在 Android 上
+          // 根本走不通（文件在 app 私有目录）。见 `DiagnosticsPackage` 的类注释。
+          _sectionCard(
+            title: '日志',
+            children: [
+              const Text(
+                // ⚠️ 界面上不写 `**粗体**` —— 那不是 Markdown，用户看到的是四个星号。
+                '遇到问题时，把日志发回来给我们看。\n'
+                '生成的那个文件里有：最近的日志、当前设置、环境与索引摘要。'
+                '不含任何录像。',
+                style: TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonalIcon(
+                key: const Key('about-export-logs'),
+                onPressed: _busy ? null : _exportAndShare,
+                icon: const Icon(Icons.ios_share, size: 18),
+                label: Text(_busy ? '正在生成…' : '导出日志'),
+              ),
+              if (_note != null) ...[
+                const SizedBox(height: 8),
+                Text(_note!, key: const Key('about-export-note'),
+                    style: const TextStyle(fontSize: 12)),
+              ],
+            ],
+          ),
         ],
+      ),
+    );
+  }
+
+  /// 这一页里的一张卡（与设置页那几张的版式一致：小标题 + 内容）。
+  Widget _sectionCard({required String title, required List<Widget> children}) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...children,
+          ],
+        ),
       ),
     );
   }

@@ -479,6 +479,51 @@ void main() {
     // 所以这一条记在 `真机验收清单.md` 里，不在这里假装验过。
   });
 
+  /// 采集页右上角那两个图标开关（需求方 2026-10-03）。
+  ///
+  /// ⚠️ 这一条**不是**在测外观，是在钉两件容易悄悄坏掉的事：
+  /// ① 实时共享那个开关**真的在采集页上**（设置页那个已经删了 ——
+  ///    删完忘了搬的话，这一整条路就没入口了，而编译一个字都不会说）；
+  /// ② 按下去**会说一句实话**（这条路注定有一半是「等下次【开始工作】」，
+  ///    不说的话它就是个亮着却什么都没发生的假开关 —— 踩坑 #13）。
+  testWidgets('★ 采集页右上角：实时共享图标开关在，且按下去会说一句实话',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    final live = find.byKey(const Key('work-live-share'));
+    expect(live, findsOneWidget);
+
+    // ⚠️ 设置页那一个**已经没有了**（需求方 2026-10-03）——
+    // 两处都有的话，用户会看到两个说法不一样的同一个开关。
+    expect(find.byKey(const Key('settings-live-share-switch')), findsNothing,
+        reason: '设置页那个开关该删掉了，它现在在采集页右上角');
+
+    await tester.tap(live);
+    await tester.pumpAndSettle();
+
+    // widget 测试里没有平台通道 ⇒ 盘上的设置读不出来 ⇒ 只能回这一句。
+    // **正是要它回这一句**：什么都读不到时说「已开启」就是假话。
+    expect(find.text('设置还没读出来，稍等一下再按。'), findsOneWidget);
+  });
+
+  /// 手电筒按钮**设备没有闪光灯就不画**（踩坑 #13：不画假开关）。
+  ///
+  /// ⚠️ 这里证的是**「不知道」也不敢画**那一条：widget 测试里没有原生通道，
+  /// `hasTorch()` 必然失败 ⇒ 界面拿不到答案 ⇒ 按钮一个都不该出现。
+  /// 「有闪光灯的设备上真的画出来」只能真机验（记在 `真机验收清单.md`）。
+  testWidgets('★ 采集页右上角：问不到闪光灯就不画那个按钮', (WidgetTester tester) async {
+    await tester.pumpWidget(const VidLogApp());
+
+    await tester.tap(find.byIcon(Icons.local_shipping_outlined));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('work-torch')), findsNothing,
+        reason: '问不到设备能力时画一个按下去什么都不发生的按钮 = 假开关');
+  });
+
   testWidgets('★ 采集页全屏：没有 AppBar，抽屉默认收着', (WidgetTester tester) async {
     await tester.pumpWidget(const VidLogApp());
 

@@ -100,6 +100,23 @@ final class LiveStreamer: NSObject {
     private var width = 0
     private var height = 0
 
+    /// 下一帧要**强制**出一个关键帧（刚建、以及每次换档重建之后为真）。
+    ///
+    /// ⚠️ **这个标志是「改档之后那一格还出不出得来画面」的关键。**
+    ///
+    /// 裸流（Annex-B）没有容器，**中途接入的客户端只能从关键帧开始解**
+    ///（`lib/live/live_hub.dart` 那个 GOP 缓存就是按这个契约给新客户端补帧的）。
+    /// 而 `VTCompressionSession` **不保证**它吐的第一帧是关键帧 ——
+    /// 真吐 P 帧出来的话：那一刻起**所有**客户端（连着的老客户端也一样）
+    /// 都解不动，一直等到 `MaxKeyFrameIntervalDuration`（2 秒）之后的下一个
+    /// 关键帧为止。电脑端那边的表现是一格黑着或者满屏马赛克，
+    /// 而它自己认不出是哪种（ffmpeg 只会往 stderr 里刷
+    /// "P sub_mb_type ... out of range" 之类）。
+    ///
+    /// 安卓那边没这个隐患：`MediaCodec` 起编码器后**第一帧一定出 I 帧**，
+    /// 所以那边一个字都不用改。iOS 这边要自己说一句。
+    private var needsKeyFrame = false
+
     /// 已经关掉了（关掉之后送进来的帧一律丢）。
     private var closed = false
 
@@ -286,6 +303,11 @@ final class LiveStreamer: NSObject {
 
         VTCompressionSessionPrepareToEncodeFrames(session)
 
+        // ⚠️ 刚建出来的编码器**头一帧必须自己保证是关键帧**（理由见 `needsKeyFrame`）。
+        // 换档走的就是这条路：`tearDown()` → 下一帧 `prepare()` 重建 →
+        // 从这里再置一次，所以每次改档都会补一个 IDR。
+        needsKeyFrame = true
+
         compression = session
         transfer = transferSession
         pool = pixelPool
@@ -311,14 +333,22 @@ final class LiveStreamer: NSObject {
             return false
         }
 
+        // ⚠️ 换档之后的第一帧要**点名要一个关键帧**（`needsKeyFrame` 那一段解释了
+        // 不这么做会怎么坏）。成了才把标志放下 —— 这一帧没编成的话下一帧接着要。
+        let forceKey = needsKeyFrame
+
         let status = VTCompressionSessionEncodeFrame(
             compression,
             imageBuffer: destination,
             presentationTimeStamp: time,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: forceKey
+                ? ([kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary)
+                : nil,
             sourceFrameRefcon: nil,
             infoFlagsOut: nil)
+
+        if status == noErr, forceKey { needsKeyFrame = false }
 
         return status == noErr
     }
