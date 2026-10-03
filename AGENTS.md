@@ -233,6 +233,15 @@ pwsh -NoProfile -File scripts/precheck.ps1 -Full    # 慢：加 Android 真编�
   出包之后要到 `.app/Info.plist` 里核一遍 `CFBundleShortVersionString` **实际是哪个值赢了**
   —— Flutter 生成的 xcconfig 与项目里的设置谁覆盖谁，取决于 Xcode 的取值顺序，
   **别照推断说**。核完把结论写进留档。
+
+  ✅ **2026-10-03 核了**（`ios-package` run #31，commit `44b0b88`，pubspec `1.0.0+5`）：
+  解开 `.ipa` 读 `Payload/Runner.app/Info.plist` ——
+  `CFBundleShortVersionString = 1.0.0`、`CFBundleVersion = 5`。
+  **pubspec 那一份赢了**，pbxproj 里硬写的 `MARKETING_VERSION = 1.0` 没有盖掉它。
+  ⚠️ `Frameworks/App.framework` 与 `Frameworks/Flutter.framework` 里也各有一份 Info.plist，
+  写的是 `1.0` / `1.0` —— 那是 Flutter 自己的框架版本，**不是本 App 的**，别拿它当证据。
+  读法：`plistlib.load(open('Payload/Runner.app/Info.plist','rb'))`。那份是**二进制 plist**，
+  用 `grep -a` 也能在字节里同时看到 `1.0.0` 和 `5`，但那是碰巧同现、**不构成证据**（别用它取证）。
 - ⚠️ `dist/` 里那些 `vidlog-ios-unsigned-N` 是**裸计数器**，跟版本号没有关系。
   从现在起，产物命名要带上上面那两个数（例如 `vidlog-ios-1.0.0-1-unsigned.ipa`）。
 
