@@ -2461,7 +2461,7 @@ class _RecorderPageState extends State<RecorderPage> {
                     color: Palette.primary,
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.monitor, size: 19, color: Colors.white),
+                  child: const Icon(Icons.monitor, size: 19, color: Palette.onDark),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -3488,7 +3488,7 @@ class _RecorderPageState extends State<RecorderPage> {
               child: _thumbImage(session),
             ),
             const Center(
-              child: Icon(Icons.play_circle_fill, size: 22, color: Colors.white70),
+              child: Icon(Icons.play_circle_fill, size: 22, color: Palette.onDarkSoft),
             ),
           ],
         ),
@@ -4225,7 +4225,7 @@ class _RecorderPageState extends State<RecorderPage> {
           children: [
             // ── ① 画面：铺满整页 ──
             ColoredBox(
-              color: Colors.black,
+              color: Palette.backdrop,
               child: showPreview
                   ? CameraPreview(
                       viewfinder: gate.viewfinder,
@@ -4283,7 +4283,7 @@ class _RecorderPageState extends State<RecorderPage> {
           child: Text(
             '相机还没开。\n点下面的【开始】重试。',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white54, fontSize: 14, height: 1.6),
+            style: TextStyle(color: Palette.onDarkFaint, fontSize: 14, height: 1.6),
           ),
         ),
       );
@@ -4300,26 +4300,26 @@ class _RecorderPageState extends State<RecorderPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.schedule, color: Colors.orangeAccent, size: 40),
+              const Icon(Icons.schedule, color: Palette.mediaWarn, size: 40),
               const SizedBox(height: 12),
               Text(
                 _clockBlockedReason!,
                 key: const Key('clock-blocked-reason'),
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.6),
+                style: const TextStyle(color: Palette.onDark, fontSize: 15, height: 1.6),
               ),
               const SizedBox(height: 8),
               const Text(
                 '视频里的时间必须能追溯到本机之外的某个来源 —— 否则改一下系统时间就能伪造'
                 '「更早的证据」。联一次网取到时间之后，以后一直断网也能照常录。',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.6),
+                style: TextStyle(color: Palette.onDarkFaint, fontSize: 12, height: 1.6),
               ),
               const SizedBox(height: 4),
               const Text(
                 '⚠️ 只挡住**新录**：已有的录像照常可以检索、回放、导出、交付。',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white60, fontSize: 12, height: 1.6),
+                style: TextStyle(color: Palette.onDarkFaint, fontSize: 12, height: 1.6),
               ),
               const SizedBox(height: 16),
               FilledButton(
@@ -4363,7 +4363,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 _clockStamp(_now),
                 key: const Key('recorder-clock'),
                 style: const TextStyle(
-                  color: Colors.white,
+                  color: Palette.onDark,
                   fontSize: 26,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 1,
@@ -4390,7 +4390,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   recording
                       ? Icons.fiber_manual_record
                       : (working ? Icons.photo_camera : Icons.stop_circle_outlined),
-                  color: recording ? Colors.redAccent : Colors.white70,
+                  color: recording ? Palette.mediaRecord : Palette.onDarkSoft,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -4401,7 +4401,7 @@ class _RecorderPageState extends State<RecorderPage> {
                     // 一行 —— 挤在这一行里只能省略号收尾，而截断的单号
                     // 看起来仍然像个完整单号，抄下来就是错的。
                     recording ? '录制中' : _status,
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                    style: const TextStyle(color: Palette.onDark, fontSize: 16),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -4411,7 +4411,7 @@ class _RecorderPageState extends State<RecorderPage> {
                   Text(
                     '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
                     style: const TextStyle(
-                      color: Colors.white,
+                      color: Palette.onDark,
                       fontSize: 20,
                       fontWeight: FontWeight.w300,
                     ),
@@ -4430,7 +4430,7 @@ class _RecorderPageState extends State<RecorderPage> {
             Text(
               '工作区 $_sessionCount（未收尾 $_pendingCount）'
               ' · 索引 $_entryCount · 打点 $_punchCount',
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
+              style: const TextStyle(color: Palette.onDarkSoft, fontSize: 12),
             ),
           ],
         ),
@@ -4504,11 +4504,11 @@ class _RecorderPageState extends State<RecorderPage> {
       icon: Icon(icon, size: 22),
       style: IconButton.styleFrom(
         backgroundColor: warning
-            ? Colors.orange.withValues(alpha: 0.9)
+            ? Palette.mediaWarn.withValues(alpha: 0.9)
             : on
                 ? primary.withValues(alpha: 0.9)
-                : Colors.black.withValues(alpha: 0.45),
-        foregroundColor: (on || warning) ? Colors.white : Colors.white70,
+                : Palette.backdrop.withValues(alpha: 0.45),
+        foregroundColor: (on || warning) ? Palette.onDark : Palette.onDarkSoft,
       ),
     );
   }
@@ -4577,7 +4577,7 @@ class _RecorderPageState extends State<RecorderPage> {
     String text, {
     required Key key,
     required TextStyle style,
-    Color strokeColor = Colors.black,
+    Color strokeColor = Palette.backdrop,
     double strokeWidth = 3,
   }) {
     return Stack(
@@ -4609,7 +4609,7 @@ class _RecorderPageState extends State<RecorderPage> {
         key: const Key('recorder-waybill'),
         textAlign: TextAlign.center,
         style: const TextStyle(
-          color: Colors.redAccent,
+          color: Palette.mediaRecord,
           fontSize: 22,
           fontWeight: FontWeight.w700,
           letterSpacing: 1,
@@ -4693,8 +4693,8 @@ class _RecorderPageState extends State<RecorderPage> {
                 icon: Icon(working ? Icons.stop : Icons.play_arrow),
                 label: Text(working ? '结束' : '开始'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: working ? Colors.red.shade600 : Colors.green.shade600,
-                  foregroundColor: Colors.white,
+                  backgroundColor: working ? Palette.danger : Palette.green,
+                  foregroundColor: Palette.onDark,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
               ),
@@ -4723,8 +4723,8 @@ class _RecorderPageState extends State<RecorderPage> {
         width: 56,
         height: 56,
         child: Material(
-          color: open ? Colors.black.withValues(alpha: 0.55)
-                      : Colors.black.withValues(alpha: 0.3),
+          color: open ? Palette.backdrop.withValues(alpha: 0.55)
+                      : Palette.backdrop.withValues(alpha: 0.3),
           borderRadius: BorderRadius.circular(8),
           child: InkWell(
             key: const Key('recorder-focus-button'),
@@ -4745,12 +4745,12 @@ class _RecorderPageState extends State<RecorderPage> {
                 Icon(
                   Icons.center_focus_strong,
                   size: 22,
-                  color: Colors.white.withValues(alpha: open ? 1.0 : 0.85),
+                  color: Palette.onDark.withValues(alpha: open ? 1.0 : 0.85),
                 ),
                 const SizedBox(height: 2),
                 const Text(
                   '对焦',
-                  style: TextStyle(fontSize: 11, color: Colors.white),
+                  style: TextStyle(fontSize: 11, color: Palette.onDark),
                 ),
               ],
             ),
@@ -4776,8 +4776,8 @@ class _RecorderPageState extends State<RecorderPage> {
           begin: top ? Alignment.bottomCenter : Alignment.topCenter,
           end: top ? Alignment.topCenter : Alignment.bottomCenter,
           colors: [
-            Colors.black.withValues(alpha: clear),
-            Colors.black.withValues(alpha: solid),
+            Palette.backdrop.withValues(alpha: clear),
+            Palette.backdrop.withValues(alpha: solid),
           ],
         ),
       ),
@@ -4792,7 +4792,7 @@ class _RecorderPageState extends State<RecorderPage> {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.orange.shade100,
+        color: Palette.amberTint,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -4835,7 +4835,7 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             child: Text(
               '$label ${_workSheet == sheet ? '▾' : '▸'}',
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              style: const TextStyle(color: Palette.onDarkSoft, fontSize: 13),
             ),
           ),
         );
@@ -5285,7 +5285,7 @@ class _RecorderPageState extends State<RecorderPage> {
               color: Palette.primary,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(Icons.settings, color: Colors.white, size: 26),
+            child: const Icon(Icons.settings, color: Palette.onDark, size: 26),
           ),
           const SizedBox(width: 12),
           const Column(
@@ -5329,7 +5329,7 @@ class _RecorderPageState extends State<RecorderPage> {
                     color: Palette.primary,
                     borderRadius: BorderRadius.circular(9),
                   ),
-                  child: Icon(icon, color: Colors.white, size: 20),
+                  child: Icon(icon, color: Palette.onDark, size: 20),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -5762,7 +5762,7 @@ class _RecorderPageState extends State<RecorderPage> {
           decoration: BoxDecoration(
             color: reason == null
                 ? scheme.surfaceContainerHighest
-                : Colors.orange.withValues(alpha: 0.18),
+                : Palette.amberTint,
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
@@ -5774,7 +5774,7 @@ class _RecorderPageState extends State<RecorderPage> {
                         '$reason',
             style: TextStyle(
               fontSize: 12,
-              color: reason == null ? null : Colors.deepOrange.shade900,
+              color: reason == null ? null : Palette.amber,
             ),
           ),
         ),
@@ -6128,7 +6128,7 @@ class _RecorderPageState extends State<RecorderPage> {
   /// 而这次没开，或者反过来以为「我关了它就永久关了」。
   Widget _acceptanceCard() {
     return Card(
-      color: Colors.amber.withValues(alpha: 0.18),
+      color: Palette.amberTint,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -6181,7 +6181,7 @@ class _RecorderPageState extends State<RecorderPage> {
     final working = _coordinator?.isWorking ?? false;
 
     return Card(
-      color: working ? Colors.amber.withValues(alpha: 0.18) : null,
+      color: working ? Palette.amberTint : null,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Text(

@@ -120,7 +120,7 @@ class RecordDetailPage extends StatelessWidget {
               // 用户会以为它们说的是两回事。
               //
               // ⚠️ 颜色也必须走同一个函数（`businessTypeLook`）。这里原先自己写了
-              // 一遍 `returning ? Colors.deepOrange : Colors.blue` —— 与列表上
+              // 一遍「退货就深橙、否则蓝」那两个字面色 —— 与列表上
               // 用的那两支**不是同一个色**，于是列表上是一个橙、点进去是另一个橙，
               // 而用户会以为换了类别。
               if (type != null)
@@ -200,7 +200,7 @@ class RecordDetailPage extends StatelessWidget {
                 child: InkWell(
                   onTap: onPlay,
                   child: const Center(
-                    child: Icon(Icons.play_circle_fill, size: 56, color: Colors.white70),
+                    child: Icon(Icons.play_circle_fill, size: 56, color: Palette.onDarkSoft),
                   ),
                 ),
               ),

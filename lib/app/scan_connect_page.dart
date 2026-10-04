@@ -7,6 +7,7 @@ import '../recording/recording_spec.dart';
 import '../scanning/viewfinder.dart';
 import '../upload/enroll_qr.dart';
 import 'camera_preview.dart';
+import 'palette.dart';
 
 /// 【扫码连接】：对准电脑端屏幕上那张二维码，扫到就把它解出来交回去。
 ///
@@ -183,26 +184,26 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
       CameraPreview(viewfinder: _viewfinder, aspectRatio: widget.spec.aspectRatio);
 
   Widget _problemView() => Container(
-        color: Colors.black87,
+        color: Palette.veil,
         alignment: Alignment.center,
         padding: const EdgeInsets.all(24),
         child: Text(
           _problem!,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
+          style: const TextStyle(color: Palette.onDarkSoft, fontSize: 14),
         ),
       );
 
   Widget _hint() => Container(
         width: double.infinity,
-        color: Colors.black87,
+        color: Palette.veil,
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
               '把电脑端屏幕上的二维码放进框里',
-              style: TextStyle(color: Colors.white, fontSize: 15),
+              style: TextStyle(color: Palette.onDark, fontSize: 15),
             ),
             const SizedBox(height: 4),
             Text(
@@ -210,7 +211,7 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
                   ? '这不是 VidLog 的二维码 —— 要扫的是电脑端上点【连接电脑/手机】之后弹出的那一张。'
                   : '二维码在电脑端上点【连接电脑/手机】才会出现，5 分钟内有效。',
               style: TextStyle(
-                color: _sawForeignCode ? Colors.orangeAccent : Colors.white60,
+                color: _sawForeignCode ? Palette.mediaWarn : Palette.onDarkFaint,
                 fontSize: 12,
               ),
             ),

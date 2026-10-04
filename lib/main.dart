@@ -52,7 +52,7 @@ class VidLogApp extends StatelessWidget {
       brightness: Brightness.light,
 
       primary: Palette.primary,
-      onPrimary: Colors.white,
+      onPrimary: Palette.onDark,
       primaryContainer: Palette.blueTint,
       onPrimaryContainer: Palette.primary,
 
@@ -60,12 +60,12 @@ class VidLogApp extends StatelessWidget {
       // `NavigationBar` 选中态的指示器、`SegmentedButton` 选中项的底 ——
       // 三样在草图里都是**浅蓝底 + 蓝字**。
       secondary: Palette.primary,
-      onSecondary: Colors.white,
+      onSecondary: Palette.onDark,
       secondaryContainer: Palette.blueTint,
       onSecondaryContainer: Palette.primary,
 
       error: Palette.danger,
-      onError: Colors.white,
+      onError: Palette.onDark,
 
       // 页面底色。`Scaffold` 与 `AppBar` 的默认底都取它。
       surface: Palette.page,

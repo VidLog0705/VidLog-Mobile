@@ -15,12 +15,16 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 /// 取景框那支画笔（那次没动它），`record_detail_page_test` 只是把
 /// `Colors.green` 当夹具传进去。整套主题被改回去，没有一条会红。
 ///
-/// 这里五条，各挡一种「改回去」：
+/// 这里六条，各挡一种「改回去」：
 /// 1. 主色是草图采样那支蓝，**不是 `fromSeed` 算出来的**
 /// 2. 卡片与页面是**两个**色（同一档的话卡片就浮不起来）
 /// 3. 发货 / 退货那两支色是调色板给的，**不是 Material 内置的那两个**
 /// 4. Chip 的底单独钉住（不钉就等于隐形）
 /// 5. **每个前景色对每个底色都达标** —— 改造清单 T2 的那条绊线
+/// 6. **媒体层那一族对纯黑够看** —— T3 加的那一档，门槛与理由都不同，见那条
+///
+/// 「`lib/` 里不许有裸色」那条不在这个文件，在 `wiring_test.dart` ——
+/// 它要遍历整个 `lib/`，和那边「不许 print」是同一种写法。
 void main() {
   test('★ 主题主色是草图采样那支蓝，不是 fromSeed 算出来的', () {
     final scheme = VidLogApp.theme.colorScheme;
@@ -146,9 +150,10 @@ void main() {
     // 绊线就恰好在这时候瞎掉。全组合偏严一点，代价只是明度再低几个点。
     final failures = <String>[];
 
-    void check(Map<String, Color> colors, double floor, String kind) {
+    void check(Map<String, Color> colors, double floor, String kind,
+        {Map<String, Color>? on}) {
       for (final fg in colors.entries) {
-        for (final bg in backgrounds.entries) {
+        for (final bg in (on ?? backgrounds).entries) {
           final r = ratio(fg.value, bg.value);
           if (r < floor) {
             failures.add('$kind ${fg.key} 压在 ${bg.key} 上只有 '
@@ -160,6 +165,43 @@ void main() {
 
     check(textColors, 4.5, '文字');
     check(strokeColors, 3.0, '描边');
+
+    // ⚠️ **媒体层另起一档，门槛是「对纯黑够看」而不是「对每个浅底够看」。**
+    //
+    // 上面那两档量的底是 [page] / [card] 这类**我们定的**浅底，所以能量全组合；
+    // 这一族的底是**实时画面**（取景、播放中的视频、一张缩略图）——
+    // 白墙、仓库顶灯、白面单，整片白的时候纯白字就是看不见。
+    // 这**不能靠调颜色解决**，靠的是遮罩与描边（`_strokedText` 那两层字）。
+    //
+    // 所以这一条只守住一个下限：黑画面的那一头要够看。
+    // 真机上遇到亮画面看不清时，出路是**加厚遮罩**，不是把这几个色调深 ——
+    // 调深了在黑画面上反而是自杀，而黑画面比白画面常见得多。
+    check(
+      const <String, Color>{
+        'onDark': Palette.onDark,
+        'onDarkSoft': Palette.onDarkSoft,
+        'onDarkFaint': Palette.onDarkFaint,
+        'mediaWarn': Palette.mediaWarn,
+        'mediaRecord': Palette.mediaRecord,
+        'mediaPick': Palette.mediaPick,
+      },
+      4.5,
+      '压深底',
+      on: const {'backdrop': Palette.backdrop},
+    );
+
+    // `onDark` 另外还压在**实心色块**上：主色方块里的图标、
+    // 【开始】/【结束】那两个按钮的字。这三支是它会遇到的**最亮**的底。
+    check(
+      const <String, Color>{'onDark': Palette.onDark},
+      4.5,
+      '压实心按钮',
+      on: const {
+        'primary': Palette.primary,
+        'green': Palette.green,
+        'danger': Palette.danger,
+      },
+    );
 
     expect(
       failures,

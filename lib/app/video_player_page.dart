@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
+import 'palette.dart';
+
 /// 自建播放器：**倍速 0.5 / 1 / 1.5 / 2、可全屏、全屏时自动转横屏并按 16:9**。
 ///
 /// ## ⚠️ 为什么不再交给系统播放器
@@ -173,13 +175,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Palette.backdrop,
       appBar: _fullscreen
           ? null
           : AppBar(
               title: Text(widget.title ?? '播放', overflow: TextOverflow.ellipsis),
-              backgroundColor: Colors.black,
-              foregroundColor: Colors.white,
+              backgroundColor: Palette.backdrop,
+              foregroundColor: Palette.onDark,
             ),
       body: SafeArea(
         // 全屏时不要 SafeArea 的边距 —— 那会让画面缩在中间、四周一圈黑边。
@@ -200,7 +202,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           child: Text(
             problem,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white70),
+            style: const TextStyle(color: Palette.onDarkSoft),
           ),
         ),
       );
@@ -230,7 +232,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       );
 
   Widget _controls(VideoPlayerController controller) => Container(
-        color: Colors.black,
+        color: Palette.backdrop,
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
         // ⚠️ 用 `ValueListenableBuilder` 而不是在 onPressed 里 `setState`：
         // 播放进度与「正在播/暂停」是**控制器那边**在变的（播完自动停、
@@ -254,13 +256,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                     },
                     icon: Icon(
                       value.isPlaying ? Icons.pause : Icons.play_arrow,
-                      color: Colors.white,
+                      color: Palette.onDark,
                     ),
                     tooltip: value.isPlaying ? '暂停' : '播放',
                   ),
                   Text(
                     _position(value, _scrubMillis),
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    style: const TextStyle(color: Palette.onDarkSoft, fontSize: 12),
                   ),
                   const Spacer(),
                   ...playbackSpeeds.map((speed) => _speedButton(speed)),
@@ -268,7 +270,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                     onPressed: () => _setFullscreen(!_fullscreen),
                     icon: Icon(
                       _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                      color: Colors.white,
+                      color: Palette.onDark,
                     ),
                     tooltip: _fullscreen ? '退出全屏' : '全屏',
                   ),
@@ -287,7 +289,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       style: TextButton.styleFrom(
         minimumSize: const Size(46, 36),
         padding: EdgeInsets.zero,
-        foregroundColor: selected ? Colors.lightBlueAccent : Colors.white70,
+        foregroundColor: selected ? Palette.mediaPick : Palette.onDarkSoft,
       ),
       child: Text(
         labelForSpeed(speed),

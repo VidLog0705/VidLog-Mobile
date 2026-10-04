@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../scanning/viewfinder.dart';
+import 'palette.dart';
 
 /// 原生预览视图的类型名。须与 iOS `RecorderPlugin.previewViewType` **和**
 /// Android `RecorderChannel.PREVIEW_VIEW_TYPE` 一致。
@@ -112,13 +113,13 @@ class _PreviewUnavailable extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.black87,
+      color: Palette.veil,
       alignment: Alignment.center,
       padding: const EdgeInsets.all(24),
       child: const Text(
         '这个平台还没有相机预览。\n（两个手机端都已实现；桌面端本来就不需要）',
         textAlign: TextAlign.center,
-        style: TextStyle(color: Colors.white70, fontSize: 13),
+        style: TextStyle(color: Palette.onDarkSoft, fontSize: 13),
       ),
     );
   }
@@ -172,12 +173,12 @@ class ViewfinderPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth + 4
       ..strokeCap = StrokeCap.round
-      ..color = Colors.black.withValues(alpha: 0.6);
+      ..color = Palette.backdrop.withValues(alpha: 0.6);
     final stroke = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.round
-      ..color = Colors.white;
+      ..color = Palette.onDark;
 
     for (final paint in [halo, stroke]) {
       void arm(Offset from, Offset to) => canvas.drawLine(from, to, paint);

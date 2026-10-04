@@ -6,6 +6,7 @@ import '../recording/recorder_gateway.dart';
 import '../recording/recording_spec.dart';
 import '../scanning/viewfinder.dart';
 import 'camera_preview.dart';
+import 'palette.dart';
 
 /// 【扫码搜索】：扫一张面单，把单号填进备份页那个搜索框
 /// （需求方 2026-09-27 照备份页草图定的）。
@@ -166,33 +167,33 @@ class _ScanWaybillPageState extends State<ScanWaybillPage> {
       CameraPreview(viewfinder: _viewfinder, aspectRatio: widget.spec.aspectRatio);
 
   Widget _problemView() => Container(
-        color: Colors.black87,
+        color: Palette.veil,
         alignment: Alignment.center,
         padding: const EdgeInsets.all(24),
         child: Text(
           _problem!,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
+          style: const TextStyle(color: Palette.onDarkSoft, fontSize: 14),
         ),
       );
 
   Widget _hint() => Container(
         width: double.infinity,
-        color: Colors.black87,
+        color: Palette.veil,
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         child: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               '把面单上的条码放进框里',
-              style: TextStyle(color: Colors.white, fontSize: 15),
+              style: TextStyle(color: Palette.onDark, fontSize: 15),
             ),
             SizedBox(height: 4),
             Text(
               // 说清扫到之后会发生什么：用户扫这一下是为了搜，不是为了开录 ——
               // 不说的话他会以为扫面单就是要开始录像了（那是发货栏干的事）。
               '扫到就把单号填进搜索框，不会开始录像。',
-              style: TextStyle(color: Colors.white60, fontSize: 12),
+              style: TextStyle(color: Palette.onDarkFaint, fontSize: 12),
             ),
           ],
         ),

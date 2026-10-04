@@ -78,4 +78,43 @@ void main() {
 
     expect(offenders, isEmpty, reason: '这些地方绕过落盘：$offenders');
   });
+
+  test('★ lib/ 里一支裸色都不许有 —— 全部走 Palette', () {
+    // 改造清单 T3。改版前全仓散着 73 处 `Colors.xxx`：同一个角色
+    // （「压在画面上的次要字」）在四个文件里是四种白，而
+    // 「退货该用哪一支橙」在列表页与详情页是两个色。
+    //
+    // ⚠️ **没有文件白名单，也没有色白名单 —— 只有 `Colors.transparent` 一个例外**，
+    // 因为它不是一支颜色、是「没有颜色」（`Material(color:)` 的下沉层、
+    // `surfaceTintColor` 关掉染色）。给它编一个 `Palette.transparent`
+    // 只是把同样的字换个文件写，等于把白名单从 3 处搬到 1 处。
+    //
+    // ⚠️ 注释行跳过（这一条自己就在提 `Colors.`），与上面那条 `print` 同理。
+    const allowed = 'Colors.transparent';
+    final offenders = <String>[];
+    final pattern = RegExp(r'Colors\.[A-Za-z0-9_]+');
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        if (lines[index].trimLeft().startsWith('//')) continue;
+
+        for (final hit in pattern.allMatches(lines[index])) {
+          if (hit.group(0) == allowed) continue;
+          offenders.add('${entity.path}:${index + 1} → ${hit.group(0)}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些地方没走调色板（`lib/app/palette.dart`）：\n  '
+          '${offenders.join('\n  ')}\n'
+          '拿不准该用哪一支的话：压在**画面/视频**上的走 `onDark*` / `media*`，'
+          '压在**浅底**上的走 `primary` / `green` / `amber` / `danger` 那几支。',
+    );
+  });
 }

@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import 'palette.dart';
+
 /// 表盘的**兜底**上限。
 ///
 /// 真正的上限是设备能力（iOS 的 `maxAvailableVideoZoomFactor`、
@@ -194,7 +196,7 @@ class ZoomDial extends StatelessWidget {
                 // 跟主题走的话浅色主题下会是一行黑字压在暗画面上，看不见。
                 // ⚠️ 整块表盘此前**一次都没上过真机**（widget 测试里相机起不来），
                 // 这里按「深色遮罩」这个已知前提定死，真机上看不清再改。
-                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                style: const TextStyle(fontSize: 12, color: Palette.onDarkSoft),
               ),
             ),
           ),
@@ -293,7 +295,7 @@ class _ZoomDialPainter extends CustomPainter {
     final painter = TextPainter(
       text: const TextSpan(
         text: '0',
-        style: TextStyle(fontSize: 11, color: Colors.white70),
+        style: TextStyle(fontSize: 11, color: Palette.onDarkSoft),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
