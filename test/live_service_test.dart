@@ -103,7 +103,12 @@ void main() {
     final body = await response.transform(utf8.decoder).join();
 
     expect(response.statusCode, 200);
-    expect(jsonDecode(body), {'f': 3, 't': 1, 'p': 480});
+
+    // ⚠️ `d`（编码侧丢帧）在这里只会是 0，但**它必须在**：它证明
+    // `LiveService` 把 `LiveServer` 那个 `droppedFrames` 回调真的接上了 ——
+    // 少接一个参数就编译不过，而**接上一个恒等于 0 的东西**只有这一句看得见。
+    // 「那个数会不会跟着走」由 `live_server_test.dart` 单独钉住。
+    expect(jsonDecode(body), {'f': 3, 't': 1, 'p': 480, 'd': 0});
   });
 
   test('原生起不来：如实回一条原因，**不抛**，也不去起服务', () async {

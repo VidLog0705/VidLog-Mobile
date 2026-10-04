@@ -116,6 +116,9 @@ class LiveService {
 
     final server = LiveServer(
       counts: counts,
+      // ⚠️ 与下面那行 `video` 同一个理由：**用局部那个 `hub`，不用字段 `_hub`** ——
+      // `/status` 随时可能被问到，而字段要等下面几行才赋值。
+      droppedFrames: () => hub.droppedFrames,
       // 直接用局部那个 hub（不是字段）：`/live` 随时可能有人连上来，
       // 而字段要等下面几行才赋值 —— 这中间进来的那一路会拉到 null。
       video: hub.subscribe,

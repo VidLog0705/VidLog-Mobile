@@ -80,7 +80,7 @@ enum LiveQuality {
 /// | 路径 | 给什么 |
 /// |---|---|
 /// | `GET /live` | **H.264 裸流**（Annex-B），电脑端交给 ffmpeg |
-/// | `GET /status` | 一小段 JSON：当场扫的发货/退货数 + **当前画质档** |
+/// | `GET /status` | 一小段 JSON：当场扫的发货/退货数 + **当前画质档** + **编码侧丢帧** |
 /// | `GET /quality?p=720` | 电脑端**改档**（进出全屏时用），`p` 取 480 / 720 / 1080 |
 ///
 /// ⚠️ **改档只能由电脑端发起**（「全屏时用户自行选择」，而选的地方在电脑端）。
@@ -91,6 +91,7 @@ enum LiveQuality {
 class LiveServer {
   LiveServer({
     required this.counts,
+    required this.droppedFrames,
     required this.video,
     this.onQuality,
     void Function(String message)? onLog,
@@ -131,6 +132,19 @@ class LiveServer {
   /// 报当前计数。做成回调而不是字段：计数是**别人**在变的（扫码那一路），
   /// 缓存一份在这里迟早会显示成旧的 —— 而这一格的用处就是「现在多少」。
   final LiveCounts Function() counts;
+
+  /// 这台手机**编码这一侧**丢了多少帧（`LiveStreamHub.droppedFrames`）。
+  ///
+  /// ⚠️ **它既不是 [counts] 那一对数，也不是网络丢包。** 它是
+  /// 「编码器长时间没吐关键帧、缓存装不下，只好**整段丢掉**」的次数。
+  ///
+  /// 为什么要报它：改造清单 T11 要把用户嘴里那句「卡」拆成**两个数** ——
+  /// **编码侧**（手机报，就是这个）与**网络侧**（电脑端自己数收到的帧率）。
+  /// 只看得见一半时，「卡」到底是手机编不动还是网线不行，是分不出来的。
+  ///
+  /// ⚠️ 做成回调的理由与 [counts] 完全一样：这个数是 `LiveStreamHub` 在变的，
+  /// 在这里缓存一份，迟早显示成旧的 —— 而诊断用的数**显示成旧的**比没有更坏。
+  final int Function() droppedFrames;
 
   /// 开一路**新的** H.264 裸流。
   ///
@@ -253,6 +267,11 @@ class LiveServer {
       // ⚠️ 把当前档也报出去：电脑端「明明选了 1080P 怎么还是糊」的时候，
       // 有这个数就能一眼看出是改档没生效、还是那一格本来就该糊。
       'p': _quality.height,
+      // ⚠️ 编码侧丢帧（T11）。**单开一个键，不塞进 `LiveCounts.toJson()`** ——
+      // 那个类装的是「当场扫了多少发货/退货」，是**业务计数**；
+      // 这个是**推流健康度**。混进同一个 JSON 对象里迟早有人把两者当成一回事
+      // （那种错的表现是：改「今天扫了几件」时把丢帧一起改了，而没人看得出来）。
+      'd': droppedFrames(),
     }));
 
     request.response

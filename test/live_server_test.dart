@@ -20,15 +20,20 @@ void main() {
   late HttpClient client;
   late int port;
 
+  /// 编码侧丢帧那个回调**读的是它** —— 可变的，好让用例把数改掉再问一次。
+  late int dropped;
+
   setUp(() async {
     opened = [];
     logs = [];
+    dropped = 0;
 
     server = LiveServer(
       // ⚠️ 一定要接出来：服务端那一侧把异常收进日志里了，
       // 不接的话测试只会看到「超时」，看不到真正的原因。
       onLog: logs.add,
       counts: () => const LiveCounts(outbound: 7, returned: 2),
+      droppedFrames: () => dropped,
       video: () {
         // ⚠️ 每次调用都要**新开一路** —— 「各开一路」那条测试数的就是这个。
         final controller = StreamController<List<int>>();
@@ -64,7 +69,22 @@ void main() {
     final body = await response.transform(utf8.decoder).join();
 
     expect(response.statusCode, 200);
-    expect(jsonDecode(body), {'f': 7, 't': 2, 'p': 480});
+    expect(jsonDecode(body), {'f': 7, 't': 2, 'p': 480, 'd': 0});
+  });
+
+  test('status 里的 d 跟着丢帧走_而且每次都重新问一次', () async {
+    // ⚠️ 断言的是**变了**，不是「等于某个写死的数」——
+    // 那样的话把 `'d': 0` 写死也能过（改造清单里说的「恒真断言」正是这个形状）。
+    dropped = 12;
+
+    final first = await (await client.getUrl(uri('/status'))).close();
+    expect(jsonDecode(await first.transform(utf8.decoder).join())['d'], 12);
+
+    dropped = 13;
+
+    final second = await (await client.getUrl(uri('/status'))).close();
+    expect(jsonDecode(await second.transform(utf8.decoder).join())['d'], 13,
+        reason: '缓存住上一次的读数，就等于报了一个假的丢帧');
   });
 
   group('改档（电脑端进出全屏时用）', () {
@@ -80,6 +100,7 @@ void main() {
       final asked = <LiveQuality>[];
       final withCallback = LiveServer(
         counts: () => const LiveCounts(outbound: 0, returned: 0),
+        droppedFrames: () => 0,
         video: () => const Stream<List<int>>.empty(),
         // ⚠️ 回 null = 原生说「换成了」。可以返回一条原因来拒绝 ——
         // 安卓那边的尺寸是开会话时钉死的，它**真的会拒**（见下面那条用例）。
@@ -128,6 +149,7 @@ void main() {
       // 两边谁都不知道；而 `GET /status` 报出去的 `p` 也会变成假的。
       final refusing = LiveServer(
         counts: () => const LiveCounts(outbound: 0, returned: 0),
+        droppedFrames: () => 0,
         video: () => const Stream<List<int>>.empty(),
         onQuality: (quality) async => '这一端只能推 480P',
       );

@@ -14,6 +14,7 @@ Future<void> main() async {
   final server = LiveServer(
     onLog: (message) => stdout.writeln('[server] $message'),
     counts: () => const LiveCounts(outbound: 7, returned: 2),
+    droppedFrames: () => 0,
     video: () => controller.stream,
   );
 
