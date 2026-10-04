@@ -173,7 +173,10 @@ class _ScanWaybillPageState extends State<ScanWaybillPage> {
         child: Text(
           _problem!,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Palette.onDarkSoft, fontSize: 14),
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(color: Palette.onDarkSoft),
         ),
       );
 
@@ -181,19 +184,25 @@ class _ScanWaybillPageState extends State<ScanWaybillPage> {
         width: double.infinity,
         color: Palette.veil,
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        child: const Column(
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               '把面单上的条码放进框里',
-              style: TextStyle(color: Palette.onDark, fontSize: 15),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(color: Palette.onDark),
             ),
-            SizedBox(height: 4),
+            const SizedBox(height: 4),
             Text(
               // 说清扫到之后会发生什么：用户扫这一下是为了搜，不是为了开录 ——
               // 不说的话他会以为扫面单就是要开始录像了（那是发货栏干的事）。
               '扫到就把单号填进搜索框，不会开始录像。',
-              style: TextStyle(color: Palette.onDarkFaint, fontSize: 12),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Palette.onDarkFaint),
             ),
           ],
         ),

@@ -116,10 +116,13 @@ class _PreviewUnavailable extends StatelessWidget {
       color: Palette.veil,
       alignment: Alignment.center,
       padding: const EdgeInsets.all(24),
-      child: const Text(
+      child: Text(
         '这个平台还没有相机预览。\n（两个手机端都已实现；桌面端本来就不需要）',
         textAlign: TextAlign.center,
-        style: TextStyle(color: Palette.onDarkSoft, fontSize: 13),
+        style: Theme.of(context)
+            .textTheme
+            .bodyMedium
+            ?.copyWith(color: Palette.onDarkSoft),
       ),
     );
   }

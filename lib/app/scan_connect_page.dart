@@ -190,7 +190,10 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
         child: Text(
           _problem!,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Palette.onDarkSoft, fontSize: 14),
+          style: Theme.of(context)
+              .textTheme
+              .bodyMedium
+              ?.copyWith(color: Palette.onDarkSoft),
         ),
       );
 
@@ -201,19 +204,21 @@ class _ScanConnectPageState extends State<ScanConnectPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               '把电脑端屏幕上的二维码放进框里',
-              style: TextStyle(color: Palette.onDark, fontSize: 15),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyLarge
+                  ?.copyWith(color: Palette.onDark),
             ),
             const SizedBox(height: 4),
             Text(
               _sawForeignCode
                   ? '这不是 VidLog 的二维码 —— 要扫的是电脑端上点【连接电脑/手机】之后弹出的那一张。'
                   : '二维码在电脑端上点【连接电脑/手机】才会出现，5 分钟内有效。',
-              style: TextStyle(
-                color: _sawForeignCode ? Palette.mediaWarn : Palette.onDarkFaint,
-                fontSize: 12,
-              ),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _sawForeignCode ? Palette.mediaWarn : Palette.onDarkFaint,
+                  ),
             ),
           ],
         ),

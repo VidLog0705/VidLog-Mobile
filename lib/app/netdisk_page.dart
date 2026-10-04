@@ -331,7 +331,10 @@ class _NetdiskPageState extends State<NetdiskPage> {
               color: Palette.amberTint,
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text(_note!, style: const TextStyle(fontSize: 13)),
+                child: Text(
+                  _note!,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
               ),
             ),
             const SizedBox(height: 12),
@@ -365,7 +368,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
               connected
                   ? _connectedLine()
                   : '还没登录。日常在店里用【连电脑端】；人在外面用【自己登录网盘】。',
-              style: const TextStyle(fontSize: 12),
+              style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -397,9 +400,12 @@ class _NetdiskPageState extends State<NetdiskPage> {
             ),
             if (widget.client == null) ...[
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 '（这台手机还没和电脑端配对，所以【连电脑端】是灰的。）',
-                style: TextStyle(fontSize: 11, color: Palette.muted),
+                style: Theme.of(context)
+                    .textTheme
+                    .labelSmall
+                    ?.copyWith(color: Palette.muted),
               ),
             ],
             if (!connected) ...[
@@ -462,7 +468,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
               ],
             ),
             if (quota == null)
-              const Text('还没查。', style: TextStyle(fontSize: 12))
+              Text('还没查。', style: Theme.of(context).textTheme.bodySmall)
             else ...[
               const SizedBox(height: 6),
               LinearProgressIndicator(value: quota.usedRatio),
@@ -472,7 +478,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
               Text(
                 '已使用 ${_gb(quota.used)} · 剩余 ${_gb(quota.free)} · 总空间 ${_gb(quota.total)}',
                 key: const Key('netdisk-quota-text'),
-                style: const TextStyle(fontSize: 12),
+                style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
           ],
@@ -492,9 +498,9 @@ class _NetdiskPageState extends State<NetdiskPage> {
             children: [
               const Text('查录像', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 '填单号的后 6 位，或者拿扫码枪扫面单上的单号。',
-                style: TextStyle(fontSize: 12),
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 12),
               Row(
@@ -548,7 +554,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
             const Text('查到的录像', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             if (results.isEmpty)
-              const Text('这一条没查到。', style: TextStyle(fontSize: 12))
+              Text('这一条没查到。', style: Theme.of(context).textTheme.bodySmall)
             else
               ...results.map(_resultRow),
           ],
@@ -564,10 +570,10 @@ class _NetdiskPageState extends State<NetdiskPage> {
     return ListTile(
       key: Key('netdisk-file-${file.fsId}'),
       contentPadding: EdgeInsets.zero,
-      title: Text(file.name, style: const TextStyle(fontSize: 13)),
+      title: Text(file.name, style: Theme.of(context).textTheme.bodyMedium),
       subtitle: Text(
         _gb(file.size),
-        style: const TextStyle(fontSize: 11),
+        style: Theme.of(context).textTheme.labelSmall,
       ),
       trailing: local != null
           // 下好了就只剩「播放」—— 再下一次是白费流量。
@@ -589,7 +595,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
                       // 「还要多久」是用户此刻唯一想知道的事。
                       Text(
                         '${(_progress * 100).toStringAsFixed(0)}%',
-                        style: const TextStyle(fontSize: 11),
+                        style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ],
                   ),

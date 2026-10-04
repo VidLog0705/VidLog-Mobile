@@ -182,6 +182,12 @@ class ZoomDial extends StatelessWidget {
             minZoom: minZoom,
             maxZoom: maxZoom,
             color: Theme.of(context).colorScheme.primary,
+            // 画笔里画不出 `Theme.of` —— `CustomPainter` 手上没有 context。
+            // 所以字号从这儿递进去（T7 之后 `fontSize:` 只许在主题里出现）。
+            zeroLabelStyle: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: Palette.onDarkSoft),
           ),
           child: Align(
             alignment: Alignment.bottomCenter,
@@ -196,7 +202,13 @@ class ZoomDial extends StatelessWidget {
                 // 跟主题走的话浅色主题下会是一行黑字压在暗画面上，看不见。
                 // ⚠️ 整块表盘此前**一次都没上过真机**（widget 测试里相机起不来），
                 // 这里按「深色遮罩」这个已知前提定死，真机上看不清再改。
-                style: const TextStyle(fontSize: 12, color: Palette.onDarkSoft),
+                //
+                // ⚠️ 字号走主题（T7），**只有颜色不走** —— 这两件事的约束不一样：
+                // 字号跟着主题是「一份定义」，颜色跟着主题会直接看不见。
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Palette.onDarkSoft),
               ),
             ),
           ),
@@ -212,12 +224,14 @@ class _ZoomDialPainter extends CustomPainter {
     required this.minZoom,
     required this.maxZoom,
     required this.color,
+    required this.zeroLabelStyle,
   });
 
   final double ratio;
   final double minZoom;
   final double maxZoom;
   final Color color;
+  final TextStyle? zeroLabelStyle;
 
   static const _minorLength = 5.0;
   static const _majorLength = 10.0;
@@ -293,10 +307,7 @@ class _ZoomDialPainter extends CustomPainter {
 
   void _paintZeroLabel(Canvas canvas, Offset center, double radius) {
     final painter = TextPainter(
-      text: const TextSpan(
-        text: '0',
-        style: TextStyle(fontSize: 11, color: Palette.onDarkSoft),
-      ),
+      text: TextSpan(text: '0', style: zeroLabelStyle),
       textDirection: TextDirection.ltr,
     )..layout();
 
@@ -312,5 +323,6 @@ class _ZoomDialPainter extends CustomPainter {
       old.ratio != ratio ||
       old.minZoom != minZoom ||
       old.maxZoom != maxZoom ||
-      old.color != color;
+      old.color != color ||
+      old.zeroLabelStyle != zeroLabelStyle;
 }

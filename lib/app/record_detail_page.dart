@@ -108,7 +108,10 @@ class RecordDetailPage extends StatelessWidget {
           const SizedBox(height: 16),
           Text(
             title,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+            style: Theme.of(context)
+                .textTheme
+                .titleLarge
+                ?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Wrap(
@@ -124,9 +127,10 @@ class RecordDetailPage extends StatelessWidget {
               // 用的那两支**不是同一个色**，于是列表上是一个橙、点进去是另一个橙，
               // 而用户会以为换了类别。
               if (type != null)
-                _pill(type.displayName, typeLook.color, typeLook.tint),
-              _pill(uploadText, uploadColor, uploadTint),
-              if (locked) _pill('已锁定', Palette.primary, Palette.blueTint),
+                _pill(context, type.displayName, typeLook.color, typeLook.tint),
+              _pill(context, uploadText, uploadColor, uploadTint),
+              if (locked)
+                _pill(context, '已锁定', Palette.primary, Palette.blueTint),
             ],
           ),
           const SizedBox(height: 16),
@@ -135,11 +139,11 @@ class RecordDetailPage extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               child: Column(
                 children: [
-                  _row('录制时间', timeText),
-                  _row('时长', durationText),
-                  _row('大小', sizeText),
-                  _row('分段', segmentText),
-                  _row('手机上', location),
+                  _row(context, '录制时间', timeText),
+                  _row(context, '时长', durationText),
+                  _row(context, '大小', sizeText),
+                  _row(context, '分段', segmentText),
+                  _row(context, '手机上', location),
                 ],
               ),
             ),
@@ -167,12 +171,15 @@ class RecordDetailPage extends StatelessWidget {
             style: OutlinedButton.styleFrom(foregroundColor: Palette.danger),
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             // ⚠️ 规格 §3.6.6：**打码整条不做**。交出去的就是原视频，
             // 面单上的姓名电话地址会原样跟着出去。这句话不说清楚，
             // 用户会以为系统替他处理过。
             '分享出去的是原视频，没有转码、没有打码 —— 面单上的姓名、电话、地址会原样跟着出去。',
-            style: TextStyle(fontSize: 11, color: Palette.muted),
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: Palette.muted),
           ),
         ],
       ),
@@ -212,16 +219,20 @@ class RecordDetailPage extends StatelessWidget {
 
   /// 底与字**成对给**：浅浅的那个底是采样出来的一个值，不是「同一个色兑 12%
   /// 透明」兑出来的 —— 列表上那个小标用的是同一对，两处才会是同一个色。
-  Widget _pill(String text, Color color, Color tint) => Container(
+  Widget _pill(BuildContext context, String text, Color color, Color tint) =>
+      Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
           color: tint,
           borderRadius: BorderRadius.circular(6),
         ),
-        child: Text(text, style: TextStyle(fontSize: 12, color: color)),
+        child: Text(
+          text,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color),
+        ),
       );
 
-  Widget _row(String label, String value) => Padding(
+  Widget _row(BuildContext context, String label, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -230,10 +241,15 @@ class RecordDetailPage extends StatelessWidget {
               width: 64,
               child: Text(
                 label,
-                style: const TextStyle(fontSize: 13, color: Palette.muted),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Palette.muted),
               ),
             ),
-            Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
+            Expanded(
+              child: Text(value, style: Theme.of(context).textTheme.bodyMedium),
+            ),
           ],
         ),
       );

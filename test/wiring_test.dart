@@ -118,6 +118,66 @@ void main() {
     );
   });
 
+  test('★ 字号只许从主题来 —— 白名单只剩两个文件，且它会自己缩', () {
+    // 改造清单 T7。改版前全仓散着 **105 处 `fontSize:`**，其中 57 处是 12、
+    // 19 处是 13 —— 同一个角色在不同页面是不同字号，而主题里那份定义
+    // （`ThemeData`）本来可以说了算，却因为没人读它而形同虚设。
+    //
+    // ⚠️ **白名单冻结的是「文件」，不是「违例数」**：有人往
+    // `recorder_page.dart` 里再加七处 `fontSize:`，这条绊线**不会红**。
+    // 这个洞是明写在清单里的（T7「为什么全量清零」①），先接受它，理由是
+    // 第二步（把 recorder_page 拆开、字号清零，与 T26 合并）做完白名单就空了。
+    // 而下面那条「白名单里的文件如果已经没有 `fontSize:` 就报错」正是
+    // 让它**自己缩**的机制 —— 不做这一步，白名单只会越用越松。
+    const whitelist = <String>{
+      // 第二步（T26 拆文件时一起清）。现在 78 处。
+      'lib/app/recorder_page.dart',
+      // 主题**定义处本身** —— 与桌面端 `Theme.xaml` 豁免同一个路数：
+      // `navigationBarTheme.labelTextStyle` 就是在这儿把标签字号钉下来的，
+      // 那不是在「用」主题，是在「写」主题。
+      'lib/main.dart',
+    };
+
+    final offenders = <String>[];
+    final stillNeeded = <String, int>{};
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+
+      final path = entity.path.replaceAll(r'\', '/');
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        // 注释里提到 `fontSize:` 不算（上面 zoom_dial 的注释就在提它）。
+        if (lines[index].trimLeft().startsWith('//')) continue;
+        if (!lines[index].contains('fontSize:')) continue;
+
+        if (whitelist.contains(path)) {
+          stillNeeded[path] = (stillNeeded[path] ?? 0) + 1;
+        } else {
+          offenders.add('$path:${index + 1}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些地方写死了字号，改成 `Theme.of(context).textTheme.<角色>`：\n  '
+          '${offenders.join('\n  ')}\n'
+          '（11 → labelSmall，12 → bodySmall，14 → bodyMedium，16 → bodyLarge，'
+          '22 → titleLarge）',
+    );
+
+    // 「只减不增」的那一半：某天有人把 recorder_page 清干净了却忘了删白名单，
+    // 白名单就变成一张没人看的名单 —— 这条让它当场报出来。
+    final stale = whitelist.where((path) => !stillNeeded.containsKey(path)).toList();
+    expect(
+      stale,
+      isEmpty,
+      reason: '这些文件已经没有写死的字号了，把它们从白名单里删掉：$stale',
+    );
+  });
+
   test('⚠️ 录制中锁住的正好是那四块 —— 【结束】与两个开关不许被锁', () {
     // 改造清单 T5。`_locked` 的调用点**恰好四处**，每一处都是一块次要控件：
     // 刻度盘、抽屉面板、抽屉入口、【对焦】。

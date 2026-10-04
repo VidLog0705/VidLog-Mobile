@@ -262,7 +262,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   ),
                   Text(
                     _position(value, _scrubMillis),
-                    style: const TextStyle(color: Palette.onDarkSoft, fontSize: 12),
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: Palette.onDarkSoft),
                   ),
                   const Spacer(),
                   ...playbackSpeeds.map((speed) => _speedButton(speed)),
@@ -293,10 +296,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       ),
       child: Text(
         labelForSpeed(speed),
-        style: TextStyle(
-          fontSize: 13,
-          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-        ),
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            ),
       ),
     );
   }
