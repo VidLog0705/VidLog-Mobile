@@ -172,7 +172,7 @@ class RecordDetailPage extends StatelessWidget {
             // 面单上的姓名电话地址会原样跟着出去。这句话不说清楚，
             // 用户会以为系统替他处理过。
             '分享出去的是原视频，没有转码、没有打码 —— 面单上的姓名、电话、地址会原样跟着出去。',
-            style: TextStyle(fontSize: 11, color: Palette.faint),
+            style: TextStyle(fontSize: 11, color: Palette.muted),
           ),
         ],
       ),

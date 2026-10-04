@@ -2186,7 +2186,7 @@ class _RecorderPageState extends State<RecorderPage> {
               const SizedBox(height: 2),
               const Text(
                 '电商发货 / 退货视频取证系统',
-                style: TextStyle(fontSize: 12, color: Palette.faint),
+                style: TextStyle(fontSize: 12, color: Palette.muted),
               ),
             ],
           ),
@@ -2377,7 +2377,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 note,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10, color: Palette.faint),
+                style: const TextStyle(fontSize: 10, color: Palette.muted),
               ),
           ],
         ),
@@ -2567,7 +2567,7 @@ class _RecorderPageState extends State<RecorderPage> {
             const Text(
               '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
               '（一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的地址不一定是你能连上的那个。）',
-              style: TextStyle(fontSize: 11, color: Palette.faint),
+              style: TextStyle(fontSize: 11, color: Palette.muted),
             ),
           ],
         ),

@@ -399,7 +399,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
               const SizedBox(height: 6),
               const Text(
                 '（这台手机还没和电脑端配对，所以【连电脑端】是灰的。）',
-                style: TextStyle(fontSize: 11, color: Palette.faint),
+                style: TextStyle(fontSize: 11, color: Palette.muted),
               ),
             ],
             if (!connected) ...[
