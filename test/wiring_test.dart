@@ -117,4 +117,44 @@ void main() {
           '压在**浅底**上的走 `primary` / `green` / `amber` / `danger` 那几支。',
     );
   });
+
+  test('⚠️ 录制中锁住的正好是那四块 —— 【结束】与两个开关不许被锁', () {
+    // 改造清单 T5。`_locked` 的调用点**恰好四处**，每一处都是一块次要控件：
+    // 刻度盘、抽屉面板、抽屉入口、【对焦】。
+    //
+    // ⚠️ 这条绊线看着土，挡的却是两类真事故，而且两类都不会有别的测试发现：
+    // - **少一处**：某块控件在录制中又能动了 —— 而它会动到正在录的那一段
+    //   （改焦段、改工作模式、手动录入单号），那一段是**证据**。
+    // - **多一处**：有人顺手把【结束】或右上角那两个开关也包进去。
+    //   那更糟 —— 录到一半灯没开、或者要临时开推流，就得先停下来，
+    //   而【结束】被锁死的话页面上**一个出口都没有了**。
+    //
+    // ⚠️ 数的是**源码文本**，所以它管得了「有没有」，管不了「包对没包对」
+    // （比如把 `_locked(recording, x)` 写成 `_locked(false, x)`）。后者只能靠
+    // widget 测试，而录制态在 widget 测试里到不了（要真相机）。到不了的地方
+    // 就明写在这儿，别让它看起来像全验过了。
+    final page = source('lib/app/recorder_page.dart');
+    final calls = <int>[];
+
+    final lines = page.split('\n');
+    for (var index = 0; index < lines.length; index++) {
+      if (lines[index].trimLeft().startsWith('//')) continue;
+      if (lines[index].contains('_locked(')) calls.add(index + 1);
+    }
+
+    // 5 = 4 个调用点 + 1 个定义（`Widget _locked(bool locked, ...) => ...`）。
+    expect(
+      calls.length,
+      5,
+      reason: '`_locked` 的调用点应当恰好四处（刻度盘 / 抽屉面板 / 抽屉入口 / '
+          '【对焦】），多见于第 $calls 行 —— 多一处少一处都要说清是为什么',
+    );
+
+    // 光拦不灰的话，用户看到的是一个点下去没反应的按钮（踩坑 #13 的假开关）；
+    // 光灰不拦的话，被锁的那几块真按下去照样生效。两半都得在。
+    final start = page.indexOf('Widget _locked(');
+    final body = page.substring(start, page.indexOf(';', start));
+    expect(body, contains('AbsorbPointer('), reason: '少了真拦的那半 —— 灰着但按得动');
+    expect(body, contains('Opacity('), reason: '少了变灰的那半 —— 按不动但看不出来');
+  });
 }

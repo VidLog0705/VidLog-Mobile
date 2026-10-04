@@ -4643,15 +4643,21 @@ class _RecorderPageState extends State<RecorderPage> {
             // 需求方 2026-09-22 晚些：「对焦功能只在发货或者退货页面点开始后
             // 点结束前才触发对焦」。相机开着、却没开始工作时把【对焦】按钮
             // **整个藏掉** —— 留一个点了不生效的按钮，用户只会当成坏了。
+            //
+            // ⚠️ 录制中它**锁上并变灰**（T5）：表盘是「调一下看看」的控件，
+            // 而录制中随手改焦段会把这一段录成前虚后实 —— 那一段是**证据**。
             if (showPreview && working && _dialOpen)
-              Align(
-                alignment: Alignment.centerRight,
-                child: ZoomDial(
-                  ratio: _zoom,
-                  minZoom: _minZoom,
-                  maxZoom: _maxZoom,
-                  onChanged: _onZoomChanged,
-                  onEnd: _onZoomEnd,
+              _locked(
+                recording,
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: ZoomDial(
+                    ratio: _zoom,
+                    minZoom: _minZoom,
+                    maxZoom: _maxZoom,
+                    onChanged: _onZoomChanged,
+                    onEnd: _onZoomEnd,
+                  ),
                 ),
               ),
 
@@ -4662,7 +4668,8 @@ class _RecorderPageState extends State<RecorderPage> {
             // `Flexible` 是为了小屏 / 键盘弹起来时**面板先让位**，而不是整列溢出。
             // 下面那排按钮和抽屉入口必须一直够得着 —— 它们一没，页面上就没有
             // 任何出口了（`mainAxisSize: min` 的列溢出时是直接从底部裁掉）。
-            if (_workSheet != null) Flexible(child: _sheetBody()),
+            if (_workSheet != null)
+              Flexible(child: _locked(recording, _sheetBody())),
 
             // ── **底部只有一个操作按钮**（需求方 2026-09-22 裁决 #6）──
             //
@@ -4680,10 +4687,15 @@ class _RecorderPageState extends State<RecorderPage> {
             //
             // 只在**相机开着、而且在工作**时出现：没画面时调焦没意义，
             // 而没在工作时按需求方的裁决就是不该能调（见上面表盘那一处）。
+            //
+            // ⚠️ 录制中锁上并变灰（T5），理由与表盘同一句。
             if (showPreview && working)
-              Align(
-                alignment: Alignment.centerRight,
-                child: _focusButton(),
+              _locked(
+                recording,
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: _focusButton(),
+                ),
               ),
 
             SizedBox(
@@ -4699,7 +4711,14 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
               ),
             ),
-            _sheetTabs(),
+
+            // ⚠️ 抽屉入口锁上并变灰（T5）。
+            //
+            // ⚠️ **上面那个【结束】不在锁的范围里**，它是录制本身的控制 ——
+            // 锁了它就没有任何出口了（`_actionOverlay` 的注释里写着这一条）。
+            // 右上角那两个开关也不锁（需求方 2026-10-04）：录到一半发现灯没开、
+            // 或者要临时开推流，不该先停下来。
+            _locked(recording, _sheetTabs()),
           ],
         ),
       ),
@@ -4759,6 +4778,38 @@ class _RecorderPageState extends State<RecorderPage> {
       ),
     );
   }
+
+  /// 录制中把一块次要控件**锁住，并让它看得出来被锁了**（改造清单 T5）。
+  ///
+  /// ## 为什么是两半，不是一半
+  ///
+  /// **`AbsorbPointer` 只拦不灰。** 只用它的话，按钮看着和平时一模一样、
+  /// 点下去什么都不发生 —— 那正是踩坑 #13 的假开关，也正是不该做的那个版本：
+  /// 用户会以为界面卡死了，然后把 App 杀掉重开，而**那一段录制还在跑**。
+  ///
+  /// 反过来只用 `Opacity` 也不够：那样只是「看着灰了」，真按下去照样生效 ——
+  /// 而这几块控件被锁的理由是**它们会动到正在录的这一段**（改焦段、改工作模式、
+  /// 手动录入单号），不是「看着不好看」。
+  ///
+  /// 所以：`AbsorbPointer` 是真拦的那道闸，`Opacity` 是让用户一眼看出来的那道。
+  ///
+  /// ## 为什么用 `Opacity` 而不是换一套灰配色
+  ///
+  /// Material 的禁用态本来就是「内容按 38% 不透明度画」，这里照抄这个数。
+  /// 更要紧的是：这一块的底是**实景画面**（仓库顶灯、白墙、白面单），
+  /// 不可控 —— 换配色解决不了「压在什么底上」，降不透明度可以。
+  ///
+  /// ## 谁不在锁的范围里（锁错了就是另一类事故）
+  ///
+  /// - **底部那个【结束】按钮**：录制本身的控制。锁了它，页面上就没有出口了。
+  /// - **时长兜底询问的那对【停止】/【继续】**：同上，它是录制流程自己的问询。
+  /// - **右上角的手电筒与实时共享**（需求方 2026-10-04 点名）：
+  ///   录到一半发现灯没开、或者要临时开推流，不该先停下来再开。
+  /// - **底部导航栏**：本来就不锁。`_onTabChanged` 的注释里写着理由 ——
+  ///   手指误滑到设置就掐掉一段正在录的像，比多开一会儿糟糕得多。
+  Widget _locked(bool locked, Widget child) => locked
+      ? AbsorbPointer(child: Opacity(opacity: 0.38, child: child))
+      : child;
 
   /// 压在画面上的一层：上/下两端深、中间透明。
   ///
