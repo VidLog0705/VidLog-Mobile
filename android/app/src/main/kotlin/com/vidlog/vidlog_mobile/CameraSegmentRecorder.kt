@@ -320,6 +320,15 @@ class CameraSegmentRecorder(
         private const val I_FRAME_INTERVAL_SECONDS = 1
 
         /**
+         * 写样本失败的**上报**间隔（毫秒）。
+         *
+         * 10 秒是这么定的：比资源闸那 30 秒的轮询快得多（那一条是「告警还没来，
+         * 东西已经在丢了」），又不至于把日志刷满 —— 每条都带累计次数，
+         * 所以间隔长也不会漏掉「一直在坏」这件事。
+         */
+        private const val WRITE_FAILURE_REPORT_INTERVAL_MS = 10_000L
+
+        /**
          * 录制前那次**真实的可用性检查**（规格 §3.1.7）。
          *
          * 返回候选表里**第一个真能跑**的下标；一个都跑不通返回 null。
@@ -621,6 +630,16 @@ class CameraSegmentRecorder(
     /** 本段第一个样本的 PTS（微秒），写之前减掉 —— 见类注释「时间戳要重新定基准」。 */
     private var segmentPtsBaselineUs = 0L
 
+    /** 写样本失败**累计**了几次（本会话内）。节流用，见 [reportWriteFailure]。 */
+    private var writeFailureCount = 0
+
+    /**
+     * 上一次因写失败上报的时刻（`elapsedRealtime`）。
+     *
+     * **0 = 本会话还没报过** —— 头一次失败要立刻报出去，不能等节流窗口。
+     */
+    private var lastWriteFailureAtMs = 0L
+
     private var outputDirectory: File = File("/dev/null")
     private var segmentDurationMs = DEFAULT_SEGMENT_DURATION_MS
 
@@ -855,6 +874,8 @@ class CameraSegmentRecorder(
         sessionStartedAtMs = SystemClock.elapsedRealtime()
         segmentSequence = -1
         segmentPtsBaselineUs = 0L
+        writeFailureCount = 0
+        lastWriteFailureAtMs = 0L
         previousLuma = null
         lastReportedStatic = null
         lastBarcodeScanAtMs = 0L
@@ -1862,7 +1883,8 @@ class CameraSegmentRecorder(
                             try {
                                 current.writeSampleData(audioTrackIndex, buffer, info)
                             } catch (error: Exception) {
-                                Log.w(TAG, "写入音频失败", error)
+                                // 音频也一样：报了继续写，绝不停录（见 reportWriteFailure）。
+                                reportWriteFailure("写入音频失败", error)
                             }
                         }
                     }
@@ -2229,7 +2251,9 @@ class CameraSegmentRecorder(
                                 try {
                                     muxer.writeSampleData(videoTrackIndex, buffer, info)
                                 } catch (error: Exception) {
-                                    Log.w(TAG, "写入封装器失败", error)
+                                    // ⚠️ 原来这里只有一条原生日志（到不了诊断包），
+                                    // 而这是**正在丢证据**——见 reportWriteFailure。
+                                    reportWriteFailure("写入封装器失败", error)
                                 }
                             }
                         }
@@ -2324,6 +2348,38 @@ class CameraSegmentRecorder(
             Log.e(TAG, "开新分段失败", error)
             onEvent(RecorderEvent.Failed("开新分段失败：${error.message}"))
         }
+    }
+
+    /**
+     * 写样本失败：**上报一条、继续写**（不变量 I3：不存在静默失败）。
+     *
+     * ⚠️ **不停录。** 写失败往往是一时的（缓冲抖动、磁盘正忙），
+     * 停掉等于把一次可能自己好的毛病变成整场没了 —— 录制优先。
+     *
+     * ⚠️ **要节流。** 封装器一旦坏掉就是**每一帧**都失败，30 fps 下原样上报
+     * 是一秒三十条，而 `AppLog` 的环与盘上都有上限 —— **刷满的日志等于没有日志**，
+     * 被挤掉的恰恰是别处的线索。所以：**头一次立刻报**，之后每个
+     * [WRITE_FAILURE_REPORT_INTERVAL_MS] 最多一条，每条都带累计次数
+     * （「还在坏着、一共坏了几次」比「这一帧又坏了」有用得多）。
+     *
+     * ⚠️ 走的是**已有的那条上报路径**（`RecorderEvent.Failed`，与
+     * [openNewSegment] 失败时同一条）—— Dart 那边收到只会记日志 + 告诉界面，
+     * **不会停录**。
+     */
+    private fun reportWriteFailure(what: String, error: Exception) {
+        Log.w(TAG, what, error)
+
+        writeFailureCount++
+
+        val now = SystemClock.elapsedRealtime()
+        if (lastWriteFailureAtMs != 0L &&
+            now - lastWriteFailureAtMs < WRITE_FAILURE_REPORT_INTERVAL_MS
+        ) {
+            return
+        }
+
+        lastWriteFailureAtMs = now
+        onEvent(RecorderEvent.Failed("$what：${error.message}（累计 $writeFailureCount 次）"))
     }
 
     private fun closeCurrentSegment() {

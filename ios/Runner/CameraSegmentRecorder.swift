@@ -673,6 +673,17 @@ final class CameraSegmentRecorder: NSObject {
     private let stateLock = NSLock()
     private var running = false
 
+    /// 写样本失败**累计**了几次（本会话内）。节流用，见 [reportWriteFailure]。
+    ///
+    /// ⚠️ 与 [lastWriteFailureAt] 一样由 [stateLock] 保护：
+    /// [appendFrame] 在采集队列上、[finish] 在后台队列上，两条都会报。
+    private var writeFailureCount = 0
+
+    /// 上一次因写失败上报的时刻（`CACurrentMediaTime()`）。
+    ///
+    /// **0 = 本会话还没报过** —— 头一次失败要立刻报出去，不能等节流窗口。
+    private var lastWriteFailureAt: TimeInterval = 0
+
     var isRecording: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
@@ -887,6 +898,8 @@ final class CameraSegmentRecorder: NSObject {
 
         stateLock.lock()
         running = true
+        writeFailureCount = 0
+        lastWriteFailureAt = 0
         stateLock.unlock()
 
         // writer 不在这里建 —— 尺寸与像素格式要等第一帧才知道（见 appendFrame）。
@@ -1640,10 +1653,52 @@ final class CameraSegmentRecorder: NSObject {
             }
             // 没写进内容的分段（比如刚开始轮转就停了）就不上报 ——
             // 报一条空分段只会让上层多一条无用的记录。
+            //
+            // ⚠️ 但 `.failed` **不是**那种情况：那是写坏了，这一段**整段没了**，
+            // 而它既不会进收尾、也不会有任何一条记录 —— 不看状态把它和
+            // 「空分段」一起丢掉，就是正在丢证据（I2/I3）。
+            if segment.writer.status == .failed {
+                self.reportWriteFailure("这一分段写失败，整段没进收尾")
+            }
 
             self.completeStopIfNeeded()
         }
     }
+
+    /// 写失败：**上报一条、继续录**（不变量 I3：不存在静默失败）。
+    ///
+    /// ⚠️ **不停录。** 写失败往往是一时的（缓冲抖动、磁盘正忙），
+    /// 停掉等于把一次可能自己好的毛病变成整场没了 —— 录制优先。
+    ///
+    /// ⚠️ **要节流。** writer 一旦坏掉就是**每一帧**都失败，30 fps 下原样上报
+    /// 是一秒三十条，而 `AppLog` 的环与盘上都有上限 —— **刷满的日志等于没有日志**。
+    /// 所以：**头一次立刻报**，之后每 [writeFailureReportInterval] 最多一条，
+    /// 每条都带累计次数（「还在坏着、一共坏了几次」比「这一帧又坏了」有用）。
+    ///
+    /// ⚠️ 两个调用点在不同的队列上（[appendFrame] 在采集队列、[finish] 在后台队列），
+    /// 所以计数与计时都由 [stateLock] 保护。
+    /// ⚠️ 也**别在持锁时调它**（`NSLock` 不是递归锁）。
+    private func reportWriteFailure(_ what: String) {
+        stateLock.lock()
+        writeFailureCount += 1
+        let count = writeFailureCount
+        let now = CACurrentMediaTime()
+        let throttled = lastWriteFailureAt != 0
+            && now - lastWriteFailureAt < Self.writeFailureReportInterval
+        if !throttled { lastWriteFailureAt = now }
+        stateLock.unlock()
+
+        if throttled { return }
+
+        // 走的是**已有的那条上报路径**（`RecorderEvent.failed`，与
+        // `makeWriter` 里 startWriting 失败时同一条）—— Dart 那边收到只会
+        // 记日志 + 告诉界面，**不会停录**。
+        onEvent(.failed("\(what)（累计 \(count) 次）"))
+    }
+
+    /// 10 秒是这么定的：比资源闸那 30 秒的轮询快得多（那一条的症状正是
+    /// 「告警还没来，东西已经在丢了」），又不至于把日志刷满。
+    private static let writeFailureReportInterval: TimeInterval = 10
 
     private static func fileHasContent(_ url: URL) -> Bool {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -1769,8 +1824,18 @@ extension CameraSegmentRecorder: AVCaptureVideoDataOutputSampleBufferDelegate,
             }
         }
 
+        // ⚠️ `ready` 把**两件完全不同的事**混在一起，必须分开：
+        //   - `writer.status == .failed` ⇒ **写坏了**，这一帧、以及后面每一帧都丢 —— 要报；
+        //   - `!input.isReadyForMoreMediaData` ⇒ 编码器正忙，**正常的背压**。
+        //     负载高的时候它一直为假，把它当故障报就是误报。
+        let writerFailed = writer.map { $0.writer.status == .failed } ?? false
         let ready = writer.map { $0.writer.status == .writing && $0.input.isReadyForMoreMediaData } ?? false
         stateLock.unlock()
+
+        if writerFailed {
+            reportWriteFailure("写入视频失败")
+            return
+        }
 
         guard ready, let active = writer else { return }
 
