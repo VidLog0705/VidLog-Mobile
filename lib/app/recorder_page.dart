@@ -41,6 +41,7 @@ import '../upload/archive_store.dart';
 import '../upload/enrollment.dart';
 import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
+import 'about_page.dart';
 import 'camera_preview.dart';
 import 'netdisk_page.dart';
 import 'palette.dart';
@@ -6359,144 +6360,13 @@ class _RecorderPageState extends State<RecorderPage> {
       };
 }
 
-/// App 版本号。**必须与 `pubspec.yaml` 的 `version:` 逐字一致。**
+/// 「关于我们」那一页，以及 `appVersion` 这个常量，2026-10-05 搬到
+/// `lib/app/about_page.dart`（T26③：这个文件已经 6500 行，先搬走**能整块搬、
+/// 又有现成测试**的那一块）。
 ///
-/// ⚠️ **故意不引 `package_info_plus`**：为了一页上显示一次的字符串加一个
-/// 平台依赖不划算，而且那个包在 widget 测试里必然拿不到值（没有平台通道）——
-/// 「关于我们」就会在测试里永远显示「未知」，等于这一页唯一的内容测不到。
-///
-/// 换成「一个 const + 一条**读真文件对账**的测试」：不用依赖，漂了当场红。
-/// 测试见 `test/about_page_test.dart`。
-const String appVersion = '1.0.0+5';
-
-/// 「关于我们」二级页。
-///
-/// ⚠️ **只显示盘上真有的东西**（§13.1）—— 应用名、版本号、这产品是干什么的。
-/// **不摆**「检查更新」这类入口：没有更新服务就是没有，摆上去点不动
-/// （踩坑 #13，与 [NetdiskShellPage] 同一条规矩）。
-class AboutPage extends StatefulWidget {
-  const AboutPage({super.key, required this.onExportLogs});
-
-  /// 「导出日志」那一颗点了干什么：**生成诊断包 + 交给系统分享面板**，
-  /// 返回要在这一页上显示的那句话。
-  ///
-  /// ⚠️ 做成回调、而不是在这一页自己干，是因为包里那几样东西
-  ///（会话数 / 未收尾数 / 索引条目 / 设备名 / 当前设置）**只有采集页那一份状态有**。
-  /// 在这里重读一遍盘等于把同一件事写第二份，两边的口径迟早会走岔
-  /// （诊断包的口径错了，拿到它的人也看不出错）。
-  final Future<String> Function() onExportLogs;
-
-  @override
-  State<AboutPage> createState() => _AboutPageState();
-}
-
-class _AboutPageState extends State<AboutPage> {
-  /// 导出/分享那一步的结果（生成之前是 null）。
-  String? _note;
-
-  /// 正在导出。**按下去要变灰** —— 生成包要读几百行日志，连点会生成好几份。
-  bool _busy = false;
-
-  Future<void> _exportAndShare() async {
-    setState(() {
-      _busy = true;
-      _note = null;
-    });
-
-    final note = await widget.onExportLogs();
-
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _note = note;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('关于我们')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('VidLog 手机端',
-                      style:
-                          TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  const Text('版本 $appVersion',
-                      key: Key('about-version'),
-                      style: TextStyle(fontSize: 14)),
-                  const SizedBox(height: 12),
-                  const Text(
-                    '电商打包取证系统的现场采集端：扫面单开录、按件归档、'
-                    '备份到电脑端。\n'
-                    '录像按原始文件保存 —— 不裁剪、不模糊、不压缩，'
-                    '文件里带的就是当时拍到的。',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // ── 日志导出（需求方 2026-10-03）─────────────────────
-          //
-          // ⚠️ 生成之后**直接弹手机自带的分享面板**（微信 / 邮件 / 网盘都行），
-          // 不再让用户去「文件」App 里自己翻 —— 那一步在 Android 上
-          // 根本走不通（文件在 app 私有目录）。见 `DiagnosticsPackage` 的类注释。
-          _sectionCard(
-            title: '日志',
-            children: [
-              const Text(
-                // ⚠️ 界面上不写 `**粗体**` —— 那不是 Markdown，用户看到的是四个星号。
-                '遇到问题时，把日志发回来给我们看。\n'
-                '生成的那个文件里有：最近的日志、当前设置、环境与索引摘要。'
-                '不含任何录像。',
-                style: TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 10),
-              FilledButton.tonalIcon(
-                key: const Key('about-export-logs'),
-                onPressed: _busy ? null : _exportAndShare,
-                icon: const Icon(Icons.ios_share, size: 18),
-                label: Text(_busy ? '正在生成…' : '导出日志'),
-              ),
-              if (_note != null) ...[
-                const SizedBox(height: 8),
-                Text(_note!, key: const Key('about-export-note'),
-                    style: const TextStyle(fontSize: 12)),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 这一页里的一张卡（与设置页那几张的版式一致：小标题 + 内容）。
-  Widget _sectionCard({required String title, required List<Widget> children}) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ...children,
-          ],
-        ),
-      ),
-    );
-  }
-}
+/// ⚠️ 搬走的是位置，**规矩一条没放松**：这一页只显示盘上真有的东西、
+/// 不摆点不动的入口、不许出现任何许可相关的东西（L8）——
+/// 那些断言还在 `test/about_page_test.dart` 里钉着。
 
 /// 「网盘视频」这一页**已经真接上了**，实现搬到 `lib/app/netdisk_page.dart`
 /// （`NetdiskPage`）。

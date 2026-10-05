@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/app/about_page.dart';
 import 'package:vidlog_mobile/app/netdisk_page.dart';
-import 'package:vidlog_mobile/app/recorder_page.dart';
 
 /// 「关于我们」与「网盘视频」两个二级页（需求方 2026-09-28 那张图上的两张卡）。
 ///
