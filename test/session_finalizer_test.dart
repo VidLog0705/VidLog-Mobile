@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/primitives.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
 import 'package:vidlog_mobile/recording/label_store.dart';
@@ -602,41 +603,44 @@ void main() {
   // 孤儿恢复（规格 §3.1.1 / §8）
   // ─────────────────────────────────────────────
 
-  group('孤儿恢复', () {
-    Future<RecordingWorkspace> killedSession(String sessionId,
-        {bool finalized = false,
-        bool writeSegment = true,
-        BusinessType? businessType}) async {
-      final workspace = RecordingWorkspace('$root/work');
+  /// 造一个「录到一半被杀」的工作区：有分段、有清单、没有 finalized 标记。
+  ///
+  /// ⚠️ 放在 `main()` 这一层（不在某个 `group` 里）：孤儿恢复与 T21 两组都要用它。
+  Future<RecordingWorkspace> killedSession(String sessionId,
+      {bool finalized = false,
+      bool writeSegment = true,
+      BusinessType? businessType}) async {
+    final workspace = RecordingWorkspace('$root/work');
 
-      final segments = <SegmentManifest>[];
-      if (writeSegment) {
-        final dir = Directory(workspace.sessionDirectory(sessionId))
-          ..createSync(recursive: true);
-        File('${dir.path}/segment-000.mp4').writeAsBytesSync([1, 2, 3, 4]);
+    final segments = <SegmentManifest>[];
+    if (writeSegment) {
+      final dir = Directory(workspace.sessionDirectory(sessionId))
+        ..createSync(recursive: true);
+      File('${dir.path}/segment-000.mp4').writeAsBytesSync([1, 2, 3, 4]);
 
-        segments.add(SegmentManifest(
-          sequence: 0,
-          fileName: 'segment-000.mp4',
-          startedAt: started,
-          endedAt: started.add(const Duration(seconds: 30)),
-        ));
-      }
-
-      await workspace.writeManifest(SessionManifest(
-        sessionId: sessionId,
-        waybill: waybill,
-        sourceDeviceId: 'device-1',
+      segments.add(SegmentManifest(
+        sequence: 0,
+        fileName: 'segment-000.mp4',
         startedAt: started,
-        segments: segments,
-        businessType: businessType,
+        endedAt: started.add(const Duration(seconds: 30)),
       ));
-
-      if (finalized) await workspace.markFinalized(sessionId);
-
-      return workspace;
     }
 
+    await workspace.writeManifest(SessionManifest(
+      sessionId: sessionId,
+      waybill: waybill,
+      sourceDeviceId: 'device-1',
+      startedAt: started,
+      segments: segments,
+      businessType: businessType,
+    ));
+
+    if (finalized) await workspace.markFinalized(sessionId);
+
+    return workspace;
+  }
+
+  group('孤儿恢复', () {
     test('没打收尾标记的会话被认作孤儿', () async {
       final workspace = await killedSession('s-killed');
 
@@ -745,6 +749,116 @@ void main() {
       expect(outcomes, hasLength(2));
       expect(outcomes.every((o) => o.succeeded), isTrue);
       expect(await index.loadAll(), hasLength(2));
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // T21：`work/` 里的东西不会越积越多
+  // ─────────────────────────────────────────────
+
+  group('T21 工作目录', () {
+    /// 造一个「起录之后、第一段封闭之前被杀」的空会话目录。
+    Future<RecordingWorkspace> emptySession(String sessionId,
+        {Duration? manifestAge}) async {
+      final workspace = RecordingWorkspace('$root/work');
+      await workspace.writeManifest(SessionManifest(
+        sessionId: sessionId,
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        startedAt: started,
+        segments: const [],
+      ));
+
+      if (manifestAge != null) {
+        final path = '${workspace.sessionDirectory(sessionId)}/'
+            '${RecordingWorkspace.manifestFileName}';
+        File(path).setLastModifiedSync(DateTime.now().subtract(manifestAge));
+      }
+
+      return workspace;
+    }
+
+    test('★ 孤儿收尾成功之后，work 里那份就丢掉了', () async {
+      final workspace = await killedSession('s-killed');
+      final (finalizer, _) = makeFinalizer();
+
+      await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();
+
+      // 成品已经落进本机归档 ⇒ 源分段只剩占地方。
+      // 清理层只清归档里的成品、从来不碰 `work/`，留着它就是无界增长。
+      expect(Directory(workspace.sessionDirectory('s-killed')).existsSync(), isFalse);
+    });
+
+    test('★ 收尾失败时工作目录留着（下次启动还要重试）', () async {
+      final workspace = await killedSession('s-killed');
+      final finalizer = SessionFinalizer(
+          rootDirectory: root,
+          index: _ThrowingIndex(),
+          labels: LabelStore('$root/labels.jsonl'));
+
+      await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();
+
+      expect(Directory(workspace.sessionDirectory('s-killed')).existsSync(), isTrue,
+          reason: '源文件是重试的唯一输入（I2），收尾失败就不许丢');
+    });
+
+    test('★ 空会话目录过了冷静期就被清掉，并且留一条日志', () async {
+      await AppLog.instance.resetForTesting();
+      final workspace = await emptySession('s-empty',
+          manifestAge: const Duration(hours: 25));
+
+      expect(await workspace.listOrphans(), isEmpty);
+
+      // ⚠️ T21 之前：这种目录**收不了尾**（没有分段可收）⇒ 也永远写不上
+      // finalized.json ⇒ 孤儿扫瞄每次都静默跳过它 ⇒ 谁都不会碰它一下。
+      expect(Directory(workspace.sessionDirectory('s-empty')).existsSync(), isFalse);
+      expect(
+        AppLog.instance.tail.value.any((line) => line.contains('空会话目录')),
+        isTrue,
+        reason: '清掉也要留一条 —— 不能是静默的',
+      );
+    });
+
+    test('★ 刚起录的空会话目录不会被清掉', () async {
+      final workspace = await emptySession('s-fresh');
+
+      expect(await workspace.listOrphans(), isEmpty);
+
+      // ⚠️ 冷静期就是为这一刻留的：**刚起录时会话目录也是空的**
+      // （第一段封闭之前不写任何分段）。立刻删等于把正在录的那一场连根拔了。
+      expect(Directory(workspace.sessionDirectory('s-fresh')).existsSync(), isTrue);
+    });
+
+    test('★ 源分段一个都不在了要说一声，而不是静默跳过', () async {
+      await AppLog.instance.resetForTesting();
+      final workspace = RecordingWorkspace('$root/work');
+
+      // manifest 里记着一段，但那个文件不在盘上（被手工删了 / 盘坏了）。
+      await workspace.writeManifest(SessionManifest(
+        sessionId: 's-gone',
+        waybill: waybill,
+        sourceDeviceId: 'device-1',
+        startedAt: started,
+        segments: [
+          SegmentManifest(
+            sequence: 0,
+            fileName: 'segment-000.mp4',
+            startedAt: started,
+            endedAt: started.add(const Duration(seconds: 30)),
+          ),
+        ],
+      ));
+
+      expect(await workspace.listOrphans(), isEmpty);
+
+      // ⚠️ 这不是「一条噪声」：它意味着**这一场再也收不了尾**（I2 的方向是丢证据），
+      // 而 T21 之前这里是一个不声不响的 continue。
+      expect(
+        AppLog.instance.tail.value.any((line) => line.contains('一个都不在了')),
+        isTrue,
+      );
+      expect(Directory(workspace.sessionDirectory('s-gone')).existsSync(), isTrue,
+          reason: '没到冷静期 ⇒ 目录先留着');
     });
   });
 }

@@ -854,6 +854,10 @@ class RecordingCoordinator {
       if (outcome.succeeded) {
         // 只有成功的才打标记；失败的保持孤儿身份，下次启动重试。
         await _workspace.markFinalized(sessionId);
+
+        // ★ T21：成品已经落进本机归档了 ⇒ `work/` 里那份源分段只剩一个身份：占地方。
+        // 清理层只清归档里的成品、从来不碰 `work/`，留着它就是无界增长。
+        await _workspace.discardSessionDirectory(sessionId);
       }
 
       // ⚠️ **只在会话号还是我们收的那一个时才清**（2026-09-22 加）。

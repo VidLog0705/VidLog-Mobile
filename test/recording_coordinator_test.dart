@@ -1763,13 +1763,17 @@ void main() {
       expect(coordinator.sessionId, isNotNull);
       expect(coordinator.sessionId, isNot(firstSession));
 
-      // 盘上两个会话目录 —— 一件包裹一段录像，不是一个会话装两件。
+      // 盘上只剩**一个**会话目录，而且必须是新开的那一个 ——
+      // 一件包裹一段录像，不是一个会话装两件。
+      // ⚠️ 上一段的目录这时候已经不在了：收尾成功 ⇒ T21 把 `work/` 里那份丢掉了
+      // （成品已经落进归档，源分段只剩占地方）。所以这里换成
+      // 「剩下那一个 `==` 新会话」—— 比 containsAll 更贴它要守的那件事。
       final dirs = Directory('$root/work')
           .listSync()
           .whereType<Directory>()
           .map((d) => d.path.split(RegExp(r'[\\/]')).last)
           .toSet();
-      expect(dirs, containsAll([firstSession, coordinator.sessionId!]));
+      expect(dirs, {coordinator.sessionId!});
 
       await coordinator.dispose();
     });

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../diagnostics/app_log.dart';
 import '../primitives.dart';
 import 'business_type.dart';
 
@@ -211,9 +212,73 @@ class RecordingWorkspace {
     );
   }
 
+  /// 丢掉一个会话的工作目录（T21）。
+  ///
+  /// 收尾成功之后，`work/` 里那些源分段只剩一个身份 —— **占地方**。
+  /// 清理层只清归档里的成品，从来不碰 `work/`，留着它就是无界增长。
+  ///
+  /// ⚠️ 手机端**没有**电脑端那道「归档层那一份发上去没有」的判据：
+  /// 这里的归档层就是本机（`<root>/archive`），送到电脑端那条路由
+  /// **持久化的上传队列**负责（I2），跟这几个源分段无关。
+  /// 所以判据只有一条：收尾成功。
+  ///
+  /// ⚠️ 删不掉**不是事故**：留点垃圾而已。真抛出去会把一次**成功的**收尾报成失败，
+  /// 那比多占几兆坏得多。
+  Future<void> discardSessionDirectory(String sessionId) async {
+    try {
+      final directory = Directory(sessionDirectory(sessionId));
+      if (await directory.exists()) {
+        await directory.delete(recursive: true);
+      }
+    } on FileSystemException catch (e) {
+      AppLog.instance
+          .warn('录制', '会话工作目录没删掉，源分段还占着地方（$sessionId）：${e.message}');
+    }
+  }
+
+  /// 空会话目录的冷静期（T21）：`session.json` 静了这么久、又一段都没留下，
+  /// 就认定它不会再长出分段来了。
+  static const emptySessionCoolDown = Duration(hours: 24);
+
+  /// 没有任何分段留在盘上的会话目录：记一条，过了冷静期就删掉（T21）。
+  ///
+  /// ⚠️ 冷静期是给「正在录的那一场」留的：**刚起录时会话目录也是空的**
+  /// （第一段封闭之前不写任何分段）。立刻删等于把正在录的那一场连根拔了。
+  Future<void> _sweepSegmentsGoneSession(
+      String sessionId, File manifestFile, SessionManifest manifest) async {
+    final counted = manifest.segments.length;
+    final cooled =
+        DateTime.now().difference((await manifestFile.stat()).modified) >= emptySessionCoolDown;
+
+    if (counted > 0) {
+      // ⚠️ 记过的东西现在一个都不在了 —— 那是**丢证据**（I2）的方向，
+      // 不是「一条噪声」。删不删都要喊这一声。
+      AppLog.instance.warn(
+        '录制',
+        '${manifest.waybill.value} 的源分段一个都不在了，这一场收不了尾（$sessionId）：'
+        'session.json 里记着 $counted 段',
+      );
+    }
+
+    if (!cooled) return;
+
+    await discardSessionDirectory(sessionId);
+
+    if (counted == 0) {
+      // 空的壳：收不了尾（没有分段可收）⇒ 也永远写不上 finalized.json
+      // ⇒ 孤儿扫瞄每次都跳过它。T21 之前它会一直待在那儿。
+      AppLog.instance.info('录制', '清掉一个空会话目录（$sessionId）：里面一段都没录到');
+    }
+  }
+
   /// 列出所有没走完收尾的会话。
   ///
-  /// 分段文件已经不在了的会话会被跳过 —— 没有东西可以收尾，硬报一条只是噪声。
+  /// 分段文件已经不在了的会话不会被列出来 —— 没有东西可以收尾，硬报一条只是噪声。
+  /// **但不再静默**（T21）：没有任何分段的会话目录收不了尾、也就永远写不上
+  /// `finalized.json`，于是原来每次启动都跳过它、谁都不会碰它一下。
+  /// 现在过冷静期就删掉，没到就记一条。
+  ///
+  /// ⚠️ 所以这个方法**有副作用**（会删陈年的空会话目录），只在启动扫瞄时调。
   Future<List<OrphanSession>> listOrphans() async {
     final root = Directory(rootDirectory);
     if (!await root.exists()) return [];
@@ -251,7 +316,10 @@ class RecordingWorkspace {
         }
       }
 
-      if (segments.isEmpty) continue;
+      if (segments.isEmpty) {
+        await _sweepSegmentsGoneSession(sessionId, manifestFile, manifest);
+        continue;
+      }
 
       segments.sort((a, b) => a.sequence.compareTo(b.sequence));
       orphans.add(OrphanSession(

@@ -326,6 +326,10 @@ class OrphanRecovery {
 
       if (outcome.succeeded) {
         await workspace.markFinalized(orphan.sessionId);
+
+        // ★ T21：与正常停录那边同一条判据 —— 否则这份源分段会一直留在
+        // `work/` 里，再也没人碰它。
+        await workspace.discardSessionDirectory(orphan.sessionId);
       }
 
       outcomes.add(outcome);
