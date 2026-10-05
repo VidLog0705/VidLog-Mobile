@@ -92,6 +92,13 @@ class LiveService {
 
   String? _pressureReason;
 
+  /// 录制压力把推流停掉过几次。
+  ///
+  /// ⚠️ 这个数**要写进那条日志**（而不是只留个字段）：`AppLog` 的界面镜像
+  /// 只有最近 [AppLog.tailLines] 行、盘上也有上限，压力连着报十几次时前面的行
+  /// 会被挤掉 —— 而「一共被挤掉过几次」正是要看的东西。
+  int _pressureStops = 0;
+
   /// 起推流。返回 null 表示成功；非 null 是给用户看的原因。
   ///
   /// 顺序是**先叫原生、再起服务**：反过来的话，电脑端能在「一帧都没有」的
@@ -190,7 +197,12 @@ class LiveService {
     if (!isRunning) return;
 
     _pressureReason = reason;
-    _log.warn('推流', '录制那边报压力（$reason）—— 自动停掉实时共享。录制优先。');
+    _pressureStops++;
+    _log.warn(
+      '推流',
+      '录制那边报压力（$reason）—— 自动停掉实时共享（第 $_pressureStops 次）。录制优先。',
+      data: {'原因': reason, '第几次': _pressureStops},
+    );
 
     await stop();
   }

@@ -163,6 +163,15 @@ class LiveStreamer private constructor(
     val encodedSize: Size get() = Size(width, height)
 
     /**
+     * 这一路**实际选中**的编码器名（诊断用）。
+     *
+     * ⚠️ 名字里带 `c2.android.` 的就是**软编**（AOSP 那个，跑在 CPU 上）——
+     * 而「一开录就卡、不录就顺」这个形态的判别点只有它（T16 取证）。
+     * 同一个型号上选到哪个是**设备说了算**的，代码里看不出来，只能从日志看。
+     */
+    val codecName: String? get() = codec?.name
+
+    /**
      * 开始往外送（用户打开了实时共享）。
      *
      * ⚠️ **不碰相机会话**：`ImageReader` 早在开会话时就挂上去了，

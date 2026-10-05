@@ -937,6 +937,9 @@ class CameraSegmentRecorder(
         liveStreamer?.detach()
     }
 
+    /** 这一路实际选中的编码器名（诊断用，见 `LiveStreamer.codecName`）。 */
+    fun liveCodecName(): String? = liveStreamer?.codecName
+
     /**
      * 换档。返回 null 表示换成了；非 null 是不换的原因。
      *

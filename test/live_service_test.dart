@@ -229,6 +229,25 @@ void main() {
     expect(service.stoppedBecauseOfPressure, '设备过热');
   });
 
+  test('★ 压力停了几次要写在日志那一行里（T16 取证）', () async {
+    // ⚠️ 累计数必须在**每一行**里：界面那个日志镜像只有最近 60 行、盘上也有上限，
+    // 压力连着报十几次时前面的行会被挤掉 —— 而「一共被挤掉几次」正是要看的东西。
+    await service.start();
+    await service.notifyRecordingPressure('设备过热');
+
+    await service.start();
+    await service.notifyRecordingPressure('设备过热');
+
+    final lines = AppLog.instance.tail.value
+        .where((line) => line.contains('自动停掉实时共享'))
+        .toList();
+
+    expect(lines, hasLength(2));
+    // ⚠️ `tail` 是**新的在前**（`_publishTail` 往前插）。
+    expect(lines.last, contains('第 1 次'));
+    expect(lines.first, contains('第 2 次'));
+  });
+
   test('⚠️ 没开着的时候报压力：什么都不做（不许把状态机搅乱）', () async {
     await service.notifyRecordingPressure('设备过热');
 

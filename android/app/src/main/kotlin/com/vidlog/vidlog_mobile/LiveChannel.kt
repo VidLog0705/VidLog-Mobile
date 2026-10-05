@@ -21,7 +21,7 @@ import io.flutter.plugin.common.MethodChannel
  *
  * | 通道 | 给什么 |
  * |---|---|
- * | `vidlog/live`（方法） | `startLive(height)` / `stopLive()` / `setLiveQuality(height)` |
+ * | `vidlog/live`（方法） | `startLive(height)`（**成功时回 `{codec: 编码器名}`**） / `stopLive()` / `setLiveQuality(height)` |
  * | `vidlog/live/frames`（事件） | `{type:"frame", key:是否关键帧, data:字节}` 与 `{type:"failed", message}` |
  *
  * ⚠️ **失败回 `result.error`，不能回 `success(字符串)`** —— Dart 那边
@@ -94,7 +94,10 @@ class LiveChannel(private val recorderProvider: () -> CameraSegmentRecorder?) :
                 if (failure != null) {
                     result.error("live_failed", failure, null)
                 } else {
-                    result.success(null)
+                    // ⚠️ 成功回的是**事实**（这一路实际选中的编码器名，T16 取证），
+                    // 不是失败原因 —— Dart 那边认得出来（`live_gateway.dart`）。
+                    // 老版本 Dart 读不懂它，照旧当成「成功了」。
+                    result.success(mapOf("codec" to recorder.liveCodecName()))
                 }
             }
 

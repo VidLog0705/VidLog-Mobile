@@ -78,7 +78,14 @@ class ChannelLiveGateway implements LiveGateway {
   @override
   Future<String?> startLive(int height) async {
     try {
-      await _methods.invokeMethod<void>('startLive', {'height': height});
+      // ⚠️ 用 `Object?` 收、再自己判，**不用 `invokeMethod<Map>`**：
+      // 那边回的不是 map（老包、iOS）时泛型转换会抛 `TypeError`，
+      // 而它不是 `PlatformException` —— 会一路冒到录制那一侧去。
+      final reply = await _methods.invokeMethod<Object?>('startLive', {'height': height});
+
+      final notice = codecNotice(reply);
+      if (notice != null) AppLog.instance.info('推流', notice);
+
       return null;
     } on PlatformException catch (error) {
       // 失败要说得出原因（编码器起不来 / 相机没开），由界面与日志显示。
@@ -103,6 +110,34 @@ class ChannelLiveGateway implements LiveGateway {
       .map(parseLiveEvent)
       .where((event) => event != null)
       .cast<LiveNativeEvent>();
+}
+
+/// 这个编码器名是不是那个**软编**。
+///
+/// ⚠️ 只认 AOSP 那颗（`c2.android.avc.encoder`，跑在 CPU 上）：厂商的硬编名
+/// 五花八门（`OMX.qcom.*`、`c2.qti.*`、`OMX.MTK.*`、`c2.exynos.*`…），
+/// **列不全也不该列** —— 认软编是「白名单之外一律当硬编」的那一侧不会错，
+/// 反过来（列硬编名单）才会漏。
+bool looksSoftwareEncoder(String name) => name.startsWith('c2.android.');
+
+/// `startLive` 成功时回的那点事实（**这一路实际选中的编码器名**）→ 一行日志；
+/// 没有就返回 null（**不记**）。
+///
+/// ⚠️ 为什么要它：`MediaCodec.createEncoderByType` 选到哪个编码器是**设备说了算**
+/// 的（同一份代码在不同机型上可能落到软编），代码里看不出来，只能从真机的日志看。
+/// 而「一开录就卡、不录就顺」这个形态的判别点**只有它**（T16 取证）。
+///
+/// iOS 那边没有这一档（VideoToolbox 一律硬编），回 null —— 不记。
+/// 老版本的原生包也回 null，同样不记（那不是出错，只是没有这条事实）。
+///
+/// ⚠️ 公开是为了能被测（与 [parseLiveEvent] 同一条理由）：那边回的**键**写错一个
+/// 字母，这里会静静地什么都不记，而真机取证恰恰是最需要它的时候。
+String? codecNotice(Object? reply) {
+  final codec = reply is Map ? reply['codec'] : null;
+  if (codec is! String || codec.isEmpty) return null;
+
+  return '这一路的编码器是 $codec'
+      '${looksSoftwareEncoder(codec) ? '（软编）' : '（硬编）'}';
 }
 
 /// 把通道来的消息解成 [LiveNativeEvent]；认不出来返回 null。
