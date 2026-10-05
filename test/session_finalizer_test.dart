@@ -861,6 +861,65 @@ void main() {
           reason: '没到冷静期 ⇒ 目录先留着');
     });
   });
+
+  // ─────────────────────────────────────────────
+  // T20：「正在写的那一段」
+  // ─────────────────────────────────────────────
+
+  group('T20 没登记的分段', () {
+    /// 造一个「录到一半被杀」的会话：清单里只有第 0 段，盘上**多一个**没登记的第 1 段。
+    Future<RecordingWorkspace> killedMidSegment(String sessionId,
+        {int extraBytes = 4096}) async {
+      final workspace = await killedSession(sessionId);
+
+      File('${workspace.sessionDirectory(sessionId)}/segment-001.mp4')
+          .writeAsBytesSync(List<int>.filled(extraBytes, 7));
+
+      return workspace;
+    }
+
+    test('★ 没登记的那一段要说一声 —— 手机端救不回来，但不能不响', () async {
+      await AppLog.instance.resetForTesting();
+      final workspace = await killedMidSegment('s-killed');
+
+      final orphans = await workspace.listOrphans();
+
+      // ⚠️ 电脑端扫到它**会**捞回来（MKV 分段结构，remux 就活了）。
+      // 手机端原生相机直接写最终的 MP4，moov 在文件末尾，进程被杀时那一段没写下去 ——
+      // 那个文件根本打不开，列进收尾只会让**整场**收尾失败（规格 §4.1：
+      // 一段不通过 ⇒ 全会话不作数）。所以这里只记不清单里那一段。
+      expect(orphans.single.segments.map((s) => s.sequence), [0]);
+      expect(
+        AppLog.instance.tail.value.any((line) => line.contains('救不回来')),
+        isTrue,
+        reason: '最后那一段没了，用户有权知道 —— 不能是静默的（I3）',
+      );
+    });
+
+    test('清单里记着的分段不算「没登记」', () async {
+      await AppLog.instance.resetForTesting();
+      final workspace = await killedSession('s-killed');
+
+      await workspace.listOrphans();
+
+      expect(
+        AppLog.instance.tail.value.any((line) => line.contains('救不回来')),
+        isFalse,
+      );
+    });
+
+    test('0 字节的空壳不算 —— 那里本来就没画面', () async {
+      await AppLog.instance.resetForTesting();
+      final workspace = await killedMidSegment('s-killed', extraBytes: 0);
+
+      await workspace.listOrphans();
+
+      expect(
+        AppLog.instance.tail.value.any((line) => line.contains('救不回来')),
+        isFalse,
+      );
+    });
+  });
 }
 
 /// 写索引必失败的假索引 —— 用来验证「索引写不进去不算收尾成功」。

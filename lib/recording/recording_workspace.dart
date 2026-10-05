@@ -240,6 +240,44 @@ class RecordingWorkspace {
   /// 就认定它不会再长出分段来了。
   static const emptySessionCoolDown = Duration(hours: 24);
 
+  /// 目录里**没登记进清单**的分段文件的文件名（T20）。
+  ///
+  /// 清单只在段**封闭时**才写，所以崩溃 / 强杀 / 断电时正在写的那一段必然不在里面，
+  /// 只会留在 `work/<会话>/` 里，谁都不会碰它。
+  ///
+  /// ⚠️ **电脑端救得回来，手机端救不回来。** 电脑端录制期写 MKV（分段结构、
+  /// 写到哪算哪），扫出来交给同一条收尾路径 remux 就行
+  /// （见 `VidLog.Desktop.Core/Recording/RecordingWorkspace.cs` 的
+  /// `RescueUnregisteredSegments`）。手机端原生相机**直接写最终的 MP4**，
+  /// 而 moov 在文件末尾、进程被杀时那一段没写下去 —— 那个文件打不开，
+  /// 没有任何东西可以拿它做（`session_finalizer.dart` 类注释里那条
+  /// 「手机端没有实际解码校验」是同一件事的另一面）。
+  ///
+  /// 所以这里**不把它列进收尾**（列了只会让整场收尾失败），
+  /// 只让调用方把这件事**说出来**（I3：不存在静默失败）——
+  /// 用户有权知道最后那一段没了，而不是过几天发现少了一截画面。
+  Future<List<String>> _unregisteredSegments(
+      Directory sessionDirectory, SessionManifest manifest) async {
+    final registered = manifest.segments.map((s) => s.fileName).toSet();
+    final unregistered = <String>[];
+
+    await for (final entity in sessionDirectory.list()) {
+      if (entity is! File) continue;
+
+      final name = entity.path.split(Platform.pathSeparator).last;
+      if (!name.startsWith('segment-') || !name.endsWith('.mp4')) continue;
+      if (registered.contains(name)) continue;
+
+      // ⚠️ 0 字节的壳不算：原生那一路也是攒够一块才落盘，
+      // 「起录之后立刻被杀」留下的是一个空文件 —— 那里本来就没画面。
+      if (await entity.length() == 0) continue;
+
+      unregistered.add(name);
+    }
+
+    return unregistered..sort();
+  }
+
   /// 没有任何分段留在盘上的会话目录：记一条，过了冷静期就删掉（T21）。
   ///
   /// ⚠️ 冷静期是给「正在录的那一场」留的：**刚起录时会话目录也是空的**
@@ -314,6 +352,18 @@ class RecordingWorkspace {
             endedAt: segment.endedAt,
           ));
         }
+      }
+
+      // ★ T20：目录里**没登记进清单**的分段 —— 就是「进程被杀时正在写的那一段」
+      // （清单只在段封闭时才更新）。⚠️ **手机端救不回来**，见 [_unregisteredSegments]。
+      final unregistered = await _unregisteredSegments(entity, manifest);
+      if (unregistered.isNotEmpty) {
+        AppLog.instance.warn(
+          '录制',
+          '${manifest.waybill.value} 有 ${unregistered.length} 段没登记的分段救不回来'
+          '（$sessionId）：${unregistered.first}'
+          '${unregistered.length > 1 ? ' 等' : ''}',
+        );
       }
 
       if (segments.isEmpty) {
