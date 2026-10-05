@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../diagnostics/app_log.dart';
 import '../netdisk/baidu_pan.dart';
 import '../netdisk/netdisk_downloads.dart';
 import '../netdisk/netdisk_token.dart';
@@ -141,7 +142,27 @@ class _NetdiskPageState extends State<NetdiskPage> {
     try {
       await body();
     } on Object catch (error) {
-      if (mounted) setState(() => _note = '$error');
+      if (!mounted) return;
+
+      final failure = error is NetdiskFailure ? error : null;
+
+      // ⚠️ 授权不管用了（errno -6 / 20016 / 20017 / 31045）时，**把那两扇门重新摆出来**：
+      // 这一页会退回「还没登录」那一屏，而那一屏上就是【连电脑端】与【自己登录网盘】。
+      // 只抛一句「errno 31045」等于把用户扔在原地 —— 他知道出事了，但不知道该按哪儿。
+      if (failure != null && failure.isAuthFailure) {
+        // ⚠️ **要留痕**：这一步把用户的令牌摘了，他下次回来会问「怎么又要我登录」。
+        // 失败的那一刻过后，只有日志答得上来是哪一个码把它摘的。
+        AppLog.instance.warn('网盘', '授权不管用了，退回登录那一屏', data: {
+          'errno': failure.errno,
+        });
+
+        _adopt(null); // 它自己会 setState
+        setState(() => _note = '网盘的授权不管用了（这个模式不能续期，或者后台被取消了）——'
+            '重新登录一次：在店里用【连电脑端】，人在外面用【自己登录网盘】。');
+        return;
+      }
+
+      setState(() => _note = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -326,6 +347,13 @@ class _NetdiskPageState extends State<NetdiskPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // 加载态（T10）。⚠️ 一根**说不清进度**的细线，不是假百分比：
+          // 查一次要把目录一页页翻完（最多 20 页），慢起来好几秒，
+          // 而这几秒里原来只有「按钮灰了」这一个信号 —— 那与「按不动」分不开。
+          if (_busy) ...[
+            const LinearProgressIndicator(),
+            const SizedBox(height: 12),
+          ],
           if (_note != null) ...[
             Card(
               color: Palette.amberTint,

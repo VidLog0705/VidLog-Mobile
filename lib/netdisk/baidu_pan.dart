@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -59,9 +60,38 @@ class NetdiskFailure implements Exception {
   final String message;
   final int? errno;
 
+  /// 这个码是不是「授权不管用了」——**要重新登录**，重试一万次也没用。
+  ///
+  /// ⚠️ 这四个码照**电脑端**那张表抄（`BaiduPanClient.Hint`，源头是文档 063 的
+  /// 公共错误码表）：两端认同一组码、说同一句话，用户在哪儿看到的都是同一件事。
+  /// `31045` 就是「access_token 校验未通过」，本仓的测试里一直拿它当样本。
+  bool get isAuthFailure =>
+      errno == -6 || errno == 20016 || errno == 20017 || errno == 31045;
+
   @override
   String toString() => message;
 }
+
+/// 网盘那边**网不通**时给用户看的那句话（T10 的「离线」态）。
+///
+/// ⚠️ 原来端到用户眼前的是 `SocketException: Failed host lookup:
+/// 'pan.baidu.com' (OS Error: No address associated with hostname, errno = 7)` ——
+/// 英文、带 errno，而它对用户唯一有用的一点只是「**这不是你的单号错了，是网不通**」，
+/// 所以那句话要自己写出来，并且把下一步（看看有没有网、过会儿再试）也说掉。
+const offlineMessage = '连不上百度网盘。看看手机现在有没有网（Wi-Fi 或流量），过一会儿再试一次。';
+
+/// 网络层的裸错 → 一句人话；**别的错原样返回**。
+///
+/// ⚠️ 别把业务失败也翻成「没网」：`NetdiskFailure` 是网盘**答了**、只是答的是
+/// 「不让你干这件事」，两者的下一步完全不同（一个是等网络，一个是换账号 / 换路径）。
+///
+/// ⚠️ `dart:io` 的 `IOException` 一族把 `SocketException`（DNS 失败、拒连、半路断）
+/// 与 `HandshakeException` 全盖住了；`connectionTimeout` 到点也走它。
+/// `.timeout()`（`TimeoutException`）是另一条，本层现在没用，但上层用得上。
+Object describeNetdiskError(Object error) =>
+    error is IOException || error is TimeoutException
+        ? const NetdiskFailure(offlineMessage)
+        : error;
 
 /// 文件名里那一段**单号**。
 ///
@@ -354,7 +384,8 @@ class BaiduPanClient {
         '错误': '$error',
       });
 
-      rethrow;
+      // 记的是**原文**（诊断要它），抛的是**人话**（用户要的）。
+      throw describeNetdiskError(error);
     } finally {
       await sink.close();
       client.close(force: true);
@@ -387,7 +418,10 @@ class BaiduPanClient {
         '错误': '$error',
       });
 
-      rethrow;
+      // ⚠️ 记的是**原文**（诊断要它），抛的是**人话**（用户要的）——
+      // 这一层是**唯一**的出口：`listAll` / `quota` / `dlink` 全从这儿走，
+      // 在这儿翻一次，三个调用方（以及将来加的那些）一起受益。
+      throw describeNetdiskError(error);
     }
   }
 

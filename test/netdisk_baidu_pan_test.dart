@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vidlog_mobile/netdisk/baidu_pan.dart';
@@ -196,6 +198,54 @@ void main() {
         () => parseDlink(json({'errno': 31045, 'list': <Object>[]})),
         throwsA(isA<NetdiskFailure>()),
       );
+    });
+  });
+
+  group('网不通与授权不管用了（T10 的「离线」「无权限」两态）', () {
+    test('⚠️ 断网时抛的是给人看的那句话_不是 SocketException 原文', () async {
+      // 原来 `SocketException: Failed host lookup: 'pan.baidu.com' (OS Error: …)`
+      // 是原样端到用户眼前的：英文、带 errno，用户看不出「这不是我的单号错了」。
+      final client = BaiduPanClient(
+        accessToken: 'token-1',
+        appName: 'VidLog',
+        fetch: (uri) async => throw const SocketException('Failed host lookup'),
+      );
+
+      await expectLater(
+        client.quota(),
+        throwsA(isA<NetdiskFailure>()
+            .having((f) => f.message, 'message', offlineMessage)),
+      );
+    });
+
+    test('⚠️ 业务失败不许被翻成「没网」', () {
+      // 网盘**答了**、只是答的是「不让你干这件事」—— 与「网不通」的下一步完全不同
+      // （一个是等网络，一个是换账号 / 换路径）。翻错了，用户会一直去查 Wi-Fi。
+      const failure = NetdiskFailure('网盘不让列目录（errno -6）', errno: -6);
+      expect(describeNetdiskError(failure), same(failure));
+    });
+
+    test('超时也算网不通', () {
+      expect(
+        describeNetdiskError(TimeoutException('太慢')),
+        isA<NetdiskFailure>().having((f) => f.message, 'message', offlineMessage),
+      );
+    });
+
+    test('isAuthFailure 认电脑端那张表上的四个码', () {
+      for (final code in [-6, 20016, 20017, 31045]) {
+        expect(
+          NetdiskFailure('x', errno: code).isAuthFailure,
+          isTrue,
+          reason: 'errno=$code 是「授权不管用了」，界面要退回重新登录那一屏',
+        );
+      }
+    });
+
+    test('⚠️ 没网的错不许当成授权失效', () {
+      // 判错了会把用户**掉线式地登出**：他只是没网，却看到「重新登录一次」。
+      expect(const NetdiskFailure(offlineMessage).isAuthFailure, isFalse);
+      expect(const NetdiskFailure('应用还在审核中', errno: 20011).isAuthFailure, isFalse);
     });
   });
 }
