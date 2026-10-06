@@ -8,6 +8,7 @@ import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/primitives.dart';
 import 'package:vidlog_mobile/recording/recorder_gateway.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
+import 'package:vidlog_mobile/recording/work_mode.dart';
 
 /// 采集页的**测试底座**（改造清单 T26③ 第 1 轮，2026-10-06）。
 ///
@@ -32,16 +33,23 @@ import 'package:vidlog_mobile/recording/recording_index.dart';
 ///    放在 fake-async 区里跑 —— 那些 Future **永远不会完成**。所以必须
 ///    `tester.runAsync(...)`，真实 IO 才跑得起来。
 ///
-/// ## 现在有哪两条，各自怎么验「它能红」
+/// ## 现在有哪四条，各自怎么验「它能红」
 ///
 /// 1. `★ 打上桩之后启动真的跑完` —— 反证：注释掉 `path_provider` 那个桩。
 /// 2. `★ 盘上的录像真的显示出来了` —— 反证：把 `_bootstrap` 里 `_index`
 ///    的路径改个名（`index.jsonl` → 别的）⇒ 这一条红、第 1 条不变。
+/// 3. `★ 设置读出来之后档位控件就能点了` —— 反证：`_settingsReady` 写死成
+///    `false` ⇒ 这一条红，而 `widget_test.dart` 那条反面**仍是绿的**（实测）
+///    —— 反面单独立不住，这正是这条存在的理由。
+/// 4. `★ 从列表点进详情页` —— 反证：把列表项的 `onTap` 摘成 `null`。
 ///
-/// 第 2 条有两个**假红**的坑，都踩过：① 只写索引不建 `.mp4` 文件 ——
-/// 界面会拿 `entry.location` 去 stat，文件不在就判成「已删除」滤掉，
-/// 红在「0 条」而看着像索引没读进来；② 忘了 `scrollUntilVisible` ——
-/// 列表懒构建，没滚到那张卡就一个都找不到。
+/// 第 2、4 条踩过的**假红**，都不是「找法不对」，是环境：
+/// ① 只写索引不建 `.mp4` 文件 —— 界面会拿 `entry.location` 去 stat，
+/// 文件不在就判成「已删除」滤掉，红在「0 条」而看着像索引没读进来；
+/// ② 默认测试窗口 800×600 **太矮**，列表项被底部四栏压住，`tap` 的 hit test
+/// 落在导航栏上 —— 而且**它不抛异常**，只是那一下点到了别处，后面红在
+/// 「点不开」。第 4 条因此把窗口调到 1000×1400。
+/// ③ 这一页比一屏长时得先 `scrollUntilVisible` —— 列表懒构建，没滚到就找不到。
 ///
 /// ## ⚠️ 桩**只在这个文件里**，绝不许提到全局（比如 `flutter_test_config.dart`）
 ///
@@ -121,6 +129,38 @@ void main() {
     await tester.pump();
   }
 
+  /// 往工作区种一条录像：**索引与 `.mp4` 两个都要真写**。
+  ///
+  /// ⚠️ 只写索引不写文件的话界面会拿 `entry.location` 去 stat
+  /// （`recorder_page.dart:1915`），文件不在就判成「已删除」丢进 `gone`，
+  /// 那条从列表上消失 —— 红在「0 条」而看着像索引没读进来。
+  ///
+  /// 索引是**用生产代码自己写的**（`JsonLinesRecordingIndex.add`），
+  /// 不手抄 JSON 字段名：抄错一个字段，`tryFromJson` 会**静默丢掉这一条**，
+  /// 而测试会红在一个跟真实原因毫无关系的地方。
+  Future<void> seedRecording(WidgetTester tester) async {
+    final startedAt = DateTime.now().subtract(const Duration(minutes: 5));
+
+    await tester.runAsync(() async {
+      File('${documents.path}/vidlog/work/VL-20261006-100000-0001.mp4')
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(List.filled(1024, 0));
+
+      await JsonLinesRecordingIndex('${documents.path}/vidlog/index.jsonl')
+          .add(RecordingEntry(
+        evidenceId: 'VL-20261006-100000-0001',
+        sessionId: 'VL-20261006-100000-0001',
+        waybill: WaybillNumber.parse('SF1000000001'),
+        startedAt: startedAt,
+        endedAt: startedAt.add(const Duration(minutes: 5)),
+        duration: const Duration(minutes: 5),
+        location: RelativePath.parse('work/VL-20261006-100000-0001.mp4'),
+        contentHash: ContentHash.parse(List.filled(64, 'a').join()),
+        sourceDeviceId: 'test-device',
+      ));
+    });
+  }
+
   /// ★ **底座本身**：打上桩之后，启动要真的跑完。
   ///
   /// 反证配方：把 `stubPlatforms()` 里 `path_provider` 那一段注释掉 ——
@@ -156,31 +196,7 @@ void main() {
   /// 而测试会红在一个跟真实原因毫无关系的地方。
   testWidgets('★ 盘上的录像真的显示出来了 —— `_sessions` 不再恒空',
       (WidgetTester tester) async {
-    final startedAt = DateTime.now().subtract(const Duration(minutes: 5));
-
-    await tester.runAsync(() async {
-      // ⚠️ **必须真有这个文件。** 索引只是「记过这一条」，界面读盘时
-      // 会拿 `entry.location` 去 stat（`recorder_page.dart:1915`），
-      // 文件不在就判成「已删除」丢进 `gone`，那条从列表上消失。
-      // 只写索引不写文件的话，这一条会红在「0 条」—— 看起来像索引没读进来，
-      // 其实是被当成删掉的滤掉了。
-      File('${documents.path}/vidlog/work/VL-20261006-100000-0001.mp4')
-        ..createSync(recursive: true)
-        ..writeAsBytesSync(List.filled(1024, 0));
-
-      await JsonLinesRecordingIndex('${documents.path}/vidlog/index.jsonl')
-          .add(RecordingEntry(
-        evidenceId: 'VL-20261006-100000-0001',
-        sessionId: 'VL-20261006-100000-0001',
-        waybill: WaybillNumber.parse('SF1000000001'),
-        startedAt: startedAt,
-        endedAt: startedAt.add(const Duration(minutes: 5)),
-        duration: const Duration(minutes: 5),
-        location: RelativePath.parse('work/VL-20261006-100000-0001.mp4'),
-        contentHash: ContentHash.parse(List.filled(64, 'a').join()),
-        sourceDeviceId: 'test-device',
-      ));
-    });
+    await seedRecording(tester);
 
     await pumpApp(tester);
 
@@ -197,6 +213,75 @@ void main() {
       find.text('视频记录（共 1 条）'),
       findsOneWidget,
       reason: '盘上有那条录像，备份页却说 0 条 —— 索引没被读进来',
+    );
+  });
+
+  /// ★ **`_settingsReady` 的另一半**：设置读出来之后，控件必须**能点**。
+  ///
+  /// `widget_test.dart` 那条「盘上的设置没读出来之前，档位控件必须是禁用的」
+  /// 钉的是反面 —— 而反面**单独立不住**：把 `_settingsReady` 写死成 `false`，
+  /// 那一条照样绿（它本来就跑在「没读出来」那个状态里），
+  /// 而用户看到的是**设置页永远是灰的**，一个都点不动。
+  /// 有了这一条正面，两边才合起来把守卫钉死。
+  testWidgets('★ 设置读出来之后档位控件就能点了 —— `_settingsReady` 的另一半',
+      (WidgetTester tester) async {
+    await pumpApp(tester);
+
+    await tester.tap(find.text('设置').last);
+    await tester.pump(const Duration(milliseconds: 400));
+
+    final chip = find.byType(SegmentedButton<WorkMode>);
+    await tester.scrollUntilVisible(
+      chip,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    expect(
+      tester.widget<SegmentedButton<WorkMode>>(chip).onSelectionChanged,
+      isNotNull,
+      reason: '设置读出来了控件还是禁用的 —— 设置页整个是灰的，一个都点不动',
+    );
+  });
+
+  /// ★ **从列表点进详情页** —— 解掉 `record_detail_page_test.dart` 文件头
+  /// 写着的那半天花板。
+  ///
+  /// 那一页自己是测得挺好的，但一直是从**手搭的假数据**直接 pump 起来的：
+  /// 「备份页的 widget 测试受限于 `_sessions` 恒空……列表项那七项、
+  /// 原来挤在行上的那三个操作**都验不到**」。
+  /// 它验不到的其实是**接线**：列表上那一条真的点得开、开了之后
+  /// 拿到的是**这一条**的数据（而不是某一条默认值）。
+  ///
+  /// ⚠️ 不用 `pumpAndSettle`：下面那页（采集页）的秒针还在转，永远不会静止。
+  testWidgets('★ 从列表点进详情页，看到的是盘上那一条', (WidgetTester tester) async {
+    // ⚠️ 默认的 800×600 太矮：列表项被底部那四栏压住，`tap` 的 hit test
+    // 落在导航栏上（实测报 `derived an Offset ... would not hit test`，
+    // 而且**不抛异常**，只是那一下点到了别处 ⇒ 后面红在「点不开」）。
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await seedRecording(tester);
+    await pumpApp(tester);
+
+    await tester.scrollUntilVisible(
+      find.textContaining('视频记录（共'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    await tester.tap(find.text('SF1000000001'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('录像详情'), findsOneWidget, reason: '点不开 —— 列表项没接上详情页');
+    expect(find.text('1 段'), findsOneWidget, reason: '段数不是这一条的');
+    expect(
+      find.textContaining('work/VL-20261006-100000-0001.mp4'),
+      findsOneWidget,
+      reason: '详情页拿到的路径不是这一条的',
     );
   });
 }
