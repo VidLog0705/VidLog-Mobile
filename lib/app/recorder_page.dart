@@ -51,6 +51,33 @@ import 'scan_waybill_page.dart';
 import 'video_player_page.dart';
 import 'zoom_dial.dart';
 
+// ─────────────────────────────────────────────────────────────────────
+// ⚠️ 这一行往下的文件是**同一个 library**，不是几个独立的库。
+//
+// T26③ 第 2 轮拆的：这个文件原来 6400 行、`_RecorderPageState` 一个类就占
+// 6200 行，破了 `AGENTS.md` §5「超过 1500 行必须拆」。
+//
+// 为什么用 `part` 而不是「抽成独立类 + 传参」：非控件成员里 **13 个被几乎
+// 每一堆引用**（`_gateway` / `_coordinator` / `_rootPath` / `_settings` /
+// `_identity` / `_client` / `_archiveRecords` / `_locationByEvidenceId` /
+// `_sessions` / `_entries` / `_log` / `_snack` / `_finalizer`），另有 3 个
+// 横跨两三个职责。抽类就得先给这 198 个成员重新布线，而 `test/` 里盖着这
+// 3800 行 UI 的用例只有 11 条 —— 接错一个字段不会有任何测试喊。
+// `part` **一个标识符都不用改**（按行区间剪下来贴走），所以可以拿 `diff`
+// 证明每一步都是纯搬家。证明比抽样测试强。
+//
+// ⚠️ 已知代价：这**不治那个类**。真正的病是 6200 行的 `_RecorderPageState`，
+// 要等第 3 轮（抽类），而第 3 轮要等测试底座加厚。这一轮只承诺三件事：
+// 不再违规、T7 解锁、每一步可 diff 证明。
+//
+// 搬家的两种形态（2026-10-06 用真编译器验过，别照直觉改）：
+//   · 实例方法/getter → `extension on _RecorderPageState`（同 library 的
+//     extension 读得到私有成员，且**跨 extension 不带前缀就能调**）
+//   · static 方法/常量 → **顶层**声明（匿名 extension 的 `static` 成员
+//     没有名字可当前缀，等于不可达 ⇒ 只能走顶层）
+// ─────────────────────────────────────────────────────────────────────
+part 'recorder_format.dart';
+
 /// 采集页底部抽屉里正在展开哪一块。`null` = 三块都收着。
 ///
 /// 需求方 2026-09-22 定的布局：**取景铺满整页**，控件是压在上面的浮层；
@@ -6312,78 +6339,6 @@ class _RecorderPageState extends State<RecorderPage> {
     );
   }
 
-  static String _two(int value) => value.toString().padLeft(2, '0');
-
-  /// `MM-DD HH:mm`。备份页一行里塞得下，且不需要年份 —— 手机上的东西都是最近的。
-  ///
-  /// 日期那一段走 [dayStamp]：搜索框要按**屏幕上真有的字**匹配，
-  /// 两处各写一套的话，写着 `09-23` 却搜不出来（见 `matchesQuery`）。
-  static String _stamp(DateTime at) =>
-      '${dayStamp(at)} ${_two(at.hour)}:${_two(at.minute)}';
-
-  /// `年/月/日/时/分/秒`，六段都要带（规格 §3.2.6）。
-  ///
-  /// 与 [_stamp] 的区别不只是多几段：这是采集页正上方那个钟，
-  /// 它要能被**逐字念出来对着录像核**，所以年月日时分秒一段都不能省
-  /// （少一段就得靠猜是今年还是去年）。月/日/时/分/秒各补零到两位 ——
-  /// 不等宽的话这个钟每秒都在左右晃。
-  static String _clockStamp(DateTime at) => '${at.year}/${_two(at.month)}/'
-      '${_two(at.day)} ${_two(at.hour)}:${_two(at.minute)}:${_two(at.second)}';
-
-  /// `mm:ss`（超过一小时就是三位数的分钟，不折成小时 —— 一段录像不会是几小时）。
-  static String _durationLabel(Duration d) =>
-      '${_two(d.inMinutes)}:${_two(d.inSeconds % 60)}';
-
-  static String _sizeLabel(int bytes) {
-    const kb = 1024;
-    const mb = kb * 1024;
-    const gb = mb * 1024;
-
-    if (bytes < kb) return '$bytes B';
-    if (bytes < mb) return '${(bytes / kb).toStringAsFixed(1)} KB';
-    if (bytes < gb) return '${(bytes / mb).toStringAsFixed(1)} MB';
-    return '${(bytes / gb).toStringAsFixed(2)} GB';
-  }
-
-  /// [\_sizeLabel] 拆成「数字」和「单位」两半，给上面那张统计卡用。
-  ///
-  /// ⚠️ **不是为了好看**：统计卡在窄屏上只有一百来像素宽，`6.90 GB`
-  /// 放不下 —— 会溢出，或者被省略号截成 `6.…`。而**数字被截断比难看糟得多**：
-  /// 用户会把它当成真的。拆开之后，缩的只有那个数字（`FittedBox`），
-  /// 单位照常显示，`GB` 这个量级信息不会丢。
-  ///
-  /// ⚠️ 判据与 [\_sizeLabel] **同一套**（同一个 1024 进制、同一批阈值）——
-  /// 各写一套的话会出现「上面写着 6.9 GB、点进去写着 6.90 GB」。
-  static ({String value, String unit}) _sizeParts(int bytes) {
-    final label = _sizeLabel(bytes);
-    final split = label.indexOf(' ');
-
-    // `_sizeLabel` 每一种输出都带一个空格（连 `123 B` 也是）。
-    // 切不开就说明那个函数被改过了 —— 退回整串当数字，不崩、不猜。
-    if (split < 0) return (value: label, unit: '');
-
-    return (value: label.substring(0, split), unit: label.substring(split + 1));
-  }
-
-  /// 日志里的模式名。
-  ///
-  /// ⚠️ 与设置页那三个胶囊**用同一批字**（2026-09-28 起）。两处各写一套的话，
-  /// 用户拿日志去对设置页会对不上 —— 同一个模式两个名字，是本仓反复警告过的坑。
-  static String _modeLabel(WorkMode mode) => switch (mode) {
-        WorkMode.continuousScan => '连续扫码',
-        WorkMode.sameWaybillStop => '同码停录',
-        WorkMode.scanThenStaticStop => '扫码静止停录',
-      };
-
-  static String _triggerLabel(StopTrigger trigger) => switch (trigger) {
-        StopTrigger.manual => '手动',
-        StopTrigger.sameWaybillRescan => '同码复扫',
-        StopTrigger.sceneStatic => '画面静止',
-        StopTrigger.durationFallback => '时长兜底',
-        StopTrigger.resourceCritical => '资源告警',
-        StopTrigger.processKilled => '进程被杀',
-        StopTrigger.nextWaybill => '换件',
-      };
 }
 
 /// 「关于我们」那一页，以及 `appVersion` 这个常量，2026-10-05 搬到

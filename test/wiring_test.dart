@@ -10,9 +10,33 @@ import 'package:flutter_test/flutter_test.dart';
 /// ⚠️ 这一端**没有依赖注入**（刻意用单例，理由见 §28.1），所以绊线只能
 /// **按源码文本**读 —— 与 `DesktopServicesTests` 按文本读 `MainWindow.xaml`
 /// 同一个路数。它管的是「有没有人调」，**管不了「调得对不对」**。
-void main() {
-  String source(String path) => File(path).readAsStringSync();
+/// 一个「壳」文件 + 它 `part` 进来的那些文件 —— 同一个 library 的全部路径。
+///
+/// ⚠️ T26③ 第 2 轮把 `recorder_page.dart` 拆成了**同一个 library** 的十几个
+/// 文件（那边写 `part 'x.dart';`，这边写 `part of 'recorder_page.dart';`）。
+/// 按路径读**单个文件**的话，下面这些绊线会在「东西还在、只是换了文件」的时候
+/// 变红 —— 那是**假红**，比没有绊线更坏：下一次真断线就没人当回事了。
+List<String> libraryFiles(String shell) {
+  final file = File(shell);
+  final paths = <String>[shell.replaceAll(r'\', '/')];
 
+  for (final line in file.readAsLinesSync()) {
+    final part = RegExp(r"^\s*part\s+'([^']+)'").firstMatch(line);
+    if (part != null) {
+      paths.add('${file.parent.path}/${part.group(1)}'.replaceAll(r'\', '/'));
+    }
+  }
+
+  return paths;
+}
+
+/// 读一个文件的源码；它是「壳」的话，把整个 library 一起读进来。
+///
+/// 没有 `part` 的文件（`uploader.dart` / `live_service.dart`）拿到的就是它自己。
+String source(String path) =>
+    libraryFiles(path).map((p) => File(p).readAsStringSync()).join('\n');
+
+void main() {
   test('⚠️ 组合根真的把日志器 init 了', () {
     // ⚠️ 不调 init 的话 `AppLog` **永远停在缓冲模式**：照记，只写在内存里，
     // 进程一退就没 —— 而磁盘上一条都不会有，**编译器一个字都不会说**。
@@ -170,13 +194,20 @@ void main() {
     // 第二步（把 recorder_page 拆开、字号清零，与 T26 合并）做完白名单就空了。
     // 而下面那条「白名单里的文件如果已经没有 `fontSize:` 就报错」正是
     // 让它**自己缩**的机制 —— 不做这一步，白名单只会越用越松。
-    const whitelist = <String>{
-      // 第二步（T26 拆文件时一起清）。现在 78 处。
+    // ⚠️ 白名单的单位是**一个 library**，不是一个文件：`recorder_page` 那一项
+    // 展开成壳 + 它 `part` 进来的全部文件。T26③ 第 2 轮把那个文件拆成了十几个 ——
+    // 照文件名逐个加进来的话，这份名单会变成一张「什么都放行」的名单，
+    // 而它存在的全部意义正是「只减不增」（见清单 T7「为什么全量清零」①）。
+    const whitelistShells = <String>[
+      // 第二步（T26 拆文件时一起清）。现在 72 处。
       'lib/app/recorder_page.dart',
       // 主题**定义处本身** —— 与桌面端 `Theme.xaml` 豁免同一个路数：
       // `navigationBarTheme.labelTextStyle` 就是在这儿把标签字号钉下来的，
       // 那不是在「用」主题，是在「写」主题。
       'lib/main.dart',
+    ];
+    final whitelist = <String>{
+      for (final shell in whitelistShells) ...libraryFiles(shell),
     };
 
     final offenders = <String>[];
@@ -211,7 +242,14 @@ void main() {
 
     // 「只减不增」的那一半：某天有人把 recorder_page 清干净了却忘了删白名单，
     // 白名单就变成一张没人看的名单 —— 这条让它当场报出来。
-    final stale = whitelist.where((path) => !stillNeeded.containsKey(path)).toList();
+    //
+    // ⚠️ 按**整个 library** 判、不按单个文件判：一个 library 拆成十几个文件之后，
+    // 逐个文件判的话，那些天生没有字号的 part 文件会永远被判成「已经没有了」——
+    // 又一处假红。要的是「这一整块清干净了没有」。
+    final stale = whitelistShells
+        .where((shell) =>
+            libraryFiles(shell).every((p) => !stillNeeded.containsKey(p)))
+        .toList();
     expect(
       stale,
       isEmpty,
