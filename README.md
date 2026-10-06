@@ -37,6 +37,7 @@ lib/                      Dart 侧：可测试的逻辑
   main.dart               应用外壳 → RecorderPage
   app/
     recorder_page.dart    ★ 采集页（四栏 + 设置页）
+    recorder_*.dart       ↑ 的 14 个 part 文件（同一 library，2026-10-06 拆的）
     camera_preview.dart   取景画面
     zoom_dial.dart        半圆刻度盘（§3.1.2）
   recording/

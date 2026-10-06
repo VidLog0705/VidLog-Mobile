@@ -212,7 +212,8 @@ void main() {
   /// 往工作区种一条录像：**索引与 `.mp4` 两个都要真写**。
   ///
   /// ⚠️ 只写索引不写文件的话界面会拿 `entry.location` 去 stat
-  /// （`recorder_page.dart:1915`），文件不在就判成「已删除」丢进 `gone`，
+  /// （`recorder_events.dart:57`；2026-10-06 T26③ 第 2 轮之前它在
+  /// `recorder_page.dart:1915`），文件不在就判成「已删除」丢进 `gone`，
   /// 那条从列表上消失 —— 红在「0 条」而看着像索引没读进来。
   ///
   /// 索引是**用生产代码自己写的**（`JsonLinesRecordingIndex.add`），
