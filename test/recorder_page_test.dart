@@ -34,7 +34,9 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    放在 fake-async 区里跑 —— 那些 Future **永远不会完成**。所以必须
 ///    `tester.runAsync(...)`，真实 IO 才跑得起来。
 ///
-/// ## 现在有哪八条，各自怎么验「它能红」
+/// ## 现在有哪十一条，各自怎么验「它能红」
+///
+/// 第 1–8 条在备份页那一摊，9–11 是 2026-10-06 补的工作页 / 设置页。
 ///
 /// 1. `★ 打上桩之后启动真的跑完` —— 反证：注释掉 `path_provider` 那个桩。
 /// 2. `★ 盘上的录像真的显示出来了` —— 反证：把 `_bootstrap` 里 `_index`
@@ -54,6 +56,17 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    改成照 `want` 记 ⇒ 红在 `Found 1 widget with text "解锁这一条"`（实测）。
 ///    造失败的办法是**在标签表那个路径上放一个目录**（`writeAsString` 当场抛），
 ///    与权限/平台无关，本机和 CI 一个行为。
+/// 9. `★ 问不到闪光灯就不画那颗按钮，实时共享照样画`（工作页）—— 反证：把
+///    `if (_torchUsable == true)` 改成 `if (true)` ⇒ 红在
+///    `Found 1 widget with key ['work-torch']`（实测）。
+/// 10. `★ 没有相机权限时点【开始】：真去试了，不许假装开始`（工作页）—— 反证：
+///    把 `_startWorking` 开头那段权限检查整段换成直接 `return` ⇒ 红在
+///    `Expected: contains 'requestCameraPermission' / Actual: ['hasCameraPermission']`
+///    （实测）。
+/// 11. `★ 改一项设置真落盘`（设置页）—— 反证：把 `_updateSettings` 末尾那句
+///    `unawaited(settings.save())` 注释掉 ⇒ 红在
+///    `PathNotFoundException … settings.json`（**文件根本没建出来**，实测）
+///    —— 顺带证明那个文件确实是 `save()` 写的，不是 `_bootstrap` 顺手建的。
 ///
 /// 第 2、4 条踩过的**假红**，都不是「找法不对」，是环境：
 /// ① 只写索引不建 `.mp4` 文件 —— 界面会拿 `entry.location` 去 stat，
@@ -89,6 +102,12 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    ⚠️ 而且它当初**点不着**：`tester.pageBack()` 找不到那个返回箭头，
 ///    `NavigatorState.pop()` 之后路由**仍在树上**（实测 backButtons=1、
 ///    Navigator 只有 1 个、pop 完单号还是 2 个）。
+/// ⚠️ **第 9 条之后补的**：新加一条测试时最容易忘的是**收尾**（`finishApp`）。
+/// 忘了的症状有两副，都不是「断言错了」：① 报「A Timer is still pending」；
+/// ② **下一条测试要等满 10 分钟才超时** —— 实测把整轮从 13 秒拖到 10 分钟以上。
+/// 切一栏（`_onTabChanged` 会 `_log`）、按一下开关都会记日志，所以**每条改过
+/// 界面的测试都要收尾**，别只在「看起来会记日志」的那几条上做。
+///
 /// ⑧ `AppLog` 是 **debounce 落盘**的，那个定时器**不在 widget 树里** ——
 ///    卸载树也带不走它。所以 `settleIo` 里**两边都要推**：`runAsync` 推真实
 ///    时间、`pump(duration)` 推 fake 时钟（只 `pump()` 不带时长的话 fake 时钟
@@ -116,6 +135,14 @@ void main() {
 
   late Directory documents;
 
+  /// 通道上被调过的方法，按顺序记下来。
+  ///
+  /// ⚠️ 为什么需要它：光看界面**分不出**「真的去试了、试完说不行」和
+  /// 「压根没试、只是屏幕上恰好还留着上一步那句话」。第 10 条那个
+  /// 「没有相机权限」在**进采集栏自动开相机**那一步就已经显示出来了 ——
+  /// 只断言那句文字的话，`_startWorking` 就算静默 `return` 也照样绿。
+  late List<String> calls;
+
   /// 数据目录指到临时目录，原生通道给个空实现。
   void stubPlatforms() {
     final messenger =
@@ -130,7 +157,10 @@ void main() {
     // 不是原生那一层 —— 给它一个「什么都没有」的实现，让它别抛。
     messenger.setMockMethodCallHandler(
       const MethodChannel(ChannelRecorderGateway.methodChannelName),
-      (call) async => null,
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
     );
 
     // ⚠️ 事件流是 `EventChannel`，`listen` 也走 MethodChannel ——
@@ -146,6 +176,7 @@ void main() {
 
   setUp(() {
     documents = Directory.systemTemp.createTempSync('vidlog-test');
+    calls = [];
     stubPlatforms();
   });
 
@@ -283,6 +314,44 @@ void main() {
   /// 反证配方：把 `stubPlatforms()` 里 `path_provider` 那一段注释掉 ——
   /// 这一条会红，因为页面会显示「初始化失败：MissingPluginException…」。
   /// 它守的就是「底座还在」：谁把桩删了，后面所有条目一起变成摆设。
+  /// 收尾：把 `AppLog` 那个 debounce 定时器推到期，再卸载整棵树。
+  ///
+  /// ⚠️ **每一条改过界面的测试都要调**，别只在「看起来会记日志」的那几条上调。
+  /// 切一栏（`_onTabChanged` 会 `_log`）、按一下开关，都记日志 ——
+  /// 而 `AppLog` 是**debounce 落盘**的，那个定时器**不在 widget 树里**，
+  /// 卸载树也带不走它。
+  ///
+  /// 不调的症状有两副，都很难从现场看出来：
+  /// ① 测试体结束时报「A Timer is still pending even after the widget tree
+  ///    was disposed」—— 看着像那一页被搞坏了，其实只是日志还没落盘；
+  /// ② **下一条测试要等满 10 分钟才超时** —— 因为框架在等那个定时器。
+  ///    实测第 9、10 条就是这样把整轮从 9 秒拖到 10 分钟以上的。
+  Future<void> finishApp(WidgetTester tester) async {
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
+  }
+
+  /// 切到某一栏（0 备份 / 1 发货 / 2 退货 / 3 设置）。
+  ///
+  /// ⚠️ 按**图标**找，别按 `find.text('设置')` —— 设置页正文里也有一处
+  /// `Text('设置')`（那是页面大标题），按文字找会命中两个。
+  Future<void> switchTab(WidgetTester tester, IconData icon) async {
+    await tester.tap(find.byIcon(icon));
+    await tester.pump();
+    await settleIo(tester, 8);
+  }
+
+  /// ★ **问不到闪光灯就不画那颗按钮，而实时共享照样画**。
+  ///
+  /// 这一对钉的是踩坑 #13（**绝不画按下去什么都不发生的假开关**）与
+  /// `_workSwitches` 注释里那句「两个都是真开关，画之前先问清楚」：
+  /// 手电筒要**问到有**才画，实时共享**一直画**（它是一条设置，
+  /// 按下去立刻有句实话回你，见 `_toggleLiveShare`）。
+  ///
+  /// 两条必须成对断：只断「手电筒不在」的话，整个右上角没画出来也是绿的
+  /// —— 那是空断言。`work-live-share` 在，才证明那一排真的建出来了。
+  ///
+  /// 反证：把 `if (_torchUsable == true)` 改成无条件画 ⇒ 这一条红。
   testWidgets('★ 打上桩之后启动真的跑完 —— 不再降级成「初始化失败」',
       (WidgetTester tester) async {
     await pumpApp(tester);
@@ -509,8 +578,7 @@ void main() {
     // —— 那个定时器不在 widget 树里，卸载树也带不走它。不收尾的话测试体
     // 结束时报的是「A Timer is still pending even after the widget tree was
     // disposed」，那句话看着像删除把页面搞坏了，其实跟删除一点关系都没有。
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpWidget(const SizedBox());
+    await finishApp(tester);
   });
 
   /// ★ **写不进去的时候，界面和日志都不许说「已锁定」**。
@@ -552,7 +620,95 @@ void main() {
     expect(tail, isNot(contains('已锁定 VL-20261006-100000-0001')),
         reason: '日志记的是**盘上真成了没有**，不是「按过了」');
 
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpWidget(const SizedBox());
+    await finishApp(tester);
+  });
+
+  testWidgets('★ 问不到闪光灯就不画那颗按钮，实时共享照样画', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await pumpApp(tester);
+    await switchTab(tester, Icons.local_shipping_outlined);
+
+    // 桩里 `hasTorch` 回 null（「问不到」），不是抛 —— 走到的是
+    // `_torchUsable = null` 那一支。
+    expect(find.byKey(const Key('work-torch')), findsNothing,
+        reason: '问不到闪光灯还画那颗按钮，就是踩坑 #13 说的假开关');
+    expect(find.byKey(const Key('work-live-share')), findsOneWidget,
+        reason: '它是「那一排真的建出来了」的凭据 —— 少了它上面那句就是空的');
+
+    await finishApp(tester);
+  });
+
+  /// ★ **没有相机权限时点【开始】：真去试了，而且不许假装开始**。
+  ///
+  /// I3：**不存在静默失败**。按下去一点反应都没有，是这一整类毛病里最坏的一种
+  /// —— 用户不知道该去改什么。
+  ///
+  /// ⚠️ 光断「屏幕上写着没有相机权限」是**空断言**：进采集栏那一步会自动开相机
+  /// （`_enterCaptureTab` → `_openCamera`），那句话在点【开始】**之前**就已经
+  /// 在屏幕上了。`_startWorking` 就算第一句就静默 `return`，那句话照样在。
+  ///
+  /// 所以钉的是**通道**：点完之后 `hasCameraPermission` 必须**再被调一次**
+  /// （证明它真的去试了），而 `startRecording` **一次都不许有**
+  /// （证明它没假装开始）。
+  ///
+  /// 反证：把 `_startWorking` 开头那句 `if (!await _gateway.hasCameraPermission())`
+  /// 连同里面整段删掉、换成直接 `return` ⇒ 这一条红在「没再调过权限」。
+  testWidgets('★ 没有相机权限时点【开始】：真去试了，不许假装开始', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await pumpApp(tester);
+    await switchTab(tester, Icons.local_shipping_outlined);
+
+    expect(find.text('没有相机权限'), findsOneWidget,
+        reason: '进栏自动开相机那一步就该说了');
+    expect(calls, contains('hasCameraPermission'), reason: '进栏时问过一次');
+
+    // 从这里开始数 —— 上面进栏那一次的调用不算在这一次里。
+    calls.clear();
+
+    await tester.tap(find.widgetWithText(FilledButton, '开始'));
+    await settleIo(tester, 10);
+
+    expect(calls, contains('hasCameraPermission'),
+        reason: '按了【开始】却没再去问一次权限 —— 那是静默 return，I3 不许');
+    expect(calls, contains('requestCameraPermission'),
+        reason: '没权限就该去要一次，而不是直接放弃');
+    expect(calls.where((m) => m == 'startRecording'), isEmpty,
+        reason: '没权限却开了录 —— 用户看不到画面，而机器已经在录了');
+    expect(find.widgetWithText(FilledButton, '开始'), findsOneWidget,
+        reason: '没开起来，按钮就不该变成「结束」');
+
+    await finishApp(tester);
+  });
+
+  /// ★ **改一项设置真落盘**。
+  ///
+  /// 与锁定那条同形：界面上那个开关动了不算数，`settings.json` 上真变了才算。
+  /// 设置**不落盘**的话，用户在设置页改了半天、退出重进全白改，而界面上
+  /// 从头到尾没有任何异常。
+  ///
+  /// 反证：把 `_updateSettings` 末尾那句 `unawaited(settings.save())` 拿掉 ⇒ 红。
+  testWidgets('★ 改一项设置真落盘 —— settings.json 上真变了', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await pumpApp(tester);
+    await switchTab(tester, Icons.settings_outlined);
+
+    final file = File('${documents.path}/vidlog/settings.json');
+
+    final box = find.byKey(const Key('settings-record-audio-switch'));
+    await tester.scrollUntilVisible(box, 200,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.widget<SwitchListTile>(box).onChanged, isNotNull,
+        reason: '设置已经读出来了（`_settingsReady`），这个开关就不该是灰的');
+
+    await tester.tap(box);
+    // 写盘是 `unawaited` 的 —— 它不等，所以这里得推给它。
+    await settleIo(tester, 8);
+
+    // 字段名是 camelCase（`recording_settings.dart` 的 `toJson`）——
+    // 与标签表那套 PascalCase **不是**一个口径，别照搬。
+    expect(file.readAsStringSync(), contains('"recordAudio": false'),
+        reason: '开关动了，盘上没变 —— 用户改的设置根本没存下来');
+
+    await finishApp(tester);
   });
 }
