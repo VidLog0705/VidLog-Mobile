@@ -33,7 +33,7 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    放在 fake-async 区里跑 —— 那些 Future **永远不会完成**。所以必须
 ///    `tester.runAsync(...)`，真实 IO 才跑得起来。
 ///
-/// ## 现在有哪四条，各自怎么验「它能红」
+/// ## 现在有哪五条，各自怎么验「它能红」
 ///
 /// 1. `★ 打上桩之后启动真的跑完` —— 反证：注释掉 `path_provider` 那个桩。
 /// 2. `★ 盘上的录像真的显示出来了` —— 反证：把 `_bootstrap` 里 `_index`
@@ -42,6 +42,8 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    `false` ⇒ 这一条红，而 `widget_test.dart` 那条反面**仍是绿的**（实测）
 ///    —— 反面单独立不住，这正是这条存在的理由。
 /// 4. `★ 从列表点进详情页` —— 反证：把列表项的 `onTap` 摘成 `null`。
+/// 5. `★ 锁定这一条` —— 反证：把 `setLocked` 的值写反（`!locked` → `false`）
+///    ⇒ 这一条红，而且报出盘上那行真的写着 `"Value":"false"`。
 ///
 /// 第 2、4 条踩过的**假红**，都不是「找法不对」，是环境：
 /// ① 只写索引不建 `.mp4` 文件 —— 界面会拿 `entry.location` 去 stat，
@@ -50,6 +52,22 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 /// 落在导航栏上 —— 而且**它不抛异常**，只是那一下点到了别处，后面红在
 /// 「点不开」。第 4 条因此把窗口调到 1000×1400。
 /// ③ 这一页比一屏长时得先 `scrollUntilVisible` —— 列表懒构建，没滚到就找不到。
+///
+/// 第 5 条（锁定）又踩了四个，同样都不是「找法不对」：
+/// ④ `_toggleLock` → `_refreshDiagnostics` 是条**多段**真实 IO 链 ——
+///    每 `await` 一次续跑就回到 fake-async 区，所以要用 `settleIo()`
+///    **交替推**。只推一轮的话 `labels.jsonl` 会**建出来但是空的**，
+///    看着像「标签表写坏了」。
+/// ⑤ 标签表的字段名是 **PascalCase**（`Key` / `Value`，与电脑端
+///    `Labels/LabelStore.cs` 逐字同构）。按小写去 `contains` 会红，
+///    而原因跟锁定一点关系都没有。
+/// ⑥ 读盘要用**同步**读：`runAsync(() => file.readAsString())` 在这条链上
+///    给出的是空串（文件其实已经 113 字节）。
+/// ⑦ 「退出去再进来」**别走 pop**：`tester.pageBack()` 点不到那个返回箭头，
+///    `NavigatorState.pop()` 之后路由**仍在树上**（实测 backButtons=1、
+///    Navigator 只有 1 个、pop 完单号还是 2 个）。改成卸载再挂载整棵树
+///    （`pumpWidget(SizedBox())` → `pumpApp`）—— 顺带多验了一条更硬的：
+///    **重启之后它仍然锁着**。
 ///
 /// ## ⚠️ 桩**只在这个文件里**，绝不许提到全局（比如 `flutter_test_config.dart`）
 ///
@@ -161,6 +179,47 @@ void main() {
     });
   }
 
+  /// 把测试窗口调高。
+  ///
+  /// ⚠️ 默认 800×600 **太矮**：列表项被底部那四栏压住，`tap` 的 hit test
+  /// 落在导航栏上 —— 而且**它不抛异常**，只是那一下点到了别处，
+  /// 后面红在「点不开」这种看着像接线断了的地方。
+  void useTallWindow(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1000, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
+  /// 放真实 IO 跑一阵，再 `pump` 一次让 fake-async 那边的续跑 —— 交替推几轮。
+  ///
+  /// ⚠️ **一轮不够**（实测）：`_toggleLock` → `_refreshDiagnostics` 是条
+  /// **多段**的真实 IO 链，每 `await` 一次续跑就回到 fake-async 区，
+  /// 下次真实 IO 又得靠 `runAsync` 推。只推一轮的话 `labels.jsonl` 会被
+  /// **建出来但是空的** —— 那看着像「标签表写坏了」，其实只是没跑完。
+  Future<void> settleIo(WidgetTester tester, [int rounds = 20]) async {
+    for (var i = 0; i < rounds; i++) {
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await tester.pump();
+    }
+  }
+
+  /// 从备份页列表点开第一条录像的详情页。
+  ///
+  /// ⚠️ 不用 `pumpAndSettle`：采集页那个秒针还在转，永远不会静止。
+  Future<void> openDetail(WidgetTester tester) async {
+    await tester.scrollUntilVisible(
+      find.textContaining('视频记录（共'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+
+    await tester.tap(find.text('SF1000000001'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
   /// ★ **底座本身**：打上桩之后，启动要真的跑完。
   ///
   /// 反证配方：把 `stubPlatforms()` 里 `path_provider` 那一段注释掉 ——
@@ -255,26 +314,10 @@ void main() {
   ///
   /// ⚠️ 不用 `pumpAndSettle`：下面那页（采集页）的秒针还在转，永远不会静止。
   testWidgets('★ 从列表点进详情页，看到的是盘上那一条', (WidgetTester tester) async {
-    // ⚠️ 默认的 800×600 太矮：列表项被底部那四栏压住，`tap` 的 hit test
-    // 落在导航栏上（实测报 `derived an Offset ... would not hit test`，
-    // 而且**不抛异常**，只是那一下点到了别处 ⇒ 后面红在「点不开」）。
-    tester.view.physicalSize = const Size(1000, 1400);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
+    useTallWindow(tester);
     await seedRecording(tester);
     await pumpApp(tester);
-
-    await tester.scrollUntilVisible(
-      find.textContaining('视频记录（共'),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
-
-    await tester.tap(find.text('SF1000000001'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    await openDetail(tester);
 
     expect(find.text('录像详情'), findsOneWidget, reason: '点不开 —— 列表项没接上详情页');
     expect(find.text('1 段'), findsOneWidget, reason: '段数不是这一条的');
@@ -283,5 +326,63 @@ void main() {
       findsOneWidget,
       reason: '详情页拿到的路径不是这一条的',
     );
+  });
+
+  /// ★ **锁定这一条** —— 承重 + 不可逆那一类里，在本底座上唯一进得去的一个。
+  ///
+  /// 这条**不看界面自证**：界面说「已锁定」只证明它自己改了内存里的一个
+  /// 映射，而清理判定读的是**盘上那个标签表**。两处一旦分家，用户看到的
+  /// 就是「界面上明明锁着，还是被清掉了」——`isEvidenceLocked` 的注释
+  /// 把这个状态叫「用户没机会理解」。
+  ///
+  /// 所以断言要**分两半**：界面上那两句话变了，**并且** `labels.jsonl`
+  /// 里真的多了一行 `locked=true`。
+  ///
+  /// （删除与交付那两条路在本底座上进不去 —— `_askDelete` 第一句就是
+  /// 「没有 `_client` 就返回」，而 `_client` 要入网之后才有。
+  /// 那两条要等假电脑端，不在第 1 轮。）
+  testWidgets('★ 锁定这一条：界面变了，标签表也真写了', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await seedRecording(tester);
+    await pumpApp(tester);
+
+    // 锁之前，盘上那个标签表**还不存在**（种数据只写了索引与 mp4）。
+    final labels = File('${documents.path}/vidlog/labels.jsonl');
+    expect(labels.existsSync(), isFalse, reason: '还没锁，标签表不该先有了');
+
+    await openDetail(tester);
+
+    await tester.tap(find.byKey(const Key('detail-lock')));
+    await settleIo(tester);
+
+    // ★ 承重的那一半先断 —— 界面对了不算数，标签表写了才算。
+    //
+    // ⚠️ 用**同步**读。`runAsync(() => file.readAsString())` 在这条链上
+    // 会给出一个空串（实测；文件其实已经 113 字节了），
+    // 而那个空串看着像「标签表写坏了」，能把人带偏很久。
+    final raw = labels.readAsStringSync();
+    // ⚠️ 字段名是 **PascalCase**（`EvidenceId`/`Key`/`Value`/`UpdatedAt`）——
+    // 与电脑端 `Labels/LabelStore.cs` 逐字同构，`label_store.dart` 的文件头
+    // 头一句就写着。按小写去 contains 会红，而原因跟锁定一点关系都没有。
+    expect(raw, contains('"Key":"locked"'), reason: '标签表里没有 locked 这一行');
+    expect(raw, contains('"Value":"true"'), reason: '写了 locked，但值不是 true');
+
+    // ★ 界面那一半要**退出去再进来**才看得到：
+    // `RecordDetailPage.locked` 是**构造参数**（`record_detail_page.dart:133`），
+    // 父页 `_refreshDiagnostics` 的 `setState` 重建不了已经 push 上去的那条路由
+    // （实测：点完停在原地，那句话不变）。
+    //
+    // ⚠️ 这里用**卸载再挂载整棵树**来表达「退出去再进来」，
+    // 而不是 pop：`tester.pageBack()` 点不到那个返回箭头，
+    // `NavigatorState.pop()` 之后详情页**仍在树上**（实测：backButtons=1、
+    // Navigator 只有 1 个、pop 完 `SF1000000001` 还是 2 个）。
+    // 那条路在这套测试里走不通，别在这儿耗 —— 而且这样还顺带验了一条更硬的：
+    // **重启之后它仍然锁着**（`_bootstrap` 重新读盘）。
+    await tester.pumpWidget(const SizedBox());
+    await pumpApp(tester);
+    await openDetail(tester);
+
+    expect(find.text('已锁定'), findsOneWidget, reason: '锁了，回来再看还是没有那个标记');
+    expect(find.text('解锁这一条'), findsOneWidget);
   });
 }
