@@ -34,7 +34,7 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    放在 fake-async 区里跑 —— 那些 Future **永远不会完成**。所以必须
 ///    `tester.runAsync(...)`，真实 IO 才跑得起来。
 ///
-/// ## 现在有哪七条，各自怎么验「它能红」
+/// ## 现在有哪八条，各自怎么验「它能红」
 ///
 /// 1. `★ 打上桩之后启动真的跑完` —— 反证：注释掉 `path_provider` 那个桩。
 /// 2. `★ 盘上的录像真的显示出来了` —— 反证：把 `_bootstrap` 里 `_index`
@@ -49,6 +49,11 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    `needsUploadChoice` 写死成 `false`（两个窗合成一个）⇒ 标题那句红。
 /// 7. `★ 确认删除：盘上那一段真的没了` —— 反证：`_deleteNow` 里把
 ///    `locationByEvidenceId` 换成一个空表 ⇒ 文件没删掉，红在「还在」。
+/// 8. `★ 标签表写不进去：界面不许假装锁上了，日志也不许`（2026-10-06 加）
+///    —— 反证：`_toggleLock` 末尾 `return actual` → `return want`，并把日志
+///    改成照 `want` 记 ⇒ 红在 `Found 1 widget with text "解锁这一条"`（实测）。
+///    造失败的办法是**在标签表那个路径上放一个目录**（`writeAsString` 当场抛），
+///    与权限/平台无关，本机和 CI 一个行为。
 ///
 /// 第 2、4 条踩过的**假红**，都不是「找法不对」，是环境：
 /// ① 只写索引不建 `.mp4` 文件 —— 界面会拿 `entry.location` 去 stat，
@@ -58,7 +63,7 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 /// 「点不开」。第 4 条因此把窗口调到 1000×1400。
 /// ③ 这一页比一屏长时得先 `scrollUntilVisible` —— 列表懒构建，没滚到就找不到。
 ///
-/// 第 5 条（锁定）又踩了四个，同样都不是「找法不对」：
+/// 第 5 条（锁定）又踩了五个，同样都不是「找法不对」：
 /// ④ `_toggleLock` → `_refreshDiagnostics` 是条**多段**真实 IO 链 ——
 ///    每 `await` 一次续跑就回到 fake-async 区，所以要用 `settleIo()`
 ///    **交替推**。只推一轮的话 `labels.jsonl` 会**建出来但是空的**，
@@ -68,11 +73,22 @@ import 'package:vidlog_mobile/recording/work_mode.dart';
 ///    而原因跟锁定一点关系都没有。
 /// ⑥ 读盘要用**同步**读：`runAsync(() => file.readAsString())` 在这条链上
 ///    给出的是空串（文件其实已经 113 字节）。
-/// ⑦ 「退出去再进来」**别走 pop**：`tester.pageBack()` 点不到那个返回箭头，
+/// ⑦ `settleIo` 的**轮数别抠**：`_refreshDiagnostics` 一条链里有 **7 个
+///    await**（孤儿、索引、打卡、逐条 stat、占盘、归档、标签），每个来回
+///    都要一轮 —— 20 轮**刚好卡在边界上**：盘上已经写好了（标签表那半
+///    能过），但 `_toggleLock` 的 Future 还没 resolve，界面那半就红在
+///    「Found 0 widgets with text "已锁定"」，看着完全不像跟轮数有关。
+///    现在是 40 轮。
+/// ⑧ ⚠️ **曾经要「退出去再进来」才看得到，那是缺陷不是测试限制**
+///    （2026-10-06 修）：详情页的 `locked` 是构造参数的一次性快照，父页的
+///    `setState` 重建不了已经 push 上去的那条路由。所以老写法是先卸载再挂载
+///    整棵树（`pumpWidget(SizedBox())` → `pumpApp`）—— 顺带多验了「重启之后
+///    仍然锁着」。现在 `onToggleLock` 返回新锁态，**当场就变**，这一段直接
+///    断言。`pumpWidget(SizedBox())` 那招留在这儿当参考（要验「重启后还在」
+///    时还用得上），但**别再用它掩盖「按完当场不变」**。
+///    ⚠️ 而且它当初**点不着**：`tester.pageBack()` 找不到那个返回箭头，
 ///    `NavigatorState.pop()` 之后路由**仍在树上**（实测 backButtons=1、
-///    Navigator 只有 1 个、pop 完单号还是 2 个）。改成卸载再挂载整棵树
-///    （`pumpWidget(SizedBox())` → `pumpApp`）—— 顺带多验了一条更硬的：
-///    **重启之后它仍然锁着**。
+///    Navigator 只有 1 个、pop 完单号还是 2 个）。
 /// ⑧ `AppLog` 是 **debounce 落盘**的，那个定时器**不在 widget 树里** ——
 ///    卸载树也带不走它。所以 `settleIo` 里**两边都要推**：`runAsync` 推真实
 ///    时间、`pump(duration)` 推 fake 时钟（只 `pump()` 不带时长的话 fake 时钟
@@ -235,7 +251,11 @@ void main() {
   /// 推的是 **fake 时钟** —— 只 `pump()` 不带时长的话，`AppLog` 那种
   /// debounce 落盘定时器一步都不走，测试结束时会报
   /// 「A Timer is still pending even after the widget tree was disposed」。
-  Future<void> settleIo(WidgetTester tester, [int rounds = 20]) async {
+  /// ⚠️ 轮数别抠：《刷新一遍盘》那条链（`_refreshDiagnostics`）里就有
+  /// **7 个 await**（孤儿、索引、打卡、逐条 stat、占盘、归档、标签），
+  /// 每个来回都要一轮 —— 20 轮刚好卡在边界上，会红在「界面没变」这种
+  /// 看不出跟轮数有关的地方。40 轮 = 800ms 真实 + 800ms fake。
+  Future<void> settleIo(WidgetTester tester, [int rounds = 40]) async {
     for (var i = 0; i < rounds; i++) {
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 20)));
@@ -405,22 +425,13 @@ void main() {
     expect(raw, contains('"Key":"locked"'), reason: '标签表里没有 locked 这一行');
     expect(raw, contains('"Value":"true"'), reason: '写了 locked，但值不是 true');
 
-    // ★ 界面那一半要**退出去再进来**才看得到：
-    // `RecordDetailPage.locked` 是**构造参数**（`record_detail_page.dart:133`），
-    // 父页 `_refreshDiagnostics` 的 `setState` 重建不了已经 push 上去的那条路由
-    // （实测：点完停在原地，那句话不变）。
+    // ★ 界面那一半 —— **当场**就要变。
     //
-    // ⚠️ 这里用**卸载再挂载整棵树**来表达「退出去再进来」，
-    // 而不是 pop：`tester.pageBack()` 点不到那个返回箭头，
-    // `NavigatorState.pop()` 之后详情页**仍在树上**（实测：backButtons=1、
-    // Navigator 只有 1 个、pop 完 `SF1000000001` 还是 2 个）。
-    // 那条路在这套测试里走不通，别在这儿耗 —— 而且这样还顺带验了一条更硬的：
-    // **重启之后它仍然锁着**（`_bootstrap` 重新读盘）。
-    await tester.pumpWidget(const SizedBox());
-    await pumpApp(tester);
-    await openDetail(tester);
-
-    expect(find.text('已锁定'), findsOneWidget, reason: '锁了，回来再看还是没有那个标记');
+    // 2026-10-06 之前这里得「卸载再挂载整棵树」才看得到：`locked` 当时是
+    // 构造参数的一次性快照，父页 `_refreshDiagnostics` 的 `setState` 重建不了
+    // 已经 push 上去的那条路由，所以按完停在原地、那句话不变。
+    // 现在 `onToggleLock` **返回新锁态**，详情页自己 `setState`。
+    expect(find.text('已锁定'), findsOneWidget, reason: '按下去了，这句话当场就该出现');
     expect(find.text('解锁这一条'), findsOneWidget);
   });
 
@@ -498,6 +509,49 @@ void main() {
     // —— 那个定时器不在 widget 树里，卸载树也带不走它。不收尾的话测试体
     // 结束时报的是「A Timer is still pending even after the widget tree was
     // disposed」，那句话看着像删除把页面搞坏了，其实跟删除一点关系都没有。
+    await tester.pump(const Duration(seconds: 5));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  /// ★ **写不进去的时候，界面和日志都不许说「已锁定」**。
+  ///
+  /// 锁定是「永不被自动清理」那条豁免的**唯一开关**（`label_store.dart` 的
+  /// `setLocked` 注释原话）。它写失败而界面照样显示锁上了，用户就会以为
+  /// 这条保住了 —— 等到被清理掉，他没有任何机会理解发生了什么。
+  ///
+  /// 造这个失败的办法是**在标签表的路径上放一个目录**：`writeAsString` 当场
+  /// 抛 `FileSystemException`。跟权限、跟平台都无关，本机和 CI 一个行为。
+  ///
+  /// 反证：把 `_toggleLock` 末尾的 `return actual` 改回 `return want`
+  /// （或者把日志那个 `if (actual == want)` 拆掉，照着 `want` 记）
+  /// ⇒ 这一条红。
+  testWidgets('★ 标签表写不进去：界面不许假装锁上了，日志也不许', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await seedRecording(tester);
+    await pumpApp(tester);
+
+    // 目录占住这个路径 ⇒ 写标签必抛。
+    Directory('${documents.path}/vidlog/labels.jsonl').createSync(recursive: true);
+
+    await openDetail(tester);
+    await tester.tap(find.byKey(const Key('detail-lock')));
+    await settleIo(tester);
+
+    // ★ 这半是**用户会吃大亏**的那半：按钮必须还停在「锁定这一条」。
+    // 换成「解锁这一条」的话，用户看到的是「现在锁着了」。
+    expect(find.text('解锁这一条'), findsNothing,
+        reason: '盘上根本没写进去，界面却换成了「解锁这一条」—— 用户以为保住了');
+    expect(find.text('已锁定'), findsNothing, reason: '顶上那个标记也不许冒出来');
+    expect(find.textContaining('不会被自动清理'), findsOneWidget);
+
+    // ★ 另外半是**事后追责**那半（§6.1 不可逆动作）：日志里不能只有一条
+    // 「已锁定」，否则查「这条为什么被清了」会照着它当成锁着的。
+    final tail = AppLog.instance.tail.value.join('\n');
+    expect(tail, contains('锁定没生效'),
+        reason: '盘上没写进去，日志里必须留下这一条 —— 否则事后没人追得出来');
+    expect(tail, isNot(contains('已锁定 VL-20261006-100000-0001')),
+        reason: '日志记的是**盘上真成了没有**，不是「按过了」');
+
     await tester.pump(const Duration(seconds: 5));
     await tester.pumpWidget(const SizedBox());
   });

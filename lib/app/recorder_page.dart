@@ -2731,20 +2731,46 @@ class _RecorderPageState extends State<RecorderPage> {
   /// ⚠️ **每一段都要写**：清理的候选是按**分段**算的（`planCleanup` 吃的是
   /// `RecordingEntry`），只锁第一段的话后面几段照样会被清掉 ——
   /// 而界面上那一条看起来是「已锁定」。这种不一致比没有锁定更糟。
-  Future<void> _toggleLock(RecordingSession session) async {
-    final locked = _isSessionLocked(session);
+  /// 返回值是**按完之后的锁态**（`true` = 现在锁着）—— 详情页拿它当场换文案。
+  /// 详情页那个 `locked` 是构造参数的一次性快照，父页的 `setState` 重建不了
+  /// 已经 push 上去的那条路由（见 `record_detail_page.dart` 里 `onToggleLock`）。
+  Future<bool> _toggleLock(RecordingSession session) async {
+    final before = _isSessionLocked(session);
+    final want = !before;
     final now = DateTime.now();
 
-    for (final id in session.evidenceIds) {
-      await _labels.setLocked(evidenceId: id, locked: !locked, now: now);
+    // ⚠️ 写盘会抛（`writeAsString` 不吞异常），而这里**不许让它冒出去**：
+    // 冒出去的话 `onPressed` 那个 async 闭包就悄悄断了，用户按了**一点反应
+    // 都没有**（连「失败」都不说）—— 跟 2026-10-06 修的那个「按完当场不变」
+    // 是同一族的毛病。吞掉、记一条、把**盘上的实际状态**回给界面。
+    try {
+      for (final id in session.evidenceIds) {
+        await _labels.setLocked(evidenceId: id, locked: want, now: now);
+      }
+    } on Object catch (error) {
+      _log('⚠️ 锁定没写进去：${session.waybill.value} —— $error');
     }
 
     // 重新读一遍标签 —— 界面上的图标与 tooltip 才会跟着变。
     await _refreshDiagnostics();
 
-    _log(locked
-        ? '已解锁 ${session.waybill.value}'
-        : '已锁定 ${session.waybill.value}（不会被自动清理）');
+    // ⚠️ 记的是**盘上真成了没有**，不是「按过了」。照 `want` 记的话，写盘
+    // 失败时日志里会躺着一条「已锁定」而盘上一个字都没写 —— 事后查
+    // 「这条为什么被清了」会照着日志把它当成锁着的（§6.1 不可逆动作那行）。
+    //
+    // ⚠️ 也别回 `want`：`loadAll` **会跳过认不出的行**（掉电写了一半的那条），
+    // 于是「写过了」和「读出来是锁着的」不是一回事 —— 界面得照实说。
+    final actual = _isSessionLocked(session);
+    if (actual == want) {
+      _log(actual
+          ? '已锁定 ${session.waybill.value}（不会被自动清理）'
+          : '已解锁 ${session.waybill.value}');
+    } else {
+      _log('⚠️ 锁定没生效：${session.waybill.value} 盘上现在还是'
+          '${actual ? '锁定' : '未锁定'} —— 界面按这个显示，清理也按这个来');
+    }
+
+    return actual;
   }
 
   /// 自动清理的**预告 + 执行**（规格 §3.5.4 / §3.5.5）。

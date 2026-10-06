@@ -25,7 +25,7 @@ import 'palette.dart';
 /// ⚠️ 时间 / 时长 / 大小三串**由调用方格式化好传进来**，这一页不自己算 ——
 /// 两处各写一套格式的话，列表上写着 `9月16日` 而详情页写着 `09-16`，
 /// 同一个东西两个样子（而搜索框是按屏幕上真有的字匹配的，见 `matchesQuery`）。
-class RecordDetailPage extends StatelessWidget {
+class RecordDetailPage extends StatefulWidget {
   const RecordDetailPage({
     super.key,
     required this.title,
@@ -82,7 +82,16 @@ class RecordDetailPage extends StatelessWidget {
   final Widget preview;
 
   final VoidCallback? onPlay;
-  final VoidCallback onToggleLock;
+
+  /// 锁定 / 解锁。**返回按下之后的新锁态**（`true` = 现在锁着）。
+  ///
+  /// ⚠️ 为什么要有返回值：`locked` 是构造参数的**一次性快照**，而父页的
+  /// `setState` 重建不了已经 push 上来的这条路由 —— 不返回的话，用户按完
+  /// 锁定**当场什么都不会变**（2026-10-06 在 `recorder_page_test.dart` 里
+  /// 实测：按钮文案和顶上那个「已锁定」标记都不动，得退出去再进来才看得到）。
+  /// 与 [onDelete] 同一个形状。
+  final Future<bool> Function() onToggleLock;
+
   final VoidCallback onShare;
 
   /// 删掉了吗。**true 才 pop** —— 删不成（回查没通过、审计写不进去）时
@@ -90,9 +99,39 @@ class RecordDetailPage extends StatelessWidget {
   final Future<bool> Function() onDelete;
 
   @override
+  State<RecordDetailPage> createState() => _RecordDetailPageState();
+}
+
+class _RecordDetailPageState extends State<RecordDetailPage> {
+  /// 当前锁态。
+  ///
+  /// ⚠️ **不直接读 `widget.locked`**：那是构造参数的一次性快照，而父页的
+  /// `setState` 重建不了已经 push 上来的这条路由 —— 按完锁定**当场什么都
+  /// 不会变**（实测）。「按下去 → 当场变」由这条路由自己记。
+  late bool _locked = widget.locked;
+
+  // 下面这一串只是把 `widget.` 转发一次 —— `build` 里那一片本来就写着
+  // `title` / `timeText` 这样，转发过去它们一个字都不用改。
+  String get title => widget.title;
+  BusinessType? get businessType => widget.businessType;
+  String get uploadText => widget.uploadText;
+  Color get uploadColor => widget.uploadColor;
+  Color get uploadTint => widget.uploadTint;
+  String get timeText => widget.timeText;
+  String get durationText => widget.durationText;
+  String get sizeText => widget.sizeText;
+  String get segmentText => widget.segmentText;
+  String get location => widget.location;
+  Widget get preview => widget.preview;
+  VoidCallback? get onPlay => widget.onPlay;
+  Future<bool> Function() get onToggleLock => widget.onToggleLock;
+  VoidCallback get onShare => widget.onShare;
+  Future<bool> Function() get onDelete => widget.onDelete;
+
+  @override
   Widget build(BuildContext context) {
-    // ⚠️ 抄到局部变量里再用：`businessType` 是这个类的**公开 final 字段**，
-    // 而 Dart 的字段提升只对**私有** final 字段生效 —— 直接写
+    // ⚠️ 抄到局部变量里再用：`businessType` 走的是上面那个转发 getter，
+    // 而 Dart 的字段提升只对**私有 final 字段**生效 —— 直接写
     // `if (businessType != null) businessType.displayName` 编译不过。
     final type = businessType;
     // 与列表上那支色**同源**。`businessTypeLook` 吃 `null`（给的是灰），
@@ -129,7 +168,7 @@ class RecordDetailPage extends StatelessWidget {
               if (type != null)
                 _pill(context, type.displayName, typeLook.color, typeLook.tint),
               _pill(context, uploadText, uploadColor, uploadTint),
-              if (locked)
+              if (_locked)
                 _pill(context, '已锁定', Palette.primary, Palette.blueTint),
             ],
           ),
@@ -151,9 +190,13 @@ class RecordDetailPage extends StatelessWidget {
           const SizedBox(height: 16),
           FilledButton.tonalIcon(
             key: const Key('detail-lock'),
-            onPressed: onToggleLock,
-            icon: Icon(locked ? Icons.lock_open : Icons.lock_outline),
-            label: Text(locked ? '解锁这一条' : '锁定这一条（不会被自动清理）'),
+            // 按完**当场**换成新文案：回调返回的是新锁态，不是「按过了」。
+            onPressed: () async {
+              final next = await onToggleLock();
+              if (mounted) setState(() => _locked = next);
+            },
+            icon: Icon(_locked ? Icons.lock_open : Icons.lock_outline),
+            label: Text(_locked ? '解锁这一条' : '锁定这一条（不会被自动清理）'),
           ),
           const SizedBox(height: 8),
           FilledButton.tonalIcon(

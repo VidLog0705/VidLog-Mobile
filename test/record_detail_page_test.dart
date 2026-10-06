@@ -14,10 +14,19 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 /// **都验不到**。这一页是**纯展示 + 回调**，一行业务判定都没有 —— 谁来都能
 /// 把它直接构造出来按一遍，所以它成了那三个操作真正的回归守卫。
 ///
-/// ⚠️ 三处最容易写反、写反了用户会吃大亏的地方，这里各有一条钉着：
+/// ⚠️ 四处最容易写反、写反了用户会吃大亏的地方，这里各有一条钉着：
 /// 1. 删除回调返回 false（回查没过、审计写不进去）时 **不许 pop**；
 /// 2. 判不出业务类型时**那一格不出现**（不猜）；
-/// 3. 「原视频、没打码」那句提示必须在（规格 §3.6.6：打码整条不做）。
+/// 3. 「原视频、没打码」那句提示必须在（规格 §3.6.6：打码整条不做）；
+/// 4. ★ 锁定**按完当场就得换文案**（2026-10-06 修的）：`locked` 是构造参数的
+///    一次性快照，父页的 `setState` 重建不了已经 push 上来的这条路由 ——
+///    所以 `onToggleLock` 必须**返回新锁态**，这一页自己 `setState`。
+///    反证：把 `setState(() => _locked = next)` 改回 `setState(() {})`
+///    （用快照重建，也就是修之前的行为）⇒ 报 `Found 0 widgets with text
+///    "解锁这一条"` —— 正是用户实测到的那个现象。
+///    ⚠️ 返回值必须来自**按完之后的真实锁态**（`recorder_page` 那边读的是
+///    重读过的标签表，不是 `!locked`）：写盘失败时它就是没变，回 `!locked`
+///    会让界面写着「已锁定」而盘上什么都没写。
 void main() {
   /// ⚠️ 这一页是**被 push 出来**的，这里也得 push 出来 ——
   /// `home:` 的话 pop 的就是根路由，`find.text('录像详情')` 删成删不成都
@@ -27,7 +36,7 @@ void main() {
     BusinessType? businessType = BusinessType.outbound,
     bool locked = false,
     VoidCallback? onPlay,
-    VoidCallback? onToggleLock,
+    Future<bool> Function()? onToggleLock,
     VoidCallback? onShare,
     Future<bool> Function()? onDelete,
   }) async {
@@ -61,7 +70,7 @@ void main() {
                     locked: locked,
                     preview: const SizedBox.shrink(),
                     onPlay: onPlay,
-                    onToggleLock: onToggleLock ?? () {},
+                    onToggleLock: onToggleLock ?? () async => false,
                     onShare: onShare ?? () {},
                     onDelete: onDelete ?? () async => true,
                   ),
@@ -83,17 +92,34 @@ void main() {
     var shared = 0;
 
     await open(tester,
-        onToggleLock: () => locked++, onShare: () => shared++);
+        onToggleLock: () async {
+          locked++;
+          return true; // 按完就是**锁上了**
+        },
+        onShare: () => shared++);
 
     expect(find.text('录像详情'), findsOneWidget);
 
     // 三个操作都要**点得动而且真的转发出去** —— 只 find 到不算数：
     // 一个画出来但连不到东西的按钮，用户按下去什么都不会发生。
     await tester.tap(find.byKey(const Key('detail-lock')));
+    // ⚠️ `tester.tap` **内部不 pump**，而锁定那个 `onPressed` 现在是 `async`
+    // （要等回调返回的新锁态）—— 不补这一次 pump，`setState` 还没反映到界面上，
+    // 下面那两句就报「Found 0 widgets with text "解锁这一条"」。
+    await tester.pump();
     await tester.tap(find.byKey(const Key('detail-share')));
 
     expect(locked, 1);
     expect(shared, 1);
+
+    // ★ **按完当场就要换文案**（2026-10-06 修的那一处）：`locked` 是构造参数
+    // 的一次性快照，父页的 `setState` 重建不了已经 push 上来的这条路由 ——
+    // 原先按完这一页**什么都不变**，得退出去再进来才看得到。
+    // 现在靠回调**返回新锁态**。把返回值改成固定的 `false` ⇒ 这两句红。
+    expect(find.text('解锁这一条'), findsOneWidget,
+        reason: '按完锁定，这一页当场就该变成「解锁这一条」');
+    expect(find.text('已锁定'), findsOneWidget, reason: '顶上那个标记也该跟着出来');
+
     expect(find.byKey(const Key('detail-delete')), findsOneWidget);
   });
 
