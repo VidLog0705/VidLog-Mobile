@@ -118,6 +118,47 @@ void main() {
     );
   });
 
+  test('★ 用户可见的文案里不许出现 markdown —— `**` 会原样印在屏幕上', () {
+    // 电脑端 `docs/实现决策.md` §58.9 / §66.6。那一端踩过一次：界面上
+    // **真的印出了字面的 `**`** —— 因为 `**加粗**` 在 WPF 的 TextBlock 里
+    // 不是加粗，就是四个星号。而且当时只 grep 了 `.xaml`，漏掉了 Core / App
+    // 两层的 C# 字符串，**是看着截图才发现的**。§58.9 的教训原话是
+    // 「界面上的文字不止来自界面那一层」—— 手机端同理：用户看见的那句话
+    // 可能写在任何一个 dart 文件里，不只是 `app/` 底下那几个页面。
+    // （2026-10-06 全仓扫出 28 处，落在 6 个文件，其中 19 处不在 `app/` 里。）
+    //
+    // ⚠️ 判据是**恰好两个星号**（`(?<!\*)\*\*(?!\*)`），所以 `'***'`
+    // 那个脱敏掩码（`lib/diagnostics/redact.dart`）天然不中 —— 它不是 markdown，
+    // 是「这儿有秘密」的三个点。不用为它开白名单。
+    //
+    // ⚠️ 注释行跳过（这一条自己就在提 `**`），与上面两条同理。
+    // ⚠️ 只认 `lib/` 下的字面量：从原生层（`android/`、`ios/`）或资源文件
+    // 进来的文案它管不着。那两处 2026-10-06 手工扫过一遍是干净的（`**`
+    // 只出现在 XML 注释里），但**没有绊线替它们守着**。
+    final offenders = <String>[];
+    final pattern = RegExp(r'(?<!\*)\*\*(?!\*)');
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        if (lines[index].trimLeft().startsWith('//')) continue;
+        if (pattern.hasMatch(lines[index])) {
+          offenders.add('${entity.path}:${index + 1}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些行里有两个星号，会原样印在用户眼前：\n  '
+          '${offenders.join('\n  ')}\n'
+          '界面文字没有加粗可用 —— 要强调就换一句话讲清楚，别把星号留给用户看。',
+    );
+  });
+
   test('★ 字号只许从主题来 —— 白名单只剩两个文件，且它会自己缩', () {
     // 改造清单 T7。改版前全仓散着 **105 处 `fontSize:`**，其中 57 处是 12、
     // 19 处是 13 —— 同一个角色在不同页面是不同字号，而主题里那份定义

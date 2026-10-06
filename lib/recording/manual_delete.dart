@@ -284,11 +284,11 @@ String batchDeletePreviewText(BatchDeletePlan plan) {
     ];
 
     return '选中的 ${plan.count} 条里有 ${plan.blocked.length} 条现在不能删，'
-        '所以这一批**一条都不会删**。\n\n${lines.join('\n')}';
+        '所以这一批一条都不会删。\n\n${lines.join('\n')}';
   }
 
   final buffer = StringBuffer()
-    ..write('要删掉这 ${plan.count} 条录像在**手机上的**副本'
+    ..write('要删掉这 ${plan.count} 条录像在手机上的副本'
         '（共 ${_megabytes(plan.bytes)}）。电脑端那份不动。');
 
   if (plan.unarchivedCount > 0) {
@@ -296,7 +296,7 @@ String batchDeletePreviewText(BatchDeletePlan plan) {
     // 单条那条路上也是这么说的）。
     buffer
       ..write('\n\n')
-      ..write('⚠️ 其中 ${plan.unarchivedCount} 条**还没备份**，'
+      ..write('⚠️ 其中 ${plan.unarchivedCount} 条还没备份，'
           '手机上这份是唯一一份，删了就无法恢复。');
   }
 

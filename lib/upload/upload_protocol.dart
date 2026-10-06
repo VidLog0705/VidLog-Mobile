@@ -349,13 +349,13 @@ class UploadFailure implements Exception {
           '电脑端的机位已经满了，这台手机接不进去。请在电脑端的【许可】里激活或升级，'
               '或者联系提供方加机位。已经在用的手机不受影响。',
         UploadErrorCodes.unplayable =>
-          '电脑端打不开这段录像。**别删手机上的原文件**，重新录一次这一件。',
+          '电脑端打不开这段录像。别删手机上的原文件，重新录一次这一件。',
         UploadErrorCodes.alreadyPublished => '电脑上已经有一份同名但内容不同的录像，请找管理员核对。',
         UploadErrorCodes.hashMismatch => '传过去的和手机上的对不上，这段录像没有再自动重试。',
         UploadErrorCodes.chunkMissing => '有分片没传完，这段录像没有再自动重试。',
         UploadErrorCodes.evidenceMismatch => '录像编号对不上，这是程序的问题，请联系开发。',
         UploadErrorCodes.badSignature =>
-          '**回执的签名不对**：这台电脑端给的回执验不过，或者内容是假的。'
+          '回执的签名不对：这台电脑端给的回执验不过，或者内容是假的。'
               '先别删手机上的原文件，找管理员核对电脑端。',
         UploadErrorCodes.badRequest => '电脑端没看懂这次请求，这是程序的问题，请联系开发。',
         _ => '上传失败（$code）。',

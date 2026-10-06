@@ -234,7 +234,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
         setState(() {
           _results = null;
           _quota = null;
-          _note = '已从这台手机上退出。**网盘上的东西一个都没动。**';
+          _note = '已从这台手机上退出。网盘上的东西一个都没动。';
         });
       });
 

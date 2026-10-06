@@ -2918,7 +2918,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 // 否则他会以为自己看到的是一个确定的结论。
                 ? '${plan.reason}\n\n'
                     '如果你确定那台电脑上还留着这一份（能自己去上面看到它），'
-                    '也可以仍然删掉手机上这一条。**这一步没人能替你核对** —— '
+                    '也可以仍然删掉手机上这一条。这一步没人能替你核对 —— '
                     '万一电脑上那份也没了，删掉就是永久没了。'
                 : plan.reason,
           ),
@@ -3288,7 +3288,7 @@ class _RecorderPageState extends State<RecorderPage> {
 
       _log('🗑 删掉了 ${items.length} 条录像的本地副本（共 $segments 段）');
     } on Object catch (error) {
-      _log('⚠️ 批量删除没能进行完（**已经删掉的那些不恢复**，剩下没删）：$error');
+      _log('⚠️ 批量删除没能进行完（已经删掉的那些不恢复，剩下没删）：$error');
     }
 
     // 无论成败都刷一遍：删掉的那些要从列表和占用里消失。
@@ -4162,7 +4162,7 @@ class _RecorderPageState extends State<RecorderPage> {
             ),
             const SizedBox(height: 12),
             const Text(
-              '填电脑端那台机器的局域网 IP。填完还要**配对**一次它才会收下'
+              '填电脑端那台机器的局域网 IP。填完还要配对一次它才会收下'
               '这台手机的录像。',
               style: TextStyle(fontSize: 12, color: Palette.muted),
             ),
@@ -4344,7 +4344,7 @@ class _RecorderPageState extends State<RecorderPage> {
               ),
               const SizedBox(height: 4),
               const Text(
-                '⚠️ 只挡住**新录**：已有的录像照常可以检索、回放、导出、交付。',
+                '⚠️ 只挡住新录：已有的录像照常可以检索、回放、导出、交付。',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Palette.onDarkFaint, fontSize: 12, height: 1.6),
               ),
@@ -5511,7 +5511,7 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
         const SizedBox(height: 6),
         const Text(
-          '管的是**这台手机现在出不出声**：扫到不是同一件的包裹时出声提醒'
+          '管的是这台手机现在出不出声：扫到不是同一件的包裹时出声提醒'
           '（规格 §3.3.2 错码保护），表盘滑过刻度时的「咔哒」声也归它。'
           '旁边有人、或者嫌吵时关掉。',
           style: TextStyle(fontSize: 12),
@@ -5519,7 +5519,7 @@ class _RecorderPageState extends State<RecorderPage> {
         const SizedBox(height: 4),
         const Text(
           '关掉只是不出声：屏幕上的提示和事件日志照旧，日志前面的图标会从 🔊 变成 🔇。'
-          '**立刻生效**，不用重新开始工作 —— 它是唯一一项不用等的设置。',
+          '立刻生效，不用重新开始工作 —— 它是唯一一项不用等的设置。',
           style: TextStyle(fontSize: 12),
         ),
         const SizedBox(height: 4),
@@ -5528,7 +5528,7 @@ class _RecorderPageState extends State<RecorderPage> {
         Text(
           _coordinator == null
               ? '⚠️ 试听暂时是灰的：语音通道要等第一次点【开始工作】才接上。'
-              : '⚠️ 它管不到**录像文件里**有没有声音 —— 那是下面「录制声音」那一项。',
+              : '⚠️ 它管不到录像文件里有没有声音 —— 那是下面「录制声音」那一项。',
           style: const TextStyle(fontSize: 12),
         ),
       ],
@@ -5715,9 +5715,9 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
         const SizedBox(height: 6),
         const Text(
-          '相机扫到的条码**短于**这个位数就当成误识，不触发录制 —— '
+          '相机扫到的条码短于这个位数就当成误识，不触发录制 —— '
           '挡的是货架条码、包装上的别的码、别家快递的面单这类东西。\n'
-          '⚠️ 只管**相机**：手工敲进去的单号不受这一项限制。',
+          '⚠️ 只管相机：手工敲进去的单号不受这一项限制。',
           style: TextStyle(fontSize: 12),
         ),
       ],
@@ -5740,14 +5740,14 @@ class _RecorderPageState extends State<RecorderPage> {
         WorkMode.sameWaybillStop =>
           '识别到单号就开录，复扫到同一个单号就停。'
               '三个模式里只有它不用人额外做什么就能自己停。\n'
-              '扫到**别的**单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
+              '扫到别的单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
               '只出声提醒，直到扫回本件面单才停。',
         WorkMode.scanThenStaticStop =>
           '识别到单号就开录。包裹要先离开画面、再回到画面，'
               '并且静止够下面设的时长才停。\n'
               '注意：这个模式下复扫同码不停，只认静止 —— '
               '这就是它和「同码停录」的区别。\n'
-              '扫到**别的**单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
+              '扫到别的单号不会停、也不会换段 —— 那是错码保护（§3.3.2），'
               '只出声提醒。',
       };
 
@@ -5799,7 +5799,7 @@ class _RecorderPageState extends State<RecorderPage> {
         VideoCodec.h264 =>
           '兼容性最好，几乎所有手机都能播放；文件体积约增加 30-40%。',
         VideoCodec.h265 =>
-          '同画质下体积小一半左右。⚠️ 电脑端的**网页回放**对 H.265 支持不一致，'
+          '同画质下体积小一半左右。⚠️ 电脑端的网页回放对 H.265 支持不一致，'
               '可能播不了 —— 那时用系统播放器打开就行，录像本身没问题。',
       };
 
@@ -5929,7 +5929,7 @@ class _RecorderPageState extends State<RecorderPage> {
         // （先问、1 分钟没人理才停）。说明不跟着改的话，界面上就是一句假话 ——
         // 用户会站在原地等那句「还有 30 秒」，然后被直接停掉。
         const Text(
-          '不管画面动不动，录满这个时长就**语音问一次**'
+          '不管画面动不动，录满这个时长就语音问一次'
           '「录制时间即将超时，是否需要停止录制？」：\n'
           '· 点【停止】→ 立刻停；\n'
           '· 点【继续】→ 接着录，之后每隔 5 分钟再问一次；\n'
@@ -5951,7 +5951,7 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
         const SizedBox(height: 6),
         const Text(
-          '画面一直不动、够这个时长就停（§3.3.3）。这条**不出声** —— '
+          '画面一直不动、够这个时长就停（§3.3.3）。这条不出声 —— '
           '收尾时用户多半已经走开，补一句只会像设备在自言自语。',
           style: TextStyle(fontSize: 12),
         ),
@@ -6022,7 +6022,7 @@ class _RecorderPageState extends State<RecorderPage> {
         ),
         const SizedBox(height: 6),
         const Text(
-          '⚠️ 这一栏**永不自动删**：还没备份上去的录像在手机上是**唯一一份**，'
+          '⚠️ 这一栏永不自动删：还没备份上去的录像在手机上是唯一一份，'
           '删了就永久没了（不变量 I2）。它到期的动作只有提醒 —— '
           '列表标红 + 顶部催上传。',
           style: TextStyle(fontSize: 12),
@@ -6046,7 +6046,7 @@ class _RecorderPageState extends State<RecorderPage> {
         const SizedBox(height: 6),
         const Text(
           '备份成功后，手机上的原片再留多久 —— 从「备份成功那一刻」起算，'
-          '不是从录完起算。这一栏到点会**真的删**手机上的那份。',
+          '不是从录完起算。这一栏到点会真的删手机上的那份。',
           style: TextStyle(fontSize: 12),
         ),
       ],
@@ -6074,7 +6074,7 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
                 SizedBox(height: 10),
                 Text(
-                  '⚠️「未备份保留」那一栏**永不自动删除** —— 那是唯一一份，'
+                  '⚠️「未备份保留」那一栏永不自动删除 —— 那是唯一一份，'
                   '删了就没了。它到期的动作只有提醒（列表标红 + 催上传），'
                   '从「录完那一刻」起算。',
                   style: TextStyle(fontSize: 13),
@@ -6087,8 +6087,8 @@ class _RecorderPageState extends State<RecorderPage> {
                 ),
                 SizedBox(height: 10),
                 Text(
-                  '⚠️ 这一块记的是**到期之后该怎么做**，而手机端的自动清理还没接通 —— '
-                  '今天不会有任何文件**自动**被删。想现在删就用备份页每一条右边的'
+                  '⚠️ 这一块记的是到期之后该怎么做，而手机端的自动清理还没接通 —— '
+                  '今天不会有任何文件自动被删。想现在删就用备份页每一条右边的'
                   '垃圾桶图标（那会先跟电脑端核对，核对不上就不删）。'
                   '另外【被锁定】的证据永远不清。',
                   style: TextStyle(fontSize: 13),

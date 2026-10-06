@@ -90,14 +90,14 @@ String cleanupPreviewText(CleanupPlan plan) {
     '保留期到了的录像有 ${plan.candidates.length} 段，约 ${megabytes.toStringAsFixed(0)} MB。',
     '',
     '要现在清理吗？',
-    '· 清理前会逐条问电脑端，**归档层上没有（或问不到）的那条不会删**；',
+    '· 清理前会逐条问电脑端，归档层上没有（或问不到）的那条不会删；',
     '· 删掉的是手机上这一份，电脑上那份不动；',
     '· 已锁定与最近 24 小时内录的一条都不会动。',
   ];
 
   if (plan.nudges.isNotEmpty) {
     // ⚠️ 「催上传」与「要删」必须分开说 —— 混在一起用户会以为下面这些也要被删。
-    lines.add('· 另有 ${plan.nudges.length} 段还没备份成功，它们**只在列表里标红催上传，永不自动删**。');
+    lines.add('· 另有 ${plan.nudges.length} 段还没备份成功，它们只在列表里标红催上传，永不自动删。');
   }
 
   return lines.join('\n');
