@@ -103,6 +103,37 @@ test/                     flutter test
 scripts/precheck.ps1      推送前的本地预检
 ```
 
+**`part of` 拆分法（2026-10-06，本仓首例）**：`lib/app/recorder_page.dart` 原来
+**6407 行**（`_RecorderPageState` 一个类占 6253 行），是全仓唯一一处硬违规。2026-10-06
+按 `part of` 拆成**壳 + 14 个 part 文件**，那一整块现在全部 ≤ 800 行。
+
+**为什么是 `part of` 而不是抽类**：那个类里 **13 个成员被几乎每一堆引用**（`_gateway` /
+`_coordinator` / `_settings` / `_log` / `_snack` …）。抽类就得给将近 200 个成员重新布线，
+而 `test/` 里只有 11 条用例盖着那 3800 行 UI —— 接错一个字段不会有任何测试喊。
+`part of` **一个标识符都不用改**：按行区间剪下来贴走，因此能拿 `diff` **证明**是纯搬家
+（内容行的多重集比对，两向差集都为空）。
+
+**三条实测约束**（2026-10-06 用 `dart analyze` 一条条验的，不是推断）：
+
+- **extension 不许声明实例字段** ⇒ 所有字段留在壳的类体里；同一个 library，part 文件
+  不带前缀照样读得到。
+- **extension 不许不带前缀地引用被扩展类型的静态成员**
+  （`unqualified_reference_to_static_member_of_extended_type`）⇒ 跟着搬的静态成员一律
+  改成**顶层**声明，调用点一字不动。
+- **extension 不能覆盖 `State` 的方法** ⇒ `initState` / `dispose` / `build` 必须留在壳里。
+  这条最阴：搬走了**照样编译**，只是框架永远不调用它 —— 静默失败，不是报错。
+
+另外每个 part 文件头上挂一句**收窄**的 `// ignore_for_file: invalid_use_of_protected_member`
+（分析器不把 `extension on _RecorderPageState` 认作「State 的子类内部」，于是每一处
+`setState(` 都报）—— 只收窄这一条，不做 `ignore_for_file: all`。
+
+⚠️ **这一刀不治那个类**：字段、`build`、`_onTabChanged` 这些共用成员仍散在十几个文件里。
+真正的病（6253 行的 State）要等**第 3 轮抽类**，而第 3 轮要先加厚测试底座。
+
+⚠️ **`lib/` 下仍有超 800 行的文件**（2026-10-06 实测，都在 `lib/app/` 之外）：
+`lib/recording/recording_coordinator.dart` **1108 行**、`lib/upload/uploader.dart`
+**1019 行**。它们只超**建议线**（800），没到**硬线**（1500）—— 拆不拆另议。
+
 ### 5.1 用户可见的文案不许用 markdown（2026-10-06 补）
 
 界面文字**没有加粗可用**。`'**立刻生效**'` 不会被渲染成粗体，只会把**四个星号
