@@ -185,4 +185,45 @@ extension on _RecorderPageState {
     // ⚠️ 也放在所有「读盘」之后：计划要索引 / 标签 / 归档记录三样都在手。
     await _offerCleanup();
   }
+
+// ── T26③ 第 5 刀补：下面这个和 `_refreshBackup` 是同一件事
+// （都是「和电脑端通一次气」），所以归到这一块来。
+
+  /// 探一次电脑端在不在线上。
+  ///
+  /// **没填地址就不探** —— 没有地址可探，也不该显示一个探测出来的状态。
+  ///
+  /// ⚠️ M5 起判据从「这个端口上有 HTTP 响应」换成了**真的调一次
+  /// `GET /api/v1/health` 并核对 `service`**。理由是这一页现在承诺的是
+  /// 「录像能传上去」：同端口上任何一个别的 HTTP 服务，旧判据都会给一个绿灯，
+  /// 而用户会照着一个假绿灯等一晚上。`lan_probe.dart` 里那段自认的债就是这个。
+  Future<void> _probeHost() async {
+    final address = _identity?.hostAddress ?? '';
+    final port = _identity?.hostPort ?? defaultHostPort;
+    if (address.isEmpty) {
+      if (mounted) setState(() => _hostOnline = false);
+      return;
+    }
+
+    if (mounted) setState(() => _probingHost = true);
+
+    var online = false;
+    try {
+      // 这一趟**不带凭据**：健康检查是入网之前就要能调的（文档 §2.1），
+      // 而且「在不在」与「认不认我」是两件事 —— 混在一起的话，一台
+      // 把我们忘了的电脑端会显示成「离线」，用户就会去改地址。
+      online = (await UploadClient(address: address, port: port).health()).isVidLog;
+    } on Object {
+      // 拒绝连接 / 超时 / 解析不了地址 / 不是我们认得的那台 —— 对界面
+      // 来说都是同一件事：连不上。
+      online = false;
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _hostOnline = online;
+      _probingHost = false;
+    });
+  }
 }
