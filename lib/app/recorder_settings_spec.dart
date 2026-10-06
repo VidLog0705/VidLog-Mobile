@@ -118,7 +118,7 @@ extension on _RecorderPageState {
               Text(_modeTitle(_mode),
                   style: const TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
-              Text(_modeBlurb(_mode), style: const TextStyle(fontSize: 12)),
+              Text(_modeBlurb(_mode), style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
         ),
@@ -136,11 +136,11 @@ extension on _RecorderPageState {
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           '相机扫到的条码短于这个位数就当成误识，不触发录制 —— '
           '挡的是货架条码、包装上的别的码、别家快递的面单这类东西。\n'
           '⚠️ 只管相机：手工敲进去的单号不受这一项限制。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );
@@ -180,7 +180,7 @@ extension on _RecorderPageState {
               : null,
         ),
         const SizedBox(height: 8),
-        Text(_codecBlurb(_codec), style: const TextStyle(fontSize: 12)),
+        Text(_codecBlurb(_codec), style: Theme.of(context).textTheme.bodySmall),
       ],
     );
   }
@@ -208,7 +208,7 @@ extension on _RecorderPageState {
               : null,
         ),
         const SizedBox(height: 8),
-        Text(_resolutionBlurb(_resolution), style: const TextStyle(fontSize: 12)),
+        Text(_resolutionBlurb(_resolution), style: Theme.of(context).textTheme.bodySmall),
 
         const SizedBox(height: 16),
 
@@ -232,10 +232,7 @@ extension on _RecorderPageState {
                     ? '实际按 ${effective.label} 录制。'
                     : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
                         '$reason',
-            style: TextStyle(
-              fontSize: 12,
-              color: reason == null ? null : Palette.amber,
-            ),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: reason == null ? null : Palette.amber),
           ),
         ),
       ],
@@ -264,9 +261,9 @@ extension on _RecorderPageState {
               : null,
         ),
         const SizedBox(height: 8),
-        const Text(
+        Text(
           '水印随录像变换，成片始终位于视觉右上角并保持正向可读。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );
@@ -300,13 +297,13 @@ extension on _RecorderPageState {
         // 「自动停止，到点前 30 秒语音提醒」，而裁决是**照规格 §3.3.4**
         // （先问、1 分钟没人理才停）。说明不跟着改的话，界面上就是一句假话 ——
         // 用户会站在原地等那句「还有 30 秒」，然后被直接停掉。
-        const Text(
+        Text(
           '不管画面动不动，录满这个时长就语音问一次'
           '「录制时间即将超时，是否需要停止录制？」：\n'
           '· 点【停止】→ 立刻停；\n'
           '· 点【继续】→ 接着录，之后每隔 5 分钟再问一次；\n'
           '· 问完 1 分钟没人理 → 自动停。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
 
         const Divider(height: 28),
@@ -322,10 +319,10 @@ extension on _RecorderPageState {
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           '画面一直不动、够这个时长就停（§3.3.3）。这条不出声 —— '
           '收尾时用户多半已经走开，补一句只会像设备在自言自语。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );
@@ -393,11 +390,11 @@ extension on _RecorderPageState {
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           '⚠️ 这一栏永不自动删：还没备份上去的录像在手机上是唯一一份，'
           '删了就永久没了（不变量 I2）。它到期的动作只有提醒 —— '
           '列表标红 + 顶部催上传。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
 
         const Divider(height: 28),
@@ -416,10 +413,10 @@ extension on _RecorderPageState {
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           '备份成功后，手机上的原片再留多久 —— 从「备份成功那一刻」起算，'
           '不是从录完起算。这一栏到点会真的删手机上的那份。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );
@@ -434,7 +431,7 @@ extension on _RecorderPageState {
         builder: (context) => AlertDialog(
           key: const Key('settings-retention-help-dialog'),
           title: const Text('保留期怎么算'),
-          content: const SingleChildScrollView(
+          content: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -442,20 +439,20 @@ extension on _RecorderPageState {
                 Text(
                   '⚠️「备份后保留」那一栏：备份成功后，手机上的原片再留多久。'
                   '从「备份成功那一刻」起算，不是从录完起算。',
-                  style: TextStyle(fontSize: 13),
+                  style: Theme.of(context).textTheme.labelLarge,
                 ),
                 SizedBox(height: 10),
                 Text(
                   '⚠️「未备份保留」那一栏永不自动删除 —— 那是唯一一份，'
                   '删了就没了。它到期的动作只有提醒（列表标红 + 催上传），'
                   '从「录完那一刻」起算。',
-                  style: TextStyle(fontSize: 13),
+                  style: Theme.of(context).textTheme.labelLarge,
                 ),
                 SizedBox(height: 10),
                 Text(
                   '⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动'
                   '（硬性豁免，关不掉），所以它实际是「备份成功后最快 24 小时清理」。',
-                  style: TextStyle(fontSize: 13),
+                  style: Theme.of(context).textTheme.labelLarge,
                 ),
                 SizedBox(height: 10),
                 Text(
@@ -463,7 +460,7 @@ extension on _RecorderPageState {
                   '今天不会有任何文件自动被删。想现在删就用备份页每一条右边的'
                   '垃圾桶图标（那会先跟电脑端核对，核对不上就不删）。'
                   '另外【被锁定】的证据永远不清。',
-                  style: TextStyle(fontSize: 13),
+                  style: Theme.of(context).textTheme.labelLarge,
                 ),
               ],
             ),
@@ -502,7 +499,7 @@ extension on _RecorderPageState {
         // 「自定义」这一项不是一个值，是一个入口 —— 选中它只是打开输入框。
         DropdownMenuItem(
           value: _customSentinel,
-          child: Text('自定义…', style: TextStyle(fontSize: 13)),
+          child: Text('自定义…', style: Theme.of(context).textTheme.labelLarge),
         ),
       ],
       // `_settingsReady`：盘上的设置还没读出来时不给改 ——
@@ -592,10 +589,10 @@ extension on _RecorderPageState {
                 '只压询问时机，不动档位本身，也不碰静止停录。',
               ),
             ),
-            const Text(
+            Text(
               '重启 App 自动归位（关）—— 它不写进配置。'
               '所以做完验收记得自己也关掉：开着它，真实录制会在开录 20 秒后就被问一次。',
-              style: TextStyle(fontSize: 12),
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         ),
@@ -650,7 +647,7 @@ extension on _RecorderPageState {
                   '【语音提示】是立刻生效的。\n'
                   '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
                   '要等清理执行层接通（M6），在那之前任何文件都不会被删。',
-          style: const TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ),
     );
@@ -667,9 +664,9 @@ extension on _RecorderPageState {
       children: [
         const Text('启动时收尾的孤儿分段', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '这些是上次没录完就被中断的会话。它们已经封文件、算哈希、写进索引。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
         for (final outcome in _recovered)

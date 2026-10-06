@@ -118,13 +118,13 @@ extension on _RecorderPageState {
   ///
   /// **不画一块假的取景框**：没开相机就没有画面，画个框在那儿等于告诉用户
   /// 「把面单放进去」，而他放进去什么都不会发生。
-  Widget _idleScreen() => const Center(
+  Widget _idleScreen() => Center(
         child: Padding(
           padding: EdgeInsets.all(32),
           child: Text(
             '相机还没开。\n点下面的【开始】重试。',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Palette.onDarkFaint, fontSize: 14, height: 1.6),
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Palette.onDarkFaint, height: 1.6),
           ),
         ),
       );
@@ -147,20 +147,20 @@ extension on _RecorderPageState {
                 _clockBlockedReason!,
                 key: const Key('clock-blocked-reason'),
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Palette.onDark, fontSize: 15, height: 1.6),
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Palette.onDark, height: 1.6),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 '视频里的时间必须能追溯到本机之外的某个来源 —— 否则改一下系统时间就能伪造'
                 '「更早的证据」。联一次网取到时间之后，以后一直断网也能照常录。',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Palette.onDarkFaint, fontSize: 12, height: 1.6),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.onDarkFaint, height: 1.6),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 '⚠️ 只挡住新录：已有的录像照常可以检索、回放、导出、交付。',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Palette.onDarkFaint, fontSize: 12, height: 1.6),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.onDarkFaint, height: 1.6),
               ),
               const SizedBox(height: 16),
               FilledButton(
@@ -203,15 +203,12 @@ extension on _RecorderPageState {
               child: _strokedText(
                 _clockStamp(_now),
                 key: const Key('recorder-clock'),
-                style: const TextStyle(
-                  color: Palette.onDark,
-                  fontSize: 26,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 1,
+                style:
                   // ⚠️ 两个 Text 叠出来的是**同一个字符串**，行高必须一致，
                   // 否则描边层与填充层会错开半个像素、字看起来是糊的。
-                  height: 1.1,
-                ),
+                  // `!`：`_strokedText` 的 style 是非空的，而 `textTheme.headlineSmall`
+                  // 按类型是可空的。
+                  Theme.of(context).textTheme.headlineSmall!.copyWith(color: Palette.onDark, fontWeight: FontWeight.w600, letterSpacing: 1, height: 1.1),
               ),
             ),
 
@@ -242,7 +239,7 @@ extension on _RecorderPageState {
                     // 一行 —— 挤在这一行里只能省略号收尾，而截断的单号
                     // 看起来仍然像个完整单号，抄下来就是错的。
                     recording ? '录制中' : _status,
-                    style: const TextStyle(color: Palette.onDark, fontSize: 16),
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Palette.onDark),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -251,11 +248,7 @@ extension on _RecorderPageState {
                   const SizedBox(width: 8),
                   Text(
                     '已录 ${_two(_elapsed.inMinutes)}:${_two(_elapsed.inSeconds % 60)}',
-                    style: const TextStyle(
-                      color: Palette.onDark,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w300,
-                    ),
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Palette.onDark, fontWeight: FontWeight.w300),
                   ),
                 ],
                 const SizedBox(width: 8),
@@ -271,7 +264,7 @@ extension on _RecorderPageState {
             Text(
               '工作区 $_sessionCount（未收尾 $_pendingCount）'
               ' · 索引 $_entryCount · 打点 $_punchCount',
-              style: const TextStyle(color: Palette.onDarkSoft, fontSize: 12),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.onDarkSoft),
             ),
           ],
         ),

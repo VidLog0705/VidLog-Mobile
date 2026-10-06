@@ -722,10 +722,10 @@ class _RecorderPageState extends State<RecorderPage> {
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               '填电脑端那台机器的局域网 IP。填完还要配对一次它才会收下'
               '这台手机的录像。',
-              style: TextStyle(fontSize: 12, color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
             ),
           ],
         ),

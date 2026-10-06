@@ -179,12 +179,12 @@ extension on _RecorderPageState {
             for (final hint in hints)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Text(hint, style: const TextStyle(fontSize: 13)),
+                child: Text(hint, style: Theme.of(context).textTheme.labelLarge),
               ),
             const SizedBox(height: 4),
-            const Text(
+            Text(
               '手机上的原文件还在，不会因为传不上去就没了。',
-              style: TextStyle(fontSize: 12, color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
             ),
           ],
         ),

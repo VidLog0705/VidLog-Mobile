@@ -177,7 +177,7 @@ extension on _RecorderPageState {
             '请到那台电脑上点【同意】—— 屏幕上会弹出'
             '「${identity.deviceName} 申请连接」。\n\n'
             '已经等了 ${value.inSeconds} 秒。',
-            style: const TextStyle(fontSize: 13),
+            style: Theme.of(context).textTheme.labelLarge,
           ),
         ),
         actions: [
@@ -228,7 +228,7 @@ extension on _RecorderPageState {
               '二维码里写的地址是 $current，手机连不上。\n\n'
               '一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的不一定是你能连上的那个。'
               '在电脑端上执行 ipconfig 看一下它的局域网地址，填在这里再试一次。',
-              style: const TextStyle(fontSize: 13),
+              style: Theme.of(context).textTheme.labelLarge,
             ),
             const SizedBox(height: 16),
             TextField(

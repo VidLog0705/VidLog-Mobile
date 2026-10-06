@@ -695,8 +695,19 @@ void main() {
     final file = File('${documents.path}/vidlog/settings.json');
 
     final box = find.byKey(const Key('settings-record-audio-switch'));
+    // ⚠️ 两句都要，缺一不可：
+    //   · `scrollUntilVisible` 只滚到**目标进 widget 树**（列表是懒加载的，
+    //     进 cacheExtent 就算数）—— 卡片这时可能还在视口**外面**；
+    //   · `ensureVisible` 才管**滚进视口**。
+    // T7 第二步把 13 号字升到 14 之后，这个开关中心点落到 y=1418，而测试窗口
+    // 只有 1400 高 ⇒ 只靠前一句的话差 18px 露不出来，`tap` 落空（报
+    // 「would not hit test」），设置没改、`settings.json` 也没建。
+    // 反过来说，只留后一句也不行：卡片压根还没进树，`ensureVisible` 会
+    // `Bad state: No element`。（两条都是 2026-10-06 实测到的。）
     await tester.scrollUntilVisible(box, 200,
         scrollable: find.byType(Scrollable).first);
+    await tester.ensureVisible(box);
+    await tester.pumpAndSettle();
     expect(tester.widget<SwitchListTile>(box).onChanged, isNotNull,
         reason: '设置已经读出来了（`_settingsReady`），这个开关就不该是灰的');
 

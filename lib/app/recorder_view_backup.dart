@@ -92,7 +92,7 @@ extension on _RecorderPageState {
                       identity?.deviceName ?? defaultDeviceName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w600),
+                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
                     ),
                   ),
                   IconButton(
@@ -116,14 +116,14 @@ extension on _RecorderPageState {
                   const SizedBox(width: 6),
                   Text(
                     ip ?? '未连局域网',
-                    style: const TextStyle(fontSize: 13, color: Palette.muted),
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Palette.muted),
                   ),
                 ],
               ),
               const SizedBox(height: 2),
-              const Text(
+              Text(
                 '电商发货 / 退货视频取证系统',
-                style: TextStyle(fontSize: 12, color: Palette.muted),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
               ),
             ],
           ),
@@ -173,7 +173,7 @@ extension on _RecorderPageState {
         children: [
           Icon(Icons.circle, size: 7, color: fg),
           const SizedBox(width: 5),
-          Text(text, style: TextStyle(fontSize: 12, color: fg)),
+          Text(text, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: fg)),
         ],
       ),
     );
@@ -289,7 +289,7 @@ extension on _RecorderPageState {
                     alignment: Alignment.centerLeft,
                     child: Text(
                       value,
-                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),
@@ -297,7 +297,7 @@ extension on _RecorderPageState {
                   const SizedBox(width: 2),
                   Text(
                     unit,
-                    style: const TextStyle(fontSize: 12, color: Palette.muted),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
                   ),
                 ],
               ],
@@ -307,14 +307,14 @@ extension on _RecorderPageState {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
             ),
             if (note != null)
               Text(
                 note,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 10, color: Palette.muted),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Palette.muted),
               ),
           ],
         ),
@@ -417,12 +417,9 @@ extension on _RecorderPageState {
                 pending > 0
                     ? '$pending 个未备份，${paired ? '连上电脑后会自动传过去' : '连接后自动备份'}'
                     : '${_sessions.length} 个都已经备份到电脑端了。',
-                style: TextStyle(
+                style: 
                   // 加大加粗：整页最要紧的一句话，原来它是这一块最小的字。
-                  fontSize: 15,
-                  fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400,
-                  color: pending > 0 ? Palette.ink : Palette.green,
-                ),
+                  Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400, color: pending > 0 ? Palette.ink : Palette.green),
               ),
             ],
             const SizedBox(height: 4),
@@ -430,12 +427,12 @@ extension on _RecorderPageState {
               hasHost
                   ? '${name.isEmpty ? '电脑端' : name} · $address'
                   : '还没填电脑端地址。',
-              style: const TextStyle(fontSize: 12, color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
             ),
             if (_nextRetryAt != null)
               Text(
                 '下次自动重试 ${_stamp(_nextRetryAt!)}',
-                style: const TextStyle(fontSize: 12, color: Palette.muted),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
               ),
             const SizedBox(height: 10),
             // 主按钮**通栏**（照草图）：这一页上用户最常做的一件事就是
@@ -499,12 +496,12 @@ extension on _RecorderPageState {
                           '按保留期的清理也不会自己跑：每次开 App 会先算一遍、问过你才删。'
                       : '电脑端现在不在线，可重新连接。'
                           '收尾好的录像会在连上之后自己传过去。'),
-              style: const TextStyle(fontSize: 12),
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-            const Text(
+            Text(
               '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
               '（一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的地址不一定是你能连上的那个。）',
-              style: TextStyle(fontSize: 11, color: Palette.muted),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Palette.muted),
             ),
           ],
         ),
@@ -538,7 +535,7 @@ extension on _RecorderPageState {
         children: [
           Icon(paired ? Icons.link : Icons.link_off, size: 12, color: fg),
           const SizedBox(width: 4),
-          Text(text, style: TextStyle(fontSize: 12, color: fg)),
+          Text(text, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: fg)),
         ],
       ),
     );

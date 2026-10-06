@@ -207,13 +207,13 @@ extension on _RecorderPageState {
             child: const Icon(Icons.settings, color: Palette.onDark, size: 26),
           ),
           const SizedBox(width: 12),
-          const Column(
+          Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('设置',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
               SizedBox(height: 2),
-              Text('系统配置与功能管理', style: TextStyle(fontSize: 12)),
+              Text('系统配置与功能管理', style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
         ],
@@ -259,7 +259,7 @@ extension on _RecorderPageState {
                           style: const TextStyle(fontWeight: FontWeight.bold)),
                       if (blurb != null) ...[
                         const SizedBox(height: 2),
-                        Text(blurb, style: const TextStyle(fontSize: 12)),
+                        Text(blurb, style: Theme.of(context).textTheme.bodySmall),
                       ],
                     ],
                   ),
@@ -279,7 +279,7 @@ extension on _RecorderPageState {
   Widget _settingRow(String label, Widget control) {
     return Row(
       children: [
-        Expanded(child: Text(label, style: const TextStyle(fontSize: 14))),
+        Expanded(child: Text(label, style: Theme.of(context).textTheme.bodyMedium)),
         const SizedBox(width: 8),
         Expanded(child: control),
       ],
@@ -351,17 +351,17 @@ extension on _RecorderPageState {
           ],
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           '管的是这台手机现在出不出声：扫到不是同一件的包裹时出声提醒'
           '（规格 §3.3.2 错码保护），表盘滑过刻度时的「咔哒」声也归它。'
           '旁边有人、或者嫌吵时关掉。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '关掉只是不出声：屏幕上的提示和事件日志照旧，日志前面的图标会从 🔊 变成 🔇。'
           '立刻生效，不用重新开始工作 —— 它是唯一一项不用等的设置。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 4),
         // 这一行会随状态换内容：没有编排器时先说清「试听为什么按不动」，
@@ -370,7 +370,7 @@ extension on _RecorderPageState {
           _coordinator == null
               ? '⚠️ 试听暂时是灰的：语音通道要等第一次点【开始工作】才接上。'
               : '⚠️ 它管不到录像文件里有没有声音 —— 那是下面「录制声音」那一项。',
-          style: const TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );

@@ -62,12 +62,7 @@ extension on _RecorderPageState {
         waybill,
         key: const Key('recorder-waybill'),
         textAlign: TextAlign.center,
-        style: const TextStyle(
-          color: Palette.mediaRecord,
-          fontSize: 22,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1,
-        ),
+        style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Palette.mediaRecord, fontWeight: FontWeight.w700, letterSpacing: 1),
       );
 
   /// 底部浮层：刻度盘 → 时长兜底询问 → 抽屉面板 → 操作按钮 → 抽屉入口。
@@ -221,9 +216,9 @@ extension on _RecorderPageState {
                   color: Palette.onDark.withValues(alpha: open ? 1.0 : 0.85),
                 ),
                 const SizedBox(height: 2),
-                const Text(
+                Text(
                   '对焦',
-                  style: TextStyle(fontSize: 11, color: Palette.onDark),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Palette.onDark),
                 ),
               ],
             ),
@@ -340,7 +335,7 @@ extension on _RecorderPageState {
             ),
             child: Text(
               '$label ${_workSheet == sheet ? '▾' : '▸'}',
-              style: const TextStyle(color: Palette.onDarkSoft, fontSize: 13),
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Palette.onDarkSoft),
             ),
           ),
         );
@@ -407,10 +402,10 @@ extension on _RecorderPageState {
         const Text('手动输入（扫码失灵时的兜底）',
             style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           '规格 §3.2.2：框内始终识别不到时，用户必须能手动输入单号兜底，'
           '且不打断当前录制。',
-          style: TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
         TextField(
@@ -441,14 +436,14 @@ extension on _RecorderPageState {
       valueListenable: AppLog.instance.tail,
       builder: (context, events, child) {
         if (events.isEmpty) {
-          return const Center(child: Text('（还没有事件）', style: TextStyle(fontSize: 12)));
+          return Center(child: Text('（还没有事件）', style: Theme.of(context).textTheme.bodySmall));
         }
 
         return ListView.builder(
           itemCount: events.length,
           itemBuilder: (context, index) => Padding(
             padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Text(events[index], style: const TextStyle(fontSize: 12)),
+            child: Text(events[index], style: Theme.of(context).textTheme.bodySmall),
           ),
         );
       },
@@ -473,7 +468,7 @@ extension on _RecorderPageState {
           spacing: 6,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            const Text('日志级别', style: TextStyle(fontSize: 12)),
+            Text('日志级别', style: Theme.of(context).textTheme.bodySmall),
             for (final level in AppLogLevel.values)
               ChoiceChip(
                 label: Text(level.wire),
@@ -499,7 +494,7 @@ extension on _RecorderPageState {
         Text(
           '单段时长 ${RecordingCoordinator.defaultSegmentDuration.inMinutes} 分钟 —— '
           '崩溃最多丢这一段，所以每录满一段就自动封一个文件',
-          style: const TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
         if (_recovered.isNotEmpty) ...[
           const Divider(height: 20),
@@ -524,7 +519,7 @@ extension on _RecorderPageState {
         const SizedBox(height: 4),
         Text(
           _diagnosticsNote ?? '遇到问题时点它，把它发回来。',
-          style: const TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );

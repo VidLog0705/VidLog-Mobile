@@ -112,7 +112,7 @@ extension on _RecorderPageState {
                       if (type != null) _typeBadge(type),
                       Text(
                         '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}',
-                        style: const TextStyle(fontSize: 12, color: Palette.muted),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
                       ),
                     ],
                   ),
@@ -175,7 +175,7 @@ extension on _RecorderPageState {
           // 名字走 `BusinessType.displayName` —— 与详情页那个胶囊同一个字符串。
           Text(
             type.displayName,
-            style: TextStyle(fontSize: 11, color: look.color),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(color: look.color),
           ),
         ],
       ),
@@ -429,11 +429,11 @@ extension on _RecorderPageState {
             child: TextField(
               key: const Key('records-search'),
               controller: _recordsSearch,
-              style: const TextStyle(fontSize: 14),
+              style: Theme.of(context).textTheme.bodyMedium,
               decoration: InputDecoration(
                 isDense: true,
                 hintText: '搜索单号或日期',
-                hintStyle: const TextStyle(fontSize: 13),
+                hintStyle: Theme.of(context).textTheme.labelLarge,
                 prefixIcon: const Icon(Icons.search, size: 20),
                 suffixIcon: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -488,7 +488,7 @@ extension on _RecorderPageState {
                     : (_recordsDay == null && _recordsSource == null
                         ? '本机还没有收尾入库的录像。'
                         : '现在这个筛选下没有录像。点上面那两个胶囊，选「全部」就都在了。'),
-                style: const TextStyle(fontSize: 13, color: Palette.muted),
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Palette.muted),
               ),
             )
           else
@@ -502,7 +502,7 @@ extension on _RecorderPageState {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
               children: [
-                const Text('每页', style: TextStyle(fontSize: 12, color: Palette.muted)),
+                Text('每页', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted)),
                 const SizedBox(width: 8),
                 DropdownButton<int>(
                   value: _recordsPageSize,
@@ -529,7 +529,7 @@ extension on _RecorderPageState {
                   onPressed:
                       page > 0 ? () => setState(() => _recordsPage = page - 1) : null,
                 ),
-                Text('${page + 1}/$pageCount', style: const TextStyle(fontSize: 13)),
+                Text('${page + 1}/$pageCount', style: Theme.of(context).textTheme.labelLarge),
                 IconButton(
                   tooltip: '下一页',
                   icon: const Icon(Icons.chevron_right),
@@ -585,7 +585,7 @@ extension on _RecorderPageState {
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         label: Text(
           '${selected == null ? '全部来源' : selected.displayName} ▾',
-          style: const TextStyle(fontSize: 12),
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ),
     );
@@ -605,7 +605,7 @@ extension on _RecorderPageState {
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       label: Text(
         '${day == null ? '全部日期' : dayStamp(day)} ▾',
-        style: const TextStyle(fontSize: 12),
+        style: Theme.of(context).textTheme.bodySmall,
       ),
       onPressed: _pickDay,
       onDeleted: day == null ? null : () => _applyFilter(() => _recordsDay = null),
@@ -657,7 +657,7 @@ extension on _RecorderPageState {
                 child: Text(all ? '取消全选' : '全选'),
               ),
               const Spacer(),
-              Text('已选 ${_selected.length} 条', style: const TextStyle(fontSize: 12)),
+              Text('已选 ${_selected.length} 条', style: Theme.of(context).textTheme.bodySmall),
             ],
           ),
         ),
