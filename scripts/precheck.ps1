@@ -75,20 +75,46 @@ $valuePatterns = @(
 $skipFile = '\.(md|txt|rst)$|(^|/)\.gitignore$|(^|/)\.gitattributes$|scripts/precheck\.ps1$'
 $skipExt  = '\.(png|jpg|jpeg|gif|ico|pdf|zip|7z|exe|dll|so|dylib|a|aar|jar|mp4|mp3|woff2?)$'
 
-$staged = @(& git diff --cached --name-only --diff-filter=ACM 2>$null)
-if ($staged.Count -eq 0) { $staged = @(& git diff --name-only --diff-filter=ACM HEAD 2>$null) }
+# ⚠️ 这道闸要挡的是**「正要推出去的东西」**，不只是「暂存区」。
+#
+# 原来只扫 `git diff --cached`（空就退到工作区 vs HEAD），于是**先 commit 再跑预检**
+# 就成了扫一个空集 —— 打出「没有待提交的改动」的绿，而那段内容下一秒就上远端。
+# 2026-10-06 实测撞上：手机仓积了 20 个未推提交，这一节照样绿。
+# 所以把**「已提交、还没推出去」**那一段也并进来（以 `@{u}` 为界）。
+#
+# ⚠️ `-c core.quotepath=false` 是**承重的**（桌面仓 `precheck.ps1` 2026-10-02 已踩过）：
+# git 默认把非 ASCII 文件名转义成 `"\346\226\207…"`，下面那句 `Test-Path` 认不出来
+# ⇒ 中文名的文件被 **静默跳过**，而本仓从 `AGENTS.md` 到 `docs/` 大半是中文名。
+$staged  = @(& git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM 2>$null)
+$staged += @(& git -c core.quotepath=false diff --name-only --diff-filter=ACM 2>$null)
+
+$upstream = @(& git rev-parse --abbrev-ref '@{u}' 2>$null)
+if ($LASTEXITCODE -eq 0 -and $upstream -and $upstream[0] -notmatch '@\{u\}') {
+    $staged += @(& git -c core.quotepath=false diff --name-only --diff-filter=ACM '@{u}..HEAD' 2>$null)
+} else {
+    Warn '这个分支没有上游（@{u}）—— 只扫了工作区与暂存区，已提交的内容这一节没扫到'
+}
+$staged = @($staged | Where-Object { $_ } | Select-Object -Unique)
 
 if ($staged.Count -gt 0) {
     $hits = @()
+    $scanned = 0
+    $missing = @()
     foreach ($f in $staged) {
         if (-not $f) { continue }
-        if (-not (Test-Path $f)) { continue }
+        if (-not (Test-Path -LiteralPath $f)) { $missing += $f; continue }
         if ($f -match $skipExt) { continue }
         if ($f -match $skipFile) { continue }
+        $scanned++
         foreach ($pat in $valuePatterns) {
-            $m = Select-String -Path $f -Pattern $pat -AllMatches -ErrorAction SilentlyContinue
+            $m = Select-String -LiteralPath $f -Pattern $pat -AllMatches -ErrorAction SilentlyContinue
             if ($m) { $hits += $m }
         }
+    }
+    # ⚠️ 跳过必须**看得见** —— 上面那个「静默跳过中文名文件」的坑，症状就是绿的。
+    if ($missing.Count -gt 0) {
+        Warn ("这些文件在改动清单里、盘上却找不到，没扫成（多半是 5.1 把中文名转义了，" +
+              "用 pwsh 跑就不会）：$($missing -join ', ')")
     }
     if ($hits.Count -gt 0) {
         Fail "疑似真实密钥出现在待提交内容里（$($hits.Count) 处）"
@@ -97,9 +123,12 @@ if ($staged.Count -gt 0) {
             Info ("    {0}:{1}  {2}" -f $_.Path, $_.LineNumber, $t.Substring(0, [Math]::Min(90, $t.Length)))
         }
         Info '    确认误报就忽略；是真密钥，改用环境变量或 GitHub Secrets，并立刻轮换。'
-    } else { Pass '未发现明文密钥' }
+    } else {
+        # 把**扫了几个**印出来：0 个也照样绿的话，这个洞就又会藏起来。
+        Pass "未发现明文密钥（扫了 $scanned 个文件）"
+    }
 } else {
-    Pass '没有待提交的改动'
+    Pass '工作区、暂存区、未推提交里都没有改动 —— 这一节没有可扫的内容'
 }
 
 # ─────────────────────────────────────────────────────────────
