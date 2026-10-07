@@ -35,7 +35,8 @@ import '../recording/business_type.dart';
 /// ---
 ///
 /// **2026-10-07（改造清单「暗色」）：本类不再是一组常量，而是一整套跟主题走的颜色**
-/// （`ThemeExtension`）—— 亮色那一套是 [Palette.light]。
+/// （`ThemeExtension`）—— 亮色是 [Palette.light]，暗色是 [Palette.dark]，
+/// 由 `main.dart` 按系统偏好挑一套（`themeMode: ThemeMode.system`）。
 ///
 /// ⚠️ **界面里取色写 `context.palette.x`**（见文件末尾的 `PaletteOf`），
 /// **不要**写 `Palette.light.x`：那等于把亮色钉死在那个控件上，系统切到暗色时
@@ -106,6 +107,80 @@ class Palette extends ThemeExtension<Palette> {
     greenSolid: Color(0xFF117946),
     dangerSolid: Color(0xFFC92A2A),
     onAccent: Color(0xFFFFFFFF),
+  );
+
+  /// 暗色那一套（2026-10-07）。
+  ///
+  /// **来源：电脑端那份暗色表**（`VidLog.Desktop.Core/Theme/ThemePalette.cs`
+  /// 的 `Dark` 字典，Tailwind slate 系）。理由是需求方认下的那句话：
+  /// **同一个产品的两端，暗色不该是两个暗。**
+  ///
+  /// ⚠️ **对齐的规则是「能对齐就对齐，对不齐的把数写在这儿」** —— 不是照抄。
+  /// 对不齐的只有五支，全都卡在**同一块底**上：本仓的绊线
+  /// （`test/palette_test.dart`）量的是**全组合**（7 支字 × 7 块底），
+  /// 而电脑端那张表是**逐对**量的、并且没有 `hairline`（slate-700 `#334155`）
+  /// 这么一块「既是指示器底、又是分隔线底」的档。把电脑端那五支原样搬过来，
+  /// 这条绊线会红十条（实测）：
+  ///
+  /// | 本仓这一支 | 电脑端那一支 | 压 `hairline` | 改成 | 压 `hairline` |
+  /// |---|---|---|---|---|
+  /// | `primary` | `Accent` `#60A5FA`（blue-400） | 4.07 | blue-300 `#93C5FD` | 5.74 |
+  /// | `green` | `Success` `#10B981`（emerald-500） | 4.08 | emerald-400 `#34D399` | 5.39 |
+  /// | `muted` | `TextSecondary` `#94A3B8` | 4.04 | slate-300 `#CBD5E1` | 6.97 |
+  /// | `danger` | `Danger` `#EF4444`（red-500） | **2.75** | red-300 `#FCA5A5` | 5.46 |
+  /// | `faint` | `TextDisabled` `#64748B` | **2.18**（门槛 3:1） | slate-400 `#94A3B8` | 4.04 |
+  ///
+  /// 其余**逐字对齐**：`page` / `card` / `hairline` / `blueTint` / `amberTint` /
+  /// `ink` / `primarySolid` 与电脑端那七个键同值。
+  /// `amber` 本来也差一档（amber-400 `#FBBF24`），但 amber-500 `#F59E0B`
+  /// **实测过得去**（最差 `hairline` 4.82）⇒ 按规则回到电脑端那一支。
+  ///
+  /// ⚠️ 暗色下**最紧的一对是 `violet` 压 `hairline` 5.19:1**（全组合 67 对里最差）。
+  /// 再往下调任何一支之前先跑那条绊线。
+  ///
+  /// ⚠️ `greenSolid` / `dangerSolid` **与亮色同值**，是有意的：压在它们上面的是
+  /// 白字，白压这两个绿/红本来就是 5.46:1 —— 提亮只会两头都变差
+  /// （电脑端 `Success` / `Danger` 两套同值，同一条理由，`ThemePalette.cs` 里写着）。
+  ///
+  /// ⚠️ 暗色独有的一个**看得见**的后果（量出来的，不是猜的）：
+  /// `blueTint` `#172554` 与 `card` `#1E293B` **只差 1.00:1**（亮色是 1.12:1）
+  /// ⇒ 设置页那两块说明底在暗色下**不再读得出是一块块**。
+  /// 电脑端是同一对（`AccentWeak` / `Surface`，同两个色、同 1.00:1）——
+  /// 所以这是「跟着电脑端走」的结果，不是本仓走偏。真机上觉得糊再说。
+  static const dark = Palette(
+    brightness: Brightness.dark,
+
+    // ── 与电脑端那张表逐字同值的 ──
+    page: Color(0xFF0F172A), // slate-900（= PageBackground）
+    card: Color(0xFF1E293B), // slate-800（= Surface）
+    hairline: Color(0xFF334155), // slate-700（= CardBorder）
+    blueTint: Color(0xFF172554), // blue-950（= AccentWeak）
+    amberTint: Color(0xFF422006), // amber-950（= WarningSurface）
+    ink: Color(0xFFF1F5F9), // slate-100（= TextPrimary）
+    amber: Color(0xFFF59E0B), // amber-500（= Warning）
+    primarySolid: Color(0xFF2563EB), // blue-600（= AccentSolid）
+
+    // ── 按上表「对不齐」那一栏改过的 ──
+    primary: Color(0xFF93C5FD), // blue-300（电脑端 blue-400 压 hairline 只有 4.07）
+    green: Color(0xFF34D399), // emerald-400（10B981 只有 4.08）
+    muted: Color(0xFFCBD5E1), // slate-300（94A3B8 只有 4.04）
+    danger: Color(0xFFFCA5A5), // red-300（EF4444 压 hairline 2.75、压 card 3.89）
+    faint: Color(0xFF94A3B8), // slate-400（64748B 只有 2.18，连 3:1 都不到）
+
+    // ── 电脑端没有对应角色的 ──
+    // `violet` 只当图标（见亮色那支的说明），电脑端没有紫那一档；按另外三支
+    // 同样的步进定 indigo-300，压 hairline 5.19 —— 全组合里最紧的一对。
+    violet: Color(0xFFA5B4FC),
+    // 暗底的浅底取的是 Tailwind 的「xx-950」那一族（亮色取的是 xx-50/100），
+    // 与另外三支同一个做法。`greenTint` 电脑端没有（那张表里没有绿色面）。
+    greenTint: Color(0xFF022C22), // emerald-950
+    violetTint: Color(0xFF1E1B4B), // indigo-950
+    // 与亮色同值，见类注释。
+    greenSolid: Color(0xFF117946),
+    dangerSolid: Color(0xFFC92A2A),
+    // 暗色下 `primary` / `danger` 是**浅**的，压在上面的字得是**深**的 ——
+    // 取的就是暗色的页面底（电脑端没有这个角色：它的强调色底永远够深、字永远白）。
+    onAccent: Color(0xFF0F172A),
   );
 
   /// 这一套是亮还是暗。
@@ -296,7 +371,9 @@ class Palette extends ThemeExtension<Palette> {
   /// ⚠️ **它不管 `ColorScheme` 那三个实心角色**（`onPrimary` / `onSecondary` /
   /// `onError`）—— 那三个的底跟主题走，读的是实例字段 [onAccent]。
   ///
-  /// 这些底里最亮的也就是 [primarySolid]（对白 5.48:1），所以它处处安全。
+  /// 这些底里最亮的也就是 [primarySolid]（对白**亮色 5.47:1、暗色 5.17:1**；
+  /// 2026-10-07 之前这里写的是手算的 `5.48`，量出来对不上，已改）
+  /// —— 两套下它都是这三个实心底里最浅的那个，所以白字处处安全。
   static const onDark = Color(0xFFFFFFFF);
 
   /// 压在深底上的**次要**字与图标（改版前是 `Colors.white70`）。
@@ -389,10 +466,15 @@ extension PaletteOf on BuildContext {
 /// （`cleanup-audit.jsonl` 两端共用），用户认不出 `deleted` 是什么意思，
 /// 全靠这个色和旁边那个词。判错了不会有任何测试喊。
 ///
-/// ⚠️ **每一对的对比度都是量出来的**（WCAG，压在**它自己那个浅底**上）：
-/// `deleted` 绿 4.97:1、`refused` 蓝 4.79:1、`deleting` 琥珀 4.57:1、
-/// `failed` 红 4.55:1、认不出的灰 4.55:1 —— 五对都过了 4.5:1。
+/// ⚠️ **每一对、在两套主题下的对比度都是量出来的**（WCAG，压在**它自己那个底**上）：
+/// - 亮色：`deleted` 绿 4.97:1、`refused` 蓝 4.79:1、`deleting` 琥珀 4.57:1、
+///   `failed` 红 4.55:1、认不出的灰 4.55:1 —— 五对都过了 4.5:1。
+/// - 暗色（2026-10-07 补量）：绿 7.88、蓝 8.15、琥珀 6.79、红 5.46、灰 6.97。
+///
 /// 改这儿任何一支色**要重新量**，别照着别的屏抄一个值。
+///
+/// ⚠️ 暗色那几个数**也**被 `palette_test.dart` 那条全组合绊线盖着
+/// （它把 7 支字逐个压到这 5 块底上），所以下面这几对不会单独漂。
 ///
 /// ⚠️ `failed` 与认不出的那两对走的是 [Palette.hairline] 那个**灰底**
 /// （调色板里没有红的浅底，也不值得为这一个地方新开一支）——

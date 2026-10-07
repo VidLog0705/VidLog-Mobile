@@ -60,6 +60,14 @@ extension on _RecorderPageState {
       // 只有一个文件名和一行行 JSON**（2026-10-03 分不出 `+3` 与 `+4` 那一次）。
       _log('VidLog 手机端 $appVersion 起来了');
 
+      // ⚠️ **界面穿着哪一套，也在这儿说一次。**
+      // 主题是 `ThemeMode.system` 挑的（`main.dart`），而「我系统明明是暗的、
+      // 界面却是亮的」这句抱怨**没有别的可查之处** —— 平台偏好读不到时引擎
+      // 给的是亮色（`platform_dispatcher.dart:1240`），那是一个
+      // **合法但可能不是用户想要的**结果。这一行是唯一分得出它的东西。
+      // 运行中间换过的那一次在 `didChangePlatformBrightness` 里记（`recorder_page.dart`）。
+      _log('界面跟着系统走：$_themeName');
+
       _workspace = RecordingWorkspace('${root.path}/work');
       _index = JsonLinesRecordingIndex('${root.path}/index.jsonl');
       // 与电脑端同一个位置（`<root>/labels.jsonl`），键名也逐字相同 ——

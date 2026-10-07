@@ -174,7 +174,8 @@ class RecorderPage extends StatefulWidget {
   State<RecorderPage> createState() => _RecorderPageState();
 }
 
-class _RecorderPageState extends State<RecorderPage> {
+class _RecorderPageState extends State<RecorderPage>
+    with WidgetsBindingObserver {
   final _gateway = ChannelRecorderGateway();
 
   late RecordingWorkspace _workspace;
@@ -252,6 +253,16 @@ class _RecorderPageState extends State<RecorderPage> {
 
   /// 切后台时刷日志的那个监听器（见 `initState`）。
   AppLifecycleListener? _lifecycle;
+
+  /// 系统那一套是亮是暗。`ThemeMode.system` 挑的就是它（`main.dart`）。
+  ///
+  /// ⚠️ 只给日志用。**界面里不许拿它判自己该是什么色** —— 那样写出来的控件
+  /// 在主题里就是死色（`palette.dart` 那份说明里的同一条）。
+  String get _themeName =>
+      WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+              Brightness.dark
+          ? '暗色'
+          : '亮色';
 
   String _status = '正在准备…';
   bool _askingToContinue = false;
@@ -448,10 +459,28 @@ class _RecorderPageState extends State<RecorderPage> {
     // —— 顶层变量那种写法会被分析器判成「声明了没用到」，
     // 而那句警告说的其实是实话：它确实只是被「持有」着。
     _lifecycle = attachLogFlushOnPause();
+
+    // 系统换配色时界面会跟着整套换 —— 那一刻要留一条。
+    // 挂在这一页上（而不是 `main.dart` 那个 `VidLogApp`）：应用只有这一屏，
+    // 而且**日志要等 `_bootstrap` 里 `AppLog.init` 之后才落得了盘**，
+    // 那是这一页的生命周期里发生的事。启动时那一条在 `_bootstrap` 里记。
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// ⚠️ 这条只在**系统配色真的换了**时被调（同一个值不会重放）。
+  ///
+  /// 记它的理由与启动那一条不同：用户在暗色下待一会儿再报「看不清」时，
+  /// 光看启动那一条会以为整套是亮色的 —— 而**中间换过一次**这件事
+  /// 只有这里说得出来。
+  @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    _log('系统配色换了：$_themeName');
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _clockTick?.cancel();
     _heartbeat?.cancel();
     _retryTimer?.cancel();

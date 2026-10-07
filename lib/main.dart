@@ -55,6 +55,15 @@ class VidLogApp extends StatelessWidget {
   /// 是迟早的事，而且忘了改的那一处不会有任何测试喊。
   static final theme = _buildTheme(Palette.light);
 
+  /// 暗色那一份。**同一个 [_buildTheme]**（见上：一份色盘只走一个函数）。
+  ///
+  /// ⚠️ 电脑端在**系统偏好读不到时按亮色走**（`ThemePalette.IsDark`：
+  /// 只有注册表明确写着 `0` 才算深色）。手机端这一侧不需要那个判断 ——
+  /// `ThemeMode.system` 是框架的，读不到平台亮度时它给的也是亮色
+  /// （引擎源码写死的：`platform_dispatcher.dart:1240` 「If the platform has
+  /// no preference, [platformBrightness] defaults to [Brightness.light].」）。
+  static final darkTheme = _buildTheme(Palette.dark);
+
   /// 把一份色盘铺成一份主题。
   ///
   /// ⚠️ 这里的 `const` 全去掉了（原来整棵主题是 `const`）—— 色盘的值是
@@ -171,6 +180,12 @@ class VidLogApp extends StatelessWidget {
     return MaterialApp(
       title: 'VidLog',
       theme: theme,
+      darkTheme: darkTheme,
+      // ⚠️ **跟随系统**，不做应用内开关（需求方 2026-10-07 拍板）。
+      // 写成 `ThemeMode.light` 就退回改版前的样子，而且暗色那 19 支值
+      // 会变成一堆没人走的死代码 —— 但**不会**有测试喊（绊线量的是色值，
+      // 不是「有没有被用上」）。改这一行之前先想清楚。
+      themeMode: ThemeMode.system,
       // ⚠️ **主题切换是硬切。** 默认值（`kThemeAnimationDuration` = 200ms）会让
       // `ColorScheme` 与 `ThemeData` 那几百个属性在两种配色之间插值 ——
       // 而 `Palette` 的 `lerp` 是**过半才换**（见 `palette.dart`）⇒
