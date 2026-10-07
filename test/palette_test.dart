@@ -22,6 +22,8 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 /// 3. 发货 / 退货那两支色是调色板给的，**不是 Material 内置的那两个**
 /// 4. Chip 的底单独钉住（不钉就等于隐形）
 /// 5. **每个前景色对每个底色都达标** —— 改造清单 T2 的那条绊线
+///    （另加底栏那颗**选中胶囊**的底：接线钉住了、色值也量过两处 ——
+///    见 `suites` 里那一条，与 `assertContrast` 末尾那一段）
 /// 6. **媒体层那一族对纯黑够看** —— T3 加的那一档，门槛与理由都不同，见那条
 ///
 /// 「`lib/` 里不许有裸色」那条不在这个文件，在 `wiring_test.dart` ——
@@ -133,12 +135,13 @@ void main() {
   });
 
   test('★ 暗色不是亮色的副本', () {
-    // ⚠️ 底下那几条是**同一段代码跑两遍**，所以「暗色那 19 支照抄亮色」
+    // ⚠️ 底下那几条是**同一段代码跑两遍**，所以「暗色那 20 支照抄亮色」
     // 这件事在那几条里是**看不出来的**（亮色的值压在亮色的底上，当然达标）。
     // 只有这一条会红。
     final light = {
       'primary': Palette.light.primary,
       'blueTint': Palette.light.blueTint,
+      'navIndicator': Palette.light.navIndicator,
       'green': Palette.light.green,
       'greenTint': Palette.light.greenTint,
       'amber': Palette.light.amber,
@@ -160,6 +163,7 @@ void main() {
     final dark = {
       'primary': Palette.dark.primary,
       'blueTint': Palette.dark.blueTint,
+      'navIndicator': Palette.dark.navIndicator,
       'green': Palette.dark.green,
       'greenTint': Palette.dark.greenTint,
       'amber': Palette.dark.amber,
@@ -231,6 +235,27 @@ void main() {
     final theme = entry.value.theme;
     final p = entry.value.palette;
 
+    test('★ 底栏选中胶囊的底单独点名 —— 不钉就等于看不出选的是哪一栏（$whose）', () {
+      // ⚠️ 这条挡的是**接线**，不是**色值**：`assertContrast` 里那一对量的是
+      // `navIndicator` 这个值本身，把 `main.dart` 里的 `indicatorColor:` 那行
+      // 删掉，那边照样全绿（指示器会静静落回 `secondaryContainer` = `blueTint`，
+      // 暗色下与底栏底 1.00:1）。这就是 Chip 那条的同款坑。
+      expect(theme.navigationBarTheme.indicatorColor, p.navIndicator);
+
+      // ⚠️ 还有**第二半**：这个值本身得真的和底栏底分得开。
+      // 底栏底 = `surfaceContainer`（`navigation_bar.dart:1440`）。
+      // 门槛只有 1.05，**故意松**：非文字那档的 3:1 我们够不着
+      // （暗色实测 1.41、亮色 1.12），而「选中的是哪一栏」不只靠这颗胶囊
+      // —— 图标色（primary ↔ muted）、标签色、字重都在变。
+      // 它挡的就是这一支**原地退回** `blueTint` / `card` 那件事（1.00:1，
+      // 也就是这颗令牌当初被开出来的理由）。
+      expect(
+        contrastRatio(p.navIndicator, theme.colorScheme.surfaceContainer),
+        greaterThan(1.05),
+        reason: '选中胶囊与底栏底几乎同色 —— 看不出选的是哪一栏',
+      );
+    });
+
     test('★ Chip 的底必须单独钉住 —— 不钉就等于隐形（$whose）', () {
       // ⚠️ `_ChipDefaultsM3` **完全没有底色**（`_getBackgroundColor` 返回 null），
       // Chip 于是落到 `canvasColor`（= `colorScheme.surface` = **页面底色**）。
@@ -280,28 +305,30 @@ void main() {
   }
 }
 
+/// WCAG 2.x 的相对亮度：sRGB 分量先线性化，再加权。
+double _linear(double v) =>
+    v <= 0.03928 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+
+double _luminance(Color c) =>
+    0.2126 * _linear(c.r) + 0.7152 * _linear(c.g) + 0.0722 * _linear(c.b);
+
+/// 两个色的对比度。**提到顶层**是因为两处要用（全组合那条、底栏胶囊那条）——
+/// 各写一份的话，两处会渐渐不是一个公式。
+double contrastRatio(Color a, Color b) {
+  final x = _luminance(a), y = _luminance(b);
+  return (math.max(x, y) + 0.05) / (math.min(x, y) + 0.05);
+}
+
 /// 量**一整套**色盘：每一个前景色压每一个底色。
 ///
 /// ⚠️ 抽成函数是为了**两套各跑一遍**（`main` 里那个循环）。抽的时候留意一件事：
-/// 这段代码跑两遍并不能证明暗色那 19 支填对了 —— 见 `main` 里
+/// 这段代码跑两遍并不能证明暗色那 20 支填对了 —— 见 `main` 里
 /// 「暗色不是亮色的副本」那一条。
 void assertContrast(Palette p, String whose) {
-  // WCAG 2.x 的相对亮度：sRGB 分量先线性化，再加权。
-  double linear(double v) =>
-      v <= 0.03928 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
-
-  double luminance(Color c) =>
-      0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
-
-  double ratio(Color a, Color b) {
-    final x = luminance(a), y = luminance(b);
-    return (math.max(x, y) + 0.05) / (math.min(x, y) + 0.05);
-  }
-
   // ⚠️ 先用两个已知值校准**公式本身**。公式写错了，下面那个循环会一路
   // 「全绿」地放过所有颜色 —— 一条永远绿的绊线比没有绊线更糟。
   expect(
-    ratio(const Color(0xFFFFFFFF), const Color(0xFF000000)),
+    contrastRatio(const Color(0xFFFFFFFF), const Color(0xFF000000)),
     closeTo(21, 0.01),
     reason: '纯白压纯黑必须是 21:1 —— 不是的话下面这条公式就是错的',
   );
@@ -356,7 +383,7 @@ void assertContrast(Palette p, String whose) {
     for (final fg in colors.entries) {
       for (final bg in (on ?? backgrounds).entries) {
         pairs++;
-        final r = ratio(fg.value, bg.value);
+        final r = contrastRatio(fg.value, bg.value);
         if (r < floor) {
           failures.add('$kind ${fg.key} 压在 ${bg.key} 上只有 '
               '${r.toStringAsFixed(2)}:1，要求 $floor:1');
@@ -421,13 +448,26 @@ void assertContrast(Palette p, String whose) {
     on: <String, Color>{'primary': p.primary, 'danger': p.danger},
   );
 
+  // 底栏那颗**选中胶囊**的底（[Palette.navIndicator]）。它进不了上面那张
+  // 全组合的表，因为它**只载一支前景**：选中那颗图标
+  // （`navigation_bar.dart:1456`，selected 读 `onSecondaryContainer` = `primary`）。
+  // 选中那栏的**字**在底栏底上、不在胶囊上（指示器只包住图标），
+  // 所以那支字已经在 7×7 里了，不在这儿再量一遍。
+  check(
+    <String, Color>{'primary': p.primary},
+    4.5,
+    '压底栏胶囊',
+    on: <String, Color>{'navIndicator': p.navIndicator},
+  );
+
   // ⚠️ **扫了多少对也要断言。** 上面那几张名单哪天被谁清空或改名，循环
   // 一次都不跑，这条绊线会一声不响地全绿 —— 与「先 commit 再跑预检 = 扫个空集」
   // 是同一个坑（`precheck-ps1-vacuous-green` 那次）。
-  // 7 字 × 7 底 = 49，1 描边 × 7 = 7，6 媒体 × 1 = 6，3 实心，2 主题实心，共 67。
+  // 7 字 × 7 底 = 49，1 描边 × 7 = 7，6 媒体 × 1 = 6，3 实心，2 主题实心，
+  // 1 底栏胶囊，共 68。
   expect(
     pairs,
-    greaterThanOrEqualTo(67),
+    greaterThanOrEqualTo(68),
     reason: '$whose 只量了 $pairs 对 —— 颜色或底色的名单八成被动过，这条绊线正在空转',
   );
 

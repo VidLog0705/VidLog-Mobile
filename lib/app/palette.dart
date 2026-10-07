@@ -59,6 +59,7 @@ class Palette extends ThemeExtension<Palette> {
     required this.brightness,
     required this.primary,
     required this.blueTint,
+    required this.navIndicator,
     required this.green,
     required this.greenTint,
     required this.amber,
@@ -87,6 +88,9 @@ class Palette extends ThemeExtension<Palette> {
     brightness: Brightness.light,
     primary: Color(0xFF1160E6),
     blueTint: Color(0xFFE7F1FD),
+    // ⚠️ 与 `blueTint` **同值**，而且是有意的 —— 亮色这一半因此一个像素都没动
+    // （暗色下这两支走不同的值，那才是这一支存在的理由）。见字段说明。
+    navIndicator: Color(0xFFE7F1FD),
     green: Color(0xFF117946),
     greenTint: Color(0xFFE7F8F3),
     amber: Color(0xFF965C03),
@@ -147,6 +151,10 @@ class Palette extends ThemeExtension<Palette> {
   /// ⇒ 设置页那两块说明底在暗色下**不再读得出是一块块**。
   /// 电脑端是同一对（`AccentWeak` / `Surface`，同两个色、同 1.00:1）——
   /// 所以这是「跟着电脑端走」的结果，不是本仓走偏。真机上觉得糊再说。
+  ///
+  /// ⚠️ **唯一被单独拎出来救的一处是底栏那颗选中胶囊**（[navIndicator]，
+  /// 2026-10-07 需求方在「动 / 不动」之间选的 C）：那里零对比度等于
+  /// 「看不出选的是哪一栏」，是**功能**没了，不是好不好看的问题。
   static const dark = Palette(
     brightness: Brightness.dark,
 
@@ -168,6 +176,10 @@ class Palette extends ThemeExtension<Palette> {
     faint: Color(0xFF94A3B8), // slate-400（64748B 只有 2.18，连 3:1 都不到）
 
     // ── 电脑端没有对应角色的 ──
+    // 底栏选中胶囊的底。**暗色下有意与电脑端分道**（那边这一处用的是
+    // `AccentWeak` = 本仓 `blueTint`，那一对同样是 1.00:1，即看不见）。
+    // 值、以及它只载哪一支前景，见字段说明。
+    navIndicator: Color(0xFF1E3A8A), // blue-900
     // `violet` 只当图标（见亮色那支的说明），电脑端没有紫那一档；按另外三支
     // 同样的步进定 indigo-300，压 hairline 5.19 —— 全组合里最紧的一对。
     violet: Color(0xFFA5B4FC),
@@ -204,8 +216,38 @@ class Palette extends ThemeExtension<Palette> {
   /// 暗色下就白压白。实心块读 [primarySolid]。
   final Color primary;
 
-  /// 主蓝的浅底：胶囊 / 小标 / 图标底 / 选中的那一栏的指示器。
+  /// 主蓝的浅底：胶囊 / 小标 / 图标底 / 说明底 / 选中项的底。
+  ///
+  /// ⚠️ **底栏那颗选中胶囊不读它**，读 [navIndicator] —— 理由在那边。
   final Color blueTint;
+
+  /// 底栏（`NavigationBar`）**选中那一栏**的胶囊底。
+  ///
+  /// ⚠️ 它**只载一支前景**：那颗选中图标（`navigation_bar.dart:1456`，
+  /// selected 读 `onSecondaryContainer` = [primary]）。选中那栏的字在
+  /// **底栏底**上、不在胶囊上（M3 的指示器只包住图标，`buildLabel` 是另一棵）。
+  ///
+  /// **为什么单开一支**（2026-10-07，需求方在那道「动 / 不动」选择题里选了 C）：
+  /// 不写这一支的话指示器的底落到 `ColorScheme.secondaryContainer`
+  /// （= [blueTint]，`navigation_bar.dart:1463`）—— 而 [blueTint] 与 [card] 在
+  /// 暗色下**只差 1.00:1**，选中胶囊**看不出来**（亮色是 1.12:1，也弱，但没到零）。
+  ///
+  /// ⚠️ **没有改成去动 [blueTint]**（那是另一条路）：[blueTint] 同时是 Chip 的底、
+  /// 设置页那两块说明底、`surfaceContainerHighest`、`primaryContainer`，改一处
+  /// 会连带一圈；而且它这一支是照着电脑端那张表逐字对齐来的（`AccentWeak`）。
+  /// 所以这里**只**给指示器一支新色，代价是「底栏胶囊与 Chip 不再是同一个蓝」。
+  ///
+  /// - 亮色 `#E7F1FD`：**与 [blueTint] 同值** ⇒ 亮色这一半一个像素都没动。
+  /// - 暗色 `#1E3A8A`（blue-900）：压底栏底（`surfaceContainer` = [card]）
+  ///   **1.41:1**；压在那颗选中图标（[primary] blue-300）上 **5.74:1**。
+  ///
+  /// ⚠️ **这一支在暗色下有意与电脑端分道**：电脑端的「选中态底」用的就是
+  /// `AccentWeak`（= 本仓 [blueTint]），那一对在那边同样是 1.00:1；
+  /// 也就是说「两端的暗该是同一个暗」这条规则**在这一处让位给了「看得见」**。
+  /// 电脑端要不要跟着改是另一件事（**没拍板**），别顺手去动那边的表。
+  ///
+  /// ⚠️ 换值前先看 `palette_test.dart` 里「压底栏胶囊」那一对（它量着 5.74 那个数）。
+  final Color navIndicator;
 
   /// 已备份 / 在线 / 已配对。
   ///
@@ -335,11 +377,11 @@ class Palette extends ThemeExtension<Palette> {
   /// 框架只在主题**过渡动画**里调它（`ThemeData.lerp` → `AnimatedTheme`），
   /// 而 `main.dart` 把 `themeAnimationDuration` 设成了 `Duration.zero`
   /// ⇒ 实际上一次都调不到。真调到了也照切不误（`t` 过半就换成新的那套）：
-  /// 逐个 `Color.lerp` 要写 19 行，换来的是 200ms 里界面在两种配色之间飘 ——
+  /// 逐个 `Color.lerp` 要写 20 行，换来的是 200ms 里界面在两种配色之间飘 ——
   /// 那既不是亮色也不是暗色，中途的状态没有任何人验过。**亮暗之间没有中间态。**
   ///
   /// ⚠️ 想改成交叉淡出的话，改这里的同时**必须**把 `themeAnimationDuration`
-  /// 加回去，否则那 19 行永远不会被执行。
+  /// 加回去，否则那 20 行永远不会被执行。
   @override
   Palette lerp(covariant Palette? other, double t) =>
       other == null || t < 0.5 ? this : other;

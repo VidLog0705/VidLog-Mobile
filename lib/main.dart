@@ -119,9 +119,15 @@ class VidLogApp extends StatelessWidget {
     // ── 下面这几个是**色角色盖不住**的地方，逐个点名 ──
 
     // NavigationBar 的**选中标签**：M3 默认给的是 `onSurface`（墨色），
-    // 而草图里「选中的那一栏」是蓝的。指示器与图标色走
-    // secondaryContainer / onSecondaryContainer，已经在上面钉住了。
+    // 而草图里「选中的那一栏」是蓝的。选中那颗**图标**走
+    // `onSecondaryContainer`，已经在上面钉住了。
+    //
+    // ⚠️ **选中那颗胶囊的底单独点名**（`indicatorColor`）：
+    // 不写它就落到 `secondaryContainer`（= `blueTint`，`navigation_bar.dart:1463`），
+    // 而 `blueTint` 压底栏底在暗色下是 1.00:1 —— 看不出选的是哪一栏。
+    // 值、以及它只载哪一支前景，全在 `palette.dart` 的 `navIndicator` 上。
     navigationBarTheme: NavigationBarThemeData(
+      indicatorColor: p.navIndicator,
       labelTextStyle: WidgetStateProperty.resolveWith(
         (states) => TextStyle(
           fontSize: 12,
@@ -182,7 +188,7 @@ class VidLogApp extends StatelessWidget {
       theme: theme,
       darkTheme: darkTheme,
       // ⚠️ **跟随系统**，不做应用内开关（需求方 2026-10-07 拍板）。
-      // 写成 `ThemeMode.light` 就退回改版前的样子，而且暗色那 19 支值
+      // 写成 `ThemeMode.light` 就退回改版前的样子，而且暗色那 20 支值
       // 会变成一堆没人走的死代码 —— 但**不会**有测试喊（绊线量的是色值，
       // 不是「有没有被用上」）。改这一行之前先想清楚。
       themeMode: ThemeMode.system,
