@@ -16,15 +16,18 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 /// 取景框那支画笔（那次没动它），`record_detail_page_test` 只是把
 /// `Colors.green` 当夹具传进去。整套主题被改回去，没有一条会红。
 ///
-/// 这里六条，各挡一种「改回去」：
+/// 这里七条，各挡一种「改回去」：
 /// 1. 主色是草图采样那支蓝，**不是 `fromSeed` 算出来的**
 /// 2. 卡片与页面是**两个**色（同一档的话卡片就浮不起来）
 /// 3. 发货 / 退货那两支色是调色板给的，**不是 Material 内置的那两个**
 /// 4. Chip 的底单独钉住（不钉就等于隐形）
 /// 5. **每个前景色对每个底色都达标** —— 改造清单 T2 的那条绊线
-///    （另加底栏那颗**选中胶囊**的底：接线钉住了、色值也量过两处 ——
-///    见 `suites` 里那一条，与 `assertContrast` 末尾那一段）
+///    （另加**「选中」那两处**的底：底栏胶囊与分段选择器 —— 两处接线、
+///    以及「它跟底下那块面分得开」钉在 `suites` 里那一条上，
+///    它自己压前景的对比度在 `assertContrast` 末尾那一段）
 /// 6. **媒体层那一族对纯黑够看** —— T3 加的那一档，门槛与理由都不同，见那条
+/// 7. **实心主色块跟纸面分得开** —— 2026-10-07 加的：它是三支实心块里
+///    **唯一压在纸面上**的那支（另外两支压在取景画面上），见 `assertContrast`
 ///
 /// 「`lib/` 里不许有裸色」那条不在这个文件，在 `wiring_test.dart` ——
 /// 它要遍历整个 `lib/`，和那边「不许 print」是同一种写法。
@@ -141,7 +144,7 @@ void main() {
     final light = {
       'primary': Palette.light.primary,
       'blueTint': Palette.light.blueTint,
-      'navIndicator': Palette.light.navIndicator,
+      'selectedTint': Palette.light.selectedTint,
       'green': Palette.light.green,
       'greenTint': Palette.light.greenTint,
       'amber': Palette.light.amber,
@@ -163,7 +166,7 @@ void main() {
     final dark = {
       'primary': Palette.dark.primary,
       'blueTint': Palette.dark.blueTint,
-      'navIndicator': Palette.dark.navIndicator,
+      'selectedTint': Palette.dark.selectedTint,
       'green': Palette.dark.green,
       'greenTint': Palette.dark.greenTint,
       'amber': Palette.dark.amber,
@@ -235,24 +238,46 @@ void main() {
     final theme = entry.value.theme;
     final p = entry.value.palette;
 
-    test('★ 底栏选中胶囊的底单独点名 —— 不钉就等于看不出选的是哪一栏（$whose）', () {
-      // ⚠️ 这条挡的是**接线**，不是**色值**：`assertContrast` 里那一对量的是
-      // `navIndicator` 这个值本身，把 `main.dart` 里的 `indicatorColor:` 那行
-      // 删掉，那边照样全绿（指示器会静静落回 `secondaryContainer` = `blueTint`，
-      // 暗色下与底栏底 1.00:1）。这就是 Chip 那条的同款坑。
-      expect(theme.navigationBarTheme.indicatorColor, p.navIndicator);
+    test('★ 「选中」态的底单独点名 —— 底栏胶囊 + 分段选择器（$whose）', () {
+      // ⚠️ 这两条挡的是**接线**，不是**色值**：`assertContrast` 里那两对量的是
+      // `selectedTint` 这个值本身，把 `main.dart` 里对应那几行删掉，那边照样
+      // 全绿（两处都会静静落回 `secondaryContainer` = `blueTint`，
+      // 暗色下与底下的面 1.00:1）。这就是 Chip 那条的同款坑。
+      expect(theme.navigationBarTheme.indicatorColor, p.selectedTint);
 
-      // ⚠️ 还有**第二半**：这个值本身得真的和底栏底分得开。
-      // 底栏底 = `surfaceContainer`（`navigation_bar.dart:1440`）。
+      // 第二处：设置页那四个分段选择器（工作模式 / 编码 / 分辨率 / 方向）。
+      // ⚠️ `SegmentedButtonThemeData.style` 是**部分** `ButtonStyle`，
+      // 底色那一支还要按 **state** 解一次 —— 只断言「style 不是 null」
+      // 是「有没有写」，不是「选中那一支拿到了没有」。
+      final seg = theme.segmentedButtonTheme.style?.backgroundColor;
+      expect(seg, isNotNull, reason: '分段选择器没接上底色 —— 选中那一段会落回 blueTint');
+      expect(
+        seg!.resolve(<WidgetState>{WidgetState.selected}),
+        p.selectedTint,
+        reason: '分段选择器选中那一段的底漂了',
+      );
+      // 未选中那一支返回 `null`：M3 的默认本来就是「没有底」（透明）。
+      // 这里**不返回 `null` 也可以**（那就变成给未选中也铺一层），
+      // 但那是个**看得见的变化**，不该顺手做；这条把它钉住。
+      expect(seg.resolve(<WidgetState>{}), isNull);
+
+      // ⚠️ 还有**第二半**：这个值本身得真的和它压着的那个面分得开。
+      // 底栏底 = `surfaceContainer`（`navigation_bar.dart:1440`）；
+      // 分段选择器画在**卡片**上 ⇒ `surfaceContainerLow`（`card.dart`）。
       // 门槛只有 1.05，**故意松**：非文字那档的 3:1 我们够不着
-      // （暗色实测 1.41、亮色 1.12），而「选中的是哪一栏」不只靠这颗胶囊
+      // （暗色实测 1.41、亮色 1.12），而「选中的是哪一个」不只靠这块底
       // —— 图标色（primary ↔ muted）、标签色、字重都在变。
       // 它挡的就是这一支**原地退回** `blueTint` / `card` 那件事（1.00:1，
       // 也就是这颗令牌当初被开出来的理由）。
       expect(
-        contrastRatio(p.navIndicator, theme.colorScheme.surfaceContainer),
+        contrastRatio(p.selectedTint, theme.colorScheme.surfaceContainer),
         greaterThan(1.05),
         reason: '选中胶囊与底栏底几乎同色 —— 看不出选的是哪一栏',
+      );
+      expect(
+        contrastRatio(p.selectedTint, theme.colorScheme.surfaceContainerLow),
+        greaterThan(1.05),
+        reason: '分段选择器选中那一段与卡片几乎同色 —— 看不出选的是哪一段',
       );
     });
 
@@ -448,26 +473,56 @@ void assertContrast(Palette p, String whose) {
     on: <String, Color>{'primary': p.primary, 'danger': p.danger},
   );
 
-  // 底栏那颗**选中胶囊**的底（[Palette.navIndicator]）。它进不了上面那张
-  // 全组合的表，因为它**只载一支前景**：选中那颗图标
+  // **「选中」态的底**（[Palette.selectedTint]）压它载的那支前景。它进不了
+  // 上面那张全组合的表，因为它**只载一支前景**：选中那颗图标
   // （`navigation_bar.dart:1456`，selected 读 `onSecondaryContainer` = `primary`）。
   // 选中那栏的**字**在底栏底上、不在胶囊上（指示器只包住图标），
   // 所以那支字已经在 7×7 里了，不在这儿再量一遍。
+  // 分段选择器选中那一段的字也是 `primary`（`onSecondaryContainer`），
+  // 与底栏同值 ⇒ 一处量完两处。
   check(
     <String, Color>{'primary': p.primary},
     4.5,
-    '压底栏胶囊',
-    on: <String, Color>{'navIndicator': p.navIndicator},
+    '压选中胶囊',
+    on: <String, Color>{'selectedTint': p.selectedTint},
+  );
+
+  // ⚠️ **实心主色块跟纸面分得开** —— 这条不是文字那一档，是「一块色块得看得出
+  // 是一块色块」那档（WCAG 1.4.11 的非文字 3:1）。
+  //
+  // ⚠️ 这一条**只量 [primarySolid] 一支**：三支实心块里只有它压在纸面上
+  // （`lib/` 里三处：设置页表头那块蓝底、设置页卡片上那个齿轮方块、备份页那颗圆）。
+  // `greenSolid` / `dangerSolid` 的底是**取景画面**，走媒体层那套规矩
+  // （量出来的账在 `palette.dart` 暗色那段），拿纸面的门槛压它们没有意义
+  // —— 它们的底根本不是这几个面。
+  //
+  // ⚠️ **`hairline` 不在这一档的底名单里，是有意的**：它的角色是**线**
+  // （分隔线 / 缩略图占位 / 那两颗 pill 的底），不是「一块面」，实心色块
+  // 从来不画在它上面。暗色下它离 3.0 差得最多（2.17）—— 那正是它被排除的
+  // 原因：要是把它算进来，这一条就会逼着 `primarySolid` 再往上提，
+  // 而白字（4.78）已经贴着 4.5 了。**这一条与白字那条是互相顶着的一对**。
+  check(
+    <String, Color>{'primarySolid': p.primarySolid},
+    3.0,
+    '实心主色块',
+    on: <String, Color>{
+      'page': p.page,
+      'card': p.card,
+      'blueTint': p.blueTint,
+      'greenTint': p.greenTint,
+      'amberTint': p.amberTint,
+      'violetTint': p.violetTint,
+    },
   );
 
   // ⚠️ **扫了多少对也要断言。** 上面那几张名单哪天被谁清空或改名，循环
   // 一次都不跑，这条绊线会一声不响地全绿 —— 与「先 commit 再跑预检 = 扫个空集」
   // 是同一个坑（`precheck-ps1-vacuous-green` 那次）。
   // 7 字 × 7 底 = 49，1 描边 × 7 = 7，6 媒体 × 1 = 6，3 实心，2 主题实心，
-  // 1 底栏胶囊，共 68。
+  // 1 选中胶囊，1 实心主色块 × 6 面 = 6，共 74。
   expect(
     pairs,
-    greaterThanOrEqualTo(68),
+    greaterThanOrEqualTo(74),
     reason: '$whose 只量了 $pairs 对 —— 颜色或底色的名单八成被动过，这条绊线正在空转',
   );
 

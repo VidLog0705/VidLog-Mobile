@@ -77,9 +77,13 @@ class VidLogApp extends StatelessWidget {
       primaryContainer: p.blueTint,
       onPrimaryContainer: p.primary,
 
-      // secondary 这一族在现代 M3 里只剩三个读者：`FilledButton.tonal` 的底、
+      // secondary 这一族在现代 M3 里原本有三个读者：`FilledButton.tonal` 的底、
       // `NavigationBar` 选中态的指示器、`SegmentedButton` 选中项的底 ——
       // 三样在草图里都是**浅蓝底 + 蓝字**。
+      // ⚠️ 现在只剩**一个**真的读它（`tonal` 那颗钮）：另外两处 2026-10-07 起
+      // 各自点名 [Palette.selectedTint]（见上面那个底栏主题、下面那个分段选择器主题），
+      // 因为「选中」那一类的底暗色下不能再用 `blueTint`（与卡片撞成 1.00:1）。
+      // 这里**留着不动**：`blueTint` 就是 `tonal` 该有的那个浅蓝。
       secondary: p.primary,
       onSecondary: p.onAccent,
       secondaryContainer: p.blueTint,
@@ -125,9 +129,10 @@ class VidLogApp extends StatelessWidget {
     // ⚠️ **选中那颗胶囊的底单独点名**（`indicatorColor`）：
     // 不写它就落到 `secondaryContainer`（= `blueTint`，`navigation_bar.dart:1463`），
     // 而 `blueTint` 压底栏底在暗色下是 1.00:1 —— 看不出选的是哪一栏。
-    // 值、以及它只载哪一支前景，全在 `palette.dart` 的 `navIndicator` 上。
+    // 值、以及它只载哪一支前景，全在 `palette.dart` 的 `selectedTint` 上。
+    // （同一个角色还有一处：设置页那四个分段选择器，在下面那个主题里。）
     navigationBarTheme: NavigationBarThemeData(
-      indicatorColor: p.navIndicator,
+      indicatorColor: p.selectedTint,
       labelTextStyle: WidgetStateProperty.resolveWith(
         (states) => TextStyle(
           fontSize: 12,
@@ -140,6 +145,28 @@ class VidLogApp extends StatelessWidget {
       // 抬起来会有一道横贯屏幕的投影，而这一页是平的。
       elevation: 0,
       surfaceTintColor: Colors.transparent,
+    ),
+
+    // 设置页那四个分段选择器（工作模式 / 编码 / 分辨率 / 方向）。
+    //
+    // ⚠️ **选中的那一段单独点名底**：不写它就落到 `secondaryContainer`
+    // （= `blueTint`，`segmented_button.dart:1214`，那个 M3 默认值的出处在
+    // `_SegmentedButtonDefaultsM3` 里），
+    // 而分段选择器是画在**卡片**上的 —— `blueTint` 与 `card` 在暗色下只差
+    // 1.00:1，等于看不出选的是哪一段（与底栏那颗胶囊同一个毛病）。
+    // 亮色下 `selectedTint` 与 `blueTint` **同值** ⇒ 亮色一个像素都没动。
+    //
+    // ⚠️ 这里**只给底色**，别的什么都不碰：`SegmentedButtonThemeData.style`
+    // 是**部分** `ButtonStyle`，没写的属性照旧走 M3 默认
+    // （选中那颗勾、描边、选中的字色都还是原来的）。
+    // 未选中那一支返回 `null` —— M3 的默认本来就是「没有底」（透明）。
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) =>
+              states.contains(WidgetState.selected) ? p.selectedTint : null,
+        ),
+      ),
     ),
 
     // 两个筛选胶囊（来源 / 日期）。它们**一个颜色字面量都没有**，全靠主题 ——

@@ -48,8 +48,11 @@ import '../recording/business_type.dart';
 /// - **不跟主题走的** = `static const`（`onDark` / `backdrop` / `mediaWarn`…）——
 ///   它们的底是**取景画面**，不是纸张，亮暗两套下都是同一张画面。
 /// - **实心块** = `primarySolid` / `greenSolid` / `dangerSolid`：压在它们上面的字
-///   是白的（[onDark]），所以**它们自己必须够深**，亮暗两套下值几乎一样；
-///   但仍然各写一份，因为它们是「跟主题走」那一类。
+///   是白的（[onDark]），所以**它们自己必须够深**；但仍然各写一份，
+///   因为它们是「跟主题走」那一类。
+///   ⚠️ 这三支**不是同一种底**：`greenSolid` / `dangerSolid` 的底是**取景画面**，
+///   两套同值；`primarySolid` 的底是**纸面**（设置页表头 / 卡片），
+///   所以它还得跟纸面分得开 —— 两套不同值。见字段说明。
 ///
 /// ⚠️ **下面每支字段的说明里，「2026-10-04（T2）：A → B」这种改动史记的都是
 /// 亮色那一支的** —— 下面那些值就是 [Palette.light] 里的那些。
@@ -59,7 +62,7 @@ class Palette extends ThemeExtension<Palette> {
     required this.brightness,
     required this.primary,
     required this.blueTint,
-    required this.navIndicator,
+    required this.selectedTint,
     required this.green,
     required this.greenTint,
     required this.amber,
@@ -90,7 +93,7 @@ class Palette extends ThemeExtension<Palette> {
     blueTint: Color(0xFFE7F1FD),
     // ⚠️ 与 `blueTint` **同值**，而且是有意的 —— 亮色这一半因此一个像素都没动
     // （暗色下这两支走不同的值，那才是这一支存在的理由）。见字段说明。
-    navIndicator: Color(0xFFE7F1FD),
+    selectedTint: Color(0xFFE7F1FD),
     green: Color(0xFF117946),
     greenTint: Color(0xFFE7F8F3),
     amber: Color(0xFF965C03),
@@ -135,24 +138,40 @@ class Palette extends ThemeExtension<Palette> {
   /// | `faint` | `TextDisabled` `#64748B` | **2.18**（门槛 3:1） | slate-400 `#94A3B8` | 4.04 |
   ///
   /// 其余**逐字对齐**：`page` / `card` / `hairline` / `blueTint` / `amberTint` /
-  /// `ink` / `primarySolid` 与电脑端那七个键同值。
+  /// `ink` 与电脑端那六个键同值。
   /// `amber` 本来也差一档（amber-400 `#FBBF24`），但 amber-500 `#F59E0B`
   /// **实测过得去**（最差 `hairline` 4.82）⇒ 按规则回到电脑端那一支。
   ///
-  /// ⚠️ 暗色下**最紧的一对是 `violet` 压 `hairline` 5.19:1**（全组合 67 对里最差）。
-  /// 再往下调任何一支之前先跑那条绊线。
+  /// ⚠️ **`primarySolid` 是后来（2026-10-07 当天）才从「逐字对齐」那张名单里出来的**：
+  /// 电脑端的 `AccentSolid` `#2563EB` 压 `Surface` 只有 **2.83:1** ——
+  /// 而本仓这一个实心块是压在**纸面**上的（`lib/` 里三处：设置页表头那块蓝底、
+  /// 设置页卡片上那个齿轮方块、备份页那颗圆），2.83 连图形要的 3:1 都不到。
+  /// 暗色那一支按窗往上挪到 `#2768F6`：压 `card` **3.06**、压 `blueTint` **3.08**、
+  /// 白字 **4.78**（这一支原来 5.17）。
+  ///
+  /// ⚠️ **那个窗很窄，别再随手往上提**：白字要 ≥4.5 就要求填色亮度 ≤0.1833，
+  /// 而压 `card` 要 ≥3.0 又要求 ≥0.1653 —— 只有这一小段可选（现在取 0.170）。
+  /// ⚠️ 电脑端那一支**不能顺手跟着改**：它那张表把「`AccentSolid` 压 `Surface`
+  /// < 3.0」当成「必须把它和 `Accent` 拆成两支」的**论据**钉在
+  /// `ThemePaletteTests.Accent那两支必须分开…` 里，改值先得改那条论据。
+  ///
+  /// ⚠️ 暗色下**字色压底色那张全组合表里最紧的一对是 `violet` 压 `hairline`
+  /// 5.19:1**。再往下调任何一支之前先跑那条绊线。
   ///
   /// ⚠️ `greenSolid` / `dangerSolid` **与亮色同值**，是有意的：压在它们上面的是
   /// 白字，白压这两个绿/红本来就是 5.46:1 —— 提亮只会两头都变差
   /// （电脑端 `Success` / `Danger` 两套同值，同一条理由，`ThemePalette.cs` 里写着）。
+  /// 它们**不在上面那个「纸面分得开」的要求里**：这两支的底是**取景画面**
+  /// （【开始】/【结束】那颗按钮压在预览上），走媒体层那套规矩，不是纸面。
   ///
   /// ⚠️ 暗色独有的一个**看得见**的后果（量出来的，不是猜的）：
   /// `blueTint` `#172554` 与 `card` `#1E293B` **只差 1.00:1**（亮色是 1.12:1）
   /// ⇒ 设置页那两块说明底在暗色下**不再读得出是一块块**。
-  /// 电脑端是同一对（`AccentWeak` / `Surface`，同两个色、同 1.00:1）——
-  /// 所以这是「跟着电脑端走」的结果，不是本仓走偏。真机上觉得糊再说。
+  /// 电脑端那张表里 `AccentWeak` / `Surface` 也是这两个色、也差 1.00:1
+  /// （本仓 `blueTint` 那两个值就是从那儿来的）—— 所以这是「跟着电脑端走」的结果，
+  /// 不是本仓走偏。真机上觉得糊再说。
   ///
-  /// ⚠️ **唯一被单独拎出来救的一处是底栏那颗选中胶囊**（[navIndicator]，
+  /// ⚠️ **唯一被单独拎出来救的一处是「选中」那一类**（[selectedTint]，
   /// 2026-10-07 需求方在「动 / 不动」之间选的 C）：那里零对比度等于
   /// 「看不出选的是哪一栏」，是**功能**没了，不是好不好看的问题。
   static const dark = Palette(
@@ -166,7 +185,6 @@ class Palette extends ThemeExtension<Palette> {
     amberTint: Color(0xFF422006), // amber-950（= WarningSurface）
     ink: Color(0xFFF1F5F9), // slate-100（= TextPrimary）
     amber: Color(0xFFF59E0B), // amber-500（= Warning）
-    primarySolid: Color(0xFF2563EB), // blue-600（= AccentSolid）
 
     // ── 按上表「对不齐」那一栏改过的 ──
     primary: Color(0xFF93C5FD), // blue-300（电脑端 blue-400 压 hairline 只有 4.07）
@@ -174,12 +192,18 @@ class Palette extends ThemeExtension<Palette> {
     muted: Color(0xFFCBD5E1), // slate-300（94A3B8 只有 4.04）
     danger: Color(0xFFFCA5A5), // red-300（EF4444 压 hairline 2.75、压 card 3.89）
     faint: Color(0xFF94A3B8), // slate-400（64748B 只有 2.18，连 3:1 都不到）
+    // ⚠️ 这一支是**实心块**不是字色，跟着这一组放是因为同一类原因：电脑端那个值
+    // （`AccentSolid` blue-600）压纸面只有 2.83。它**不是 Tailwind 档位**，
+    // 是解出来的（窗很窄，别随手改）—— 怎么解的、为什么不能动电脑端那一支，
+    // 见字段说明。
+    primarySolid: Color(0xFF2768F6),
 
     // ── 电脑端没有对应角色的 ──
-    // 底栏选中胶囊的底。**暗色下有意与电脑端分道**（那边这一处用的是
-    // `AccentWeak` = 本仓 `blueTint`，那一对同样是 1.00:1，即看不见）。
-    // 值、以及它只载哪一支前景，见字段说明。
-    navIndicator: Color(0xFF1E3A8A), // blue-900
+    // 底栏 / 分段选择器**选中态**的底。电脑端没有一个键对应这个角色 ——
+    // 它的「选中」是一行列表项，底读 `AccentWeak`（= 本仓 `blueTint`），
+    // 底下的容器是 `SurfaceAlt`（1.42:1）而不是 `Surface`。本仓这两处没有
+    // 「列表行」那个结构，只能单开一支。值、以及它只载哪几支前景，见字段说明。
+    selectedTint: Color(0xFF1E3A8A), // blue-900
     // `violet` 只当图标（见亮色那支的说明），电脑端没有紫那一档；按另外三支
     // 同样的步进定 indigo-300，压 hairline 5.19 —— 全组合里最紧的一对。
     violet: Color(0xFFA5B4FC),
@@ -216,38 +240,45 @@ class Palette extends ThemeExtension<Palette> {
   /// 暗色下就白压白。实心块读 [primarySolid]。
   final Color primary;
 
-  /// 主蓝的浅底：胶囊 / 小标 / 图标底 / 说明底 / 选中项的底。
+  /// 主蓝的浅底：胶囊 / 小标 / 图标底 / 说明底。
   ///
-  /// ⚠️ **底栏那颗选中胶囊不读它**，读 [navIndicator] —— 理由在那边。
+  /// ⚠️ **「选中」那一类的底不读它**（底栏选中的那一栏、分段选择器选中的那一段），
+  /// 读 [selectedTint] —— 理由在那边。
   final Color blueTint;
 
-  /// 底栏（`NavigationBar`）**选中那一栏**的胶囊底。
+  /// **选中态**的底：底栏（`NavigationBar`）选中那一栏的胶囊、
+  /// 分段选择器（`SegmentedButton`）选中的那一段。
   ///
-  /// ⚠️ 它**只载一支前景**：那颗选中图标（`navigation_bar.dart:1456`，
-  /// selected 读 `onSecondaryContainer` = [primary]）。选中那栏的字在
-  /// **底栏底**上、不在胶囊上（M3 的指示器只包住图标，`buildLabel` 是另一棵）。
+  /// ⚠️ 这两处**都只载一支前景**：`onSecondaryContainer` = [primary]。
+  /// - 底栏：那颗选中图标（`navigation_bar.dart:1456`）。选中那栏的**字**在
+  ///   **底栏底**上、不在胶囊上（M3 的指示器只包住图标，`buildLabel` 是另一棵）。
+  /// - 分段选择器：那一段的字与勾（M3 默认 `onSecondaryContainer`）。
   ///
   /// **为什么单开一支**（2026-10-07，需求方在那道「动 / 不动」选择题里选了 C）：
-  /// 不写这一支的话指示器的底落到 `ColorScheme.secondaryContainer`
+  /// 不写这一支的话这两处的底都落到 `ColorScheme.secondaryContainer`
   /// （= [blueTint]，`navigation_bar.dart:1463`）—— 而 [blueTint] 与 [card] 在
-  /// 暗色下**只差 1.00:1**，选中胶囊**看不出来**（亮色是 1.12:1，也弱，但没到零）。
+  /// 暗色下**只差 1.00:1**，选中的那一个**看不出来**（亮色是 1.12:1，也弱，但没到零）。
   ///
   /// ⚠️ **没有改成去动 [blueTint]**（那是另一条路）：[blueTint] 同时是 Chip 的底、
   /// 设置页那两块说明底、`surfaceContainerHighest`、`primaryContainer`，改一处
   /// 会连带一圈；而且它这一支是照着电脑端那张表逐字对齐来的（`AccentWeak`）。
-  /// 所以这里**只**给指示器一支新色，代价是「底栏胶囊与 Chip 不再是同一个蓝」。
+  /// 所以这里**只**给「选中」一支新色，代价是「底栏胶囊 / 分段选择器与 Chip
+  /// 不再是同一个蓝」。
   ///
-  /// - 亮色 `#E7F1FD`：**与 [blueTint] 同值** ⇒ 亮色这一半一个像素都没动。
-  /// - 暗色 `#1E3A8A`（blue-900）：压底栏底（`surfaceContainer` = [card]）
-  ///   **1.41:1**；压在那颗选中图标（[primary] blue-300）上 **5.74:1**。
+  /// - 亮色 `#E7F1FD`：**与 [blueTint] 同值** ⇒ 亮色这一半一个像素都没动
+  ///   （这两处亮色下读的本来就是 [blueTint]）。
+  /// - 暗色 `#1E3A8A`（blue-900）：压底栏底 / 卡片（`surfaceContainer` = [card]）
+  ///   **1.41:1**；压在那支选中前景（[primary] blue-300）上 **5.74:1**。
   ///
-  /// ⚠️ **这一支在暗色下有意与电脑端分道**：电脑端的「选中态底」用的就是
-  /// `AccentWeak`（= 本仓 [blueTint]），那一对在那边同样是 1.00:1；
-  /// 也就是说「两端的暗该是同一个暗」这条规则**在这一处让位给了「看得见」**。
-  /// 电脑端要不要跟着改是另一件事（**没拍板**），别顺手去动那边的表。
+  /// ⚠️ 与电脑端的关系（2026-10-07 实测，收掉先前一句错的）：电脑端「选中的那一行」
+  /// （`SettingsWindow` 的 `DiskTable`）用的也是 `AccentWeak`，但它压在
+  /// **`SurfaceAlt` #334155** 上 —— 那一对是 **1.42:1**（亮色 1.11:1），
+  /// 与本仓这一支的 1.41 **同一个量级** ⇒ 这一处**不是**「两端分道」。
+  /// （先前记的「那边 1.00:1」是拿 `AccentWeak` 比 `Surface` 量出来的，
+  /// 而那张表底下不是 `Surface` —— 量错了底。别再把那一句抄回来。）
   ///
-  /// ⚠️ 换值前先看 `palette_test.dart` 里「压底栏胶囊」那一对（它量着 5.74 那个数）。
-  final Color navIndicator;
+  /// ⚠️ 换值前先看 `palette_test.dart` 里「压选中胶囊」那一对（它量着 5.74 那个数）。
+  final Color selectedTint;
 
   /// 已备份 / 在线 / 已配对。
   ///
@@ -345,6 +376,24 @@ class Palette extends ThemeExtension<Palette> {
   /// ⚠️ 与 [primary] **分开的理由**：上面那支的两半身 —— 它既是「暗底上的蓝字」，
   /// 又是「蓝底上的白字」。暗色下这两个角色要的值**一个往浅走、一个不能动**，
   /// 合在一支里就是电脑端这次拆掉的那个缺陷（`PrimaryDisabledInk` 那批）。
+  ///
+  /// ⚠️ **它是三支实心块里唯一压在纸面上的那支**（[greenSolid] / [dangerSolid]
+  /// 压在取景画面上）。所以它多一条别人没有的要求：**它得跟纸面分得开** ——
+  /// 那些方块读起来是「一块蓝底 + 一个白齿轮」，底和纸面撞色就只剩个齿轮浮着。
+  ///
+  /// 2026-10-07（T1 尾巴）：暗色这一支原来是电脑端的 `AccentSolid` `#2563EB`，
+  /// 压在 `card` 上只有 **2.83**、压 `blueTint` 2.84、压 `amberTint` 2.82 ——
+  /// 连图形要的 3:1 都不到（亮色那一支 `#1160E6` 压 `card` 是 5.36，一直是够的，
+  /// 所以这是暗色独有的）。暗色改成 `#2768F6`：压 `card` **3.06**、
+  /// 压 `blueTint` **3.08**、压 `amberTint` **3.05**；
+  /// 白字由 5.17 落到 **4.78**（仍 ≥4.5）。
+  ///
+  /// ⚠️ **那个可选窗很窄，加宽它的两条边都不是这里能动的**：白字要 ≥4.5 就要求
+  /// 填色的相对亮度 ≤ **0.1833**，压 `card` 要 ≥3.0 又要求 ≥ **0.1653** ——
+  /// `#2768F6` 取的是 0.170。想再往上提就得先动 `card` 或者改白字。
+  /// ⚠️ **电脑端那一支不能顺手跟着改**：那张表把「`AccentSolid` 压 `Surface`
+  /// < 3.0」当成「必须把它和 `Accent` 拆成两支」的**论据**钉在
+  /// `ThemePaletteTests.Accent那两支必须分开…` 里，改值先得改那条论据。
   final Color primarySolid;
 
   /// 【开始工作】那个绿按钮的底。**字是白的**，所以它永远得够深。
@@ -413,9 +462,12 @@ class Palette extends ThemeExtension<Palette> {
   /// ⚠️ **它不管 `ColorScheme` 那三个实心角色**（`onPrimary` / `onSecondary` /
   /// `onError`）—— 那三个的底跟主题走，读的是实例字段 [onAccent]。
   ///
-  /// 这些底里最亮的也就是 [primarySolid]（对白**亮色 5.47:1、暗色 5.17:1**；
-  /// 2026-10-07 之前这里写的是手算的 `5.48`，量出来对不上，已改）
-  /// —— 两套下它都是这三个实心底里最浅的那个，所以白字处处安全。
+  /// ⚠️ 白字在**这三支里最紧**的那一对：亮色是 [dangerSolid]（**5.46:1**）、
+  /// 暗色是 [primarySolid]（**4.78:1**）—— 两套下都离 4.5 还有余量，
+  /// 所以「白字处处安全」这句话成立；但**别再说「最浅的永远是 primarySolid」**，
+  /// 亮色下这三支本来就在 5.46–5.47 之间差得看不见（2026-10-07 量的，
+  /// 这一句原先写的是手算的 `5.48` 和「primarySolid 永远最浅」，两条都不准）。
+  /// 暗色那支由 5.17 落到 4.78 是拿「跟纸面分得开」换的，见 [primarySolid]。
   static const onDark = Color(0xFFFFFFFF);
 
   /// 压在深底上的**次要**字与图标（改版前是 `Colors.white70`）。
