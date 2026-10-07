@@ -217,6 +217,27 @@ void main() {
 
       expect(RecordingEntry.tryFromJson(json), isNull);
     });
+
+    test('★ 单号在、但是空的/全是空格，也丢掉 —— 空单号进不了会话列表', () {
+      // 这条钉的是**可观测的那条规矩**：单号空着的索引行，读不出一条会话。
+      // 它撑着的结论是「`RecordingSession.waybill.value` 永远非空 ⇒ 界面不需要
+      // 『单号为空就显示会话 id』那一手」（那三处 2026-10-07 已删）。
+      //
+      // ⚠️ 空单号进来会撞**两道墙**，这里量过（不是推的）：
+      //   ① `_text` 的 `value.trim().isNotEmpty`（`recording_index.dart:138`）
+      //      把空串/空格串当成「没这个字段」，先返回 null；
+      //   ② 万一它放行，`WaybillNumber.parse` 走 `normalize` 空即抛，
+      //      被 `tryFromJson` 的 `on Object` 接住，一样返回 null。
+      // 所以**只敲掉一道墙这条测试照样绿**（实测：只放宽 `normalize` → 只有
+      // `primitives_test.dart` 那条红，这条绿）。两道都敲掉才会红 ——
+      // 那说明 `WaybillNumber` 真被放宽了，才是该把那三处兜底找回来的时候。
+      for (final empty in ['', '   ']) {
+        final json = entry(evidenceId: 'sess-1-005').toJson()
+          ..['waybill'] = empty;
+
+        expect(RecordingEntry.tryFromJson(json), isNull, reason: '单号是「$empty」');
+      }
+    });
   });
 
   group('总占用走盘', () {

@@ -90,11 +90,9 @@ extension on _RecorderPageState {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ④ 显示名
+                  // ④ 显示名（单号不可能为空，见 `waybillOf`）
                   Text(
-                    session.waybill.value.isEmpty
-                        ? session.sessionId
-                        : session.waybill.value,
+                    waybillOf(session),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600),

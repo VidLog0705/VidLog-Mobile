@@ -361,7 +361,7 @@ extension on _RecorderPageState {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => RecordDetailPage(
-          title: session.waybill.value.isEmpty ? session.sessionId : session.waybill.value,
+          title: waybillOf(session),
           businessType: _businessTypeOf(session),
           uploadText: look.text,
           uploadColor: look.color,

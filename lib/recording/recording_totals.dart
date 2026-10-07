@@ -99,15 +99,19 @@ List<RecordingSession> toSessions(
   return sessions;
 }
 
-/// 界面上认得出是哪一条用的：**单号为空时退回会话 id** ——
-/// 与列表上「单号为空就显示会话 id」同一个口径。
+/// 界面上认得出是哪一条用的。
 ///
-/// ⚠️ **只此一处**（T24 搬过来的）。原先 `manual_delete.dart` 里有一支私有的
-/// `_waybillOf`，而清理流水那张表也要按同一条规矩显示单号 —— 两处各写一句的话，
-/// 迟早出现「删除确认弹窗说 SF100…、流水上说是会话 id」这种同一个东西两个名字。
-/// 放在这儿是因为它是 [RecordingSession] 的一个说法，两个调用方本来就都 import 它。
-String waybillOf(RecordingSession session) =>
-    session.waybill.value.isEmpty ? session.sessionId : session.waybill.value;
+/// ⚠️ **没有「单号为空就退回会话 id」那一支** —— 那种兜底到不了：
+/// [WaybillNumber] 的构造函数是私有的、`parse` 先过 `normalize`（空即抛），
+/// 而索引那边 `RecordingEntry.tryFromJson` 又把单号为空的那一行**整条丢掉**，
+/// 于是空单号连会话列表都进不来。钉着这条不变式的是
+/// `test/primitives_test.dart`「归一化后为空则视为非法」，
+/// 以及 `recording_totals_test.dart`「单号在、但是空的，也丢掉」。
+///
+/// T24 之前这条规则在列表、详情、`manual_delete` 里**各写了一遍** —— 三个副本
+/// 护的是同一个到不了的分支，其中两个还在没有测试盖着的 App 层。现在只有这一处，
+/// 电脑端一处都没有（同一份索引、同一套单号规则）。
+String waybillOf(RecordingSession session) => session.waybill.value;
 
 /// 盘上**还在**的那部分索引条目。
 ///

@@ -87,9 +87,9 @@ abstract final class CleanupLogView {
 
       rows.add(CleanupLogRow(
         atText: describeAt(record),
-        waybillText: waybill == null || waybill.trim().isEmpty
-            ? noWaybillText
-            : waybill,
+        // ⚠️ 只有「查不到」这一种 —— `waybillOf` 交出来的单号不可能为空
+        // （它自己那一支兜底也删了，理由见那儿）。别在这儿再判一遍空串。
+        waybillText: waybill ?? noWaybillText,
         action: record.action,
         actionText: describeAction(record.action),
         reasonText: describeReason(record),
