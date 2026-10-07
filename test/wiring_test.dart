@@ -188,7 +188,7 @@ void main() {
       reason: '这些圆角是写死的（该走 `lib/app/corners.dart`）：\n  '
           '${offenders.join('\n  ')}\n'
           '挑一支的办法看名字（pill / card / note / thumb / tag / '
-          'tagLarge / header / iconBox）；都不合适就在 `corners.dart` '
+          'header / iconBox）；都不合适就在 `corners.dart` '
           '里补一支**按角色命名**的，别在调用点写数字。',
     );
   });
@@ -200,9 +200,13 @@ void main() {
     // —— `ThemeData` 只吃一处圆角。所以这一层唯一的用处就是「调用点来读它」，
     // 一支没人读的常量就是纯装饰，正是 T4 当初拒绝做 spacing 令牌的那个理由。
     //
-    // ⚠️ 迁移刚做完时**四支各只有一个用户**（`header` / `iconBox` / `tag` /
-    // `tagLarge`），所以这条现在就能红：删掉任何一支的**唯一**那个调用点，
+    // ⚠️ 这一层里**有三支只有一个用户**（`thumb` / `header` / `iconBox`），
+    // 所以这条现在就能红：删掉其中任何一支的**唯一**那个调用点，
     // 它立刻从「只有一个用户」掉到零。
+    //
+    // ⚠️ **注释行必须跳过**（与上面两条绊线同理，但这里不止是「免得自己提到自己」）：
+    // 不跳的话，把唯一的调用点注释掉、再在注释里提一句 `Corners.thumb`，
+    // 这条照样绿 —— 那就成了一个**能被最省事的改法骗过**的检查。
     final tokens = RegExp(r'static const (\w+) =')
         .allMatches(File('lib/app/corners.dart').readAsStringSync())
         .map((m) => m.group(1)!)
@@ -217,9 +221,11 @@ void main() {
                 entity is File &&
                 entity.path.endsWith('.dart') &&
                 entity.path.replaceAll(r'\', '/') != 'lib/app/corners.dart' &&
-                entity
-                    .readAsLinesSync()
-                    .any((line) => pattern.hasMatch(line)),
+                entity.readAsLinesSync().any(
+                      (line) =>
+                          !line.trimLeft().startsWith('//') &&
+                          pattern.hasMatch(line),
+                    ),
           );
       if (!used) unused.add(token);
     }

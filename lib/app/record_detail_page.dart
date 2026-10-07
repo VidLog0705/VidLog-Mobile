@@ -263,12 +263,17 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
 
   /// 底与字**成对给**：浅浅的那个底是采样出来的一个值，不是「同一个色兑 12%
   /// 透明」兑出来的 —— 列表上那个小标用的是同一对，两处才会是同一个色。
+  ///
+  /// ⚠️ 圆角同理、走 `Corners.tag` —— **与列表上那颗同一个值**。这里原来写死 6、
+  /// 列表那颗写死 4（同一个角色两个值），2026-10-07 需求方裁定统一在 4。
+  /// 内边距**仍与列表那颗不同**（这里 8/3、那里 6/2）：P1 的范围是「只补圆角」，
+  /// 间距有意不做，那是现状不是遗漏。
   Widget _pill(BuildContext context, String text, Color color, Color tint) =>
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
           color: tint,
-          borderRadius: BorderRadius.circular(Corners.tagLarge),
+          borderRadius: BorderRadius.circular(Corners.tag),
         ),
         child: Text(
           text,
