@@ -99,6 +99,16 @@ List<RecordingSession> toSessions(
   return sessions;
 }
 
+/// 界面上认得出是哪一条用的：**单号为空时退回会话 id** ——
+/// 与列表上「单号为空就显示会话 id」同一个口径。
+///
+/// ⚠️ **只此一处**（T24 搬过来的）。原先 `manual_delete.dart` 里有一支私有的
+/// `_waybillOf`，而清理流水那张表也要按同一条规矩显示单号 —— 两处各写一句的话，
+/// 迟早出现「删除确认弹窗说 SF100…、流水上说是会话 id」这种同一个东西两个名字。
+/// 放在这儿是因为它是 [RecordingSession] 的一个说法，两个调用方本来就都 import 它。
+String waybillOf(RecordingSession session) =>
+    session.waybill.value.isEmpty ? session.sessionId : session.waybill.value;
+
 /// 盘上**还在**的那部分索引条目。
 ///
 /// ## 为什么必须有这一道

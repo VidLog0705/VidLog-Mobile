@@ -159,6 +159,8 @@ extension on _RecorderPageState {
         const SizedBox(height: 12),
         _retentionCard(outbound: false),
         const SizedBox(height: 12),
+        _cleanupLogCard(),
+        const SizedBox(height: 12),
         _codecCard(),
         const SizedBox(height: 12),
         _resolutionCard(),
@@ -465,6 +467,15 @@ extension on _RecorderPageState {
         onTap: _openAboutPage,
       );
 
+  /// 清理流水（T24）—— 紧挨着上面那两条保留期：**「清什么」和「清过什么」
+  /// 是同一件事的两面**，隔开摆的话用户找不到。
+  Widget _cleanupLogCard() => _linkCard(
+        icon: Icons.receipt_long_outlined,
+        title: '清理流水',
+        blurb: '清掉的和没清掉的每一条，都记着时间和原因。',
+        onTap: _openCleanupLogPage,
+      );
+
   void _openNetdiskPage() {
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -493,6 +504,19 @@ extension on _RecorderPageState {
         // 导出那件事**借这里的 state 干**（包里那几样只有这一页有）。
         builder: (context) =>
             AboutPage(onExportLogs: () => _exportDiagnostics(share: true)),
+      ),
+    );
+  }
+
+  void _openCleanupLogPage() {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        // ⚠️ `_sessions` 是**当下**那一份快照：流水里那些已经被删掉的条目不在这里，
+        // 而它们正该显示「（无单号）」—— 它就是那本账存在的意义。
+        builder: (context) => CleanupLogPage(
+          rootPath: _rootPath,
+          sessions: _sessions,
+        ),
       ),
     );
   }

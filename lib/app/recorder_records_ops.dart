@@ -129,7 +129,7 @@ extension on _RecorderPageState {
       locationByEvidenceId: _locationByEvidenceId,
       rootDirectory: root,
       // 与手动删除**同一个文件、同一个形状**（审计是同一份流水）。
-      audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+      audit: CleanupAuditLog.inRoot(root),
       now: DateTime.now(),
       verify: (evidenceId) async {
         final location = _locationByEvidenceId[evidenceId];
@@ -328,7 +328,7 @@ extension on _RecorderPageState {
         plan: plan,
         locationByEvidenceId: _locationByEvidenceId,
         rootDirectory: root,
-        audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+        audit: CleanupAuditLog.inRoot(root),
         now: DateTime.now(),
       );
 
@@ -573,7 +573,7 @@ extension on _RecorderPageState {
           plan: item.plan,
           locationByEvidenceId: _locationByEvidenceId,
           rootDirectory: root,
-          audit: CleanupAuditLog('$root/cleanup-audit.jsonl'),
+          audit: CleanupAuditLog.inRoot(root),
           now: DateTime.now(),
         );
         segments += deleted.length;

@@ -43,6 +43,7 @@ import '../upload/upload_protocol.dart';
 import '../upload/uploader.dart';
 import 'about_page.dart';
 import 'camera_preview.dart';
+import 'cleanup_log_page.dart';
 import 'corners.dart';
 import 'netdisk_page.dart';
 import 'palette.dart';

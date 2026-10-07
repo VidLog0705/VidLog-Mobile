@@ -280,7 +280,7 @@ String batchDeletePreviewText(BatchDeletePlan plan) {
 
     final lines = [
       for (final item in plan.blocked)
-        '· ${_waybillOf(item.session)}：${item.plan.reason}',
+        '· ${waybillOf(item.session)}：${item.plan.reason}',
     ];
 
     return '选中的 ${plan.count} 条里有 ${plan.blocked.length} 条现在不能删，'
@@ -303,11 +303,6 @@ String batchDeletePreviewText(BatchDeletePlan plan) {
   buffer.write('\n\n删除后无法恢复，是否确认？');
   return buffer.toString();
 }
-
-/// 界面上认得出是哪一条用的。单号为空时退回会话 id ——
-/// 与列表上「单号为空就显示会话 id」同一个口径。
-String _waybillOf(RecordingSession session) =>
-    session.waybill.value.isEmpty ? session.sessionId : session.waybill.value;
 
 /// 容量按 MB 说。**与 `cleanupPreviewText` 同一个口径** ——
 /// 两处弹窗说的是同一件事（要删多少、多大），一个说 MB 一个说 GB 会让人

@@ -396,4 +396,67 @@ void main() {
     expect(body, contains('AbsorbPointer('), reason: '少了真拦的那半 —— 灰着但按得动');
     expect(body, contains('Opacity('), reason: '少了变灰的那半 —— 按不动但看不出来');
   });
+
+  test('⚠️ 清理流水在设置页上真的有出路', () {
+    // T24。「零件好、没人接」是本仓反复踩过的病（规格 §6.2 那句「保留可查的
+    // 清理记录」从写下第一行起就成立，而**一直没有地方能看**）——
+    // 这一条钉的就是**那个入口真的存在**。
+    //
+    // ⚠️ 它管的是「有没有接上」，**管不了「点进去画得对不对」**：
+    // 后者由 `cleanup_log_page_test.dart` 拿一个真目录跑。
+    final settings = source('lib/app/recorder_settings.dart');
+    final page = source('lib/app/cleanup_log_page.dart');
+
+    // ① 设置页上真有那张卡，且**列进了设置页的 children** ——
+    //    只写一个方法没人调的话，那一页上什么都不会出现。
+    expect(settings, contains('Widget _cleanupLogCard()'),
+        reason: '那张卡没有了 = 用户找不到这一页');
+    expect(settings, contains('_cleanupLogCard(),'),
+        reason: '写了卡片却没摆进 `_settingsPage` 的 children = 页面上看不见');
+
+    // ② 点它真的推一个页面上去。
+    expect(settings, contains('onTap: _openCleanupLogPage'),
+        reason: '卡片点不动 = 假开关（踩坑 #13）');
+    expect(settings, contains('CleanupLogPage('),
+        reason: '处理器里没建那个页面');
+
+    // ③ 那一页读的是**带坏行计数**的那个入口，且路径走 `inRoot` ——
+    //    自己拼一遍 `'$root/cleanup-audit.jsonl'` 正是下面那条绊线盯着的。
+    expect(page, contains('CleanupAuditLog.inRoot('),
+        reason: '流水路径不许在页面里手拼');
+    expect(page, contains('.loadPage()'),
+        reason: '用 `loadAll()` 的话读不动的行会被悄悄跳过，而这一页看着干干净净');
+  });
+
+  test('★ 审计文件的名字只许写在一个地方', () {
+    // T24 收口时数的：`'$root/cleanup-audit.jsonl'` 原先在
+    // `recorder_records_ops.dart` 里抄了三遍，流水页还要用第四次 ——
+    // 只要有一处拼错，用户看到的就是「清完了、流水上是空的」，
+    // 而那本账存在的意义正是「这条录像什么时候没的」。
+    //
+    // ⚠️ 注释里提到这个名字不算（这一条自己就在提它），跳过注释行 ——
+    // 与 `print` / `Colors.` 那几条绊线同理。
+    const tokenFile = 'lib/recording/cleanup_audit.dart';
+    final offenders = <String>[];
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+      if (entity.path.replaceAll(r'\', '/') == tokenFile) continue;
+
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        if (lines[index].trimLeft().startsWith('//')) continue;
+        if (lines[index].contains('cleanup-audit.jsonl')) {
+          offenders.add('${entity.path}:${index + 1}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些地方自己拼了流水文件名，改成 `CleanupAuditLog.inRoot(root)`：\n  '
+          '${offenders.join('\n  ')}',
+    );
+  });
 }

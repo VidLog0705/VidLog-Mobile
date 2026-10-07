@@ -213,3 +213,31 @@ abstract final class Palette {
       // 否则就是拿 3:1 的色去写字。
       null => (color: Palette.faint, tint: Palette.hairline),
     };
+
+/// 清理流水上那个动作小标 → **一支色 + 它的浅底**（T24）。
+///
+/// ⚠️ 与 [businessTypeLook] 同一个位置、同一个理由：颜色散在页面里就会
+/// 「同一件事两个色」，而这一支还多一层 —— 动作码是**从盘上读回来的**
+/// （`cleanup-audit.jsonl` 两端共用），用户认不出 `deleted` 是什么意思，
+/// 全靠这个色和旁边那个词。判错了不会有任何测试喊。
+///
+/// ⚠️ **每一对的对比度都是量出来的**（WCAG，压在**它自己那个浅底**上）：
+/// `deleted` 绿 4.97:1、`refused` 蓝 4.79:1、`deleting` 琥珀 4.57:1、
+/// `failed` 红 4.55:1、认不出的灰 4.55:1 —— 五对都过了 4.5:1。
+/// 改这儿任何一支色**要重新量**，别照着别的屏抄一个值。
+///
+/// ⚠️ `failed` 与认不出的那两对走的是 [Palette.hairline] 那个**灰底**
+/// （调色板里没有红的浅底，也不值得为这一个地方新开一支）——
+/// 「红字压灰底」读起来仍是「出事了」，不影响判读。
+/// ⚠️ 认不出的那支用的是 [Palette.muted] 而**不是** [Palette.faint]：
+/// 后者是**描边色**（3.08:1），拿它写字就掉到 4.5:1 以下了
+/// （同一条规矩见 [businessTypeLook] 里那段）。
+({Color color, Color tint}) cleanupActionLook(String action) => switch (action) {
+      'deleted' => (color: Palette.green, tint: Palette.greenTint),
+      'refused' => (color: Palette.primary, tint: Palette.blueTint),
+      'deleting' => (color: Palette.amber, tint: Palette.amberTint),
+      'failed' => (color: Palette.danger, tint: Palette.hairline),
+      // 认不出来的动作码：灰，**不是第六种结局**，是「不知道」。
+      // （词那边照旧原样印出来，见 `CleanupLogView.describeAction`。）
+      _ => (color: Palette.muted, tint: Palette.hairline),
+    };
