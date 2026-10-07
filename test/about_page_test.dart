@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/app/about_page.dart';
 import 'package:vidlog_mobile/app/netdisk_page.dart';
+import 'package:vidlog_mobile/main.dart';
 
 /// 「关于我们」与「网盘视频」两个二级页（需求方 2026-09-28 那张图上的两张卡）。
 ///
@@ -21,7 +22,10 @@ import 'package:vidlog_mobile/app/netdisk_page.dart';
 ///    踩坑 #13）；而没和电脑端配对时，「连电脑端」那颗按钮灰着并写明原因
 ///    —— 借令牌那条路本来就要电脑端，让它失败一次不如直接不让点。
 void main() {
-  Widget wrap(Widget child) => MaterialApp(home: child);
+  // ⚠️ 挂**真主题**，不是裸 `MaterialApp`：这一组里有 `NetdiskPage`，
+  // 它读 `context.palette` —— 那个入口从 `ThemeData.extensions` 取色
+  // （`palette.dart` 末尾的 `PaletteOf`），不给主题当场抛空值。
+  Widget wrap(Widget child) => MaterialApp(theme: VidLogApp.theme, home: child);
 
   /// 这一页的导出那件事**由采集页注入**（包里那几样只有那一页有）——
   /// 测试里给一个记账的桩，验「按了会叫它、它说的话会显示出来」。

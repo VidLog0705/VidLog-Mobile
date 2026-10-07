@@ -222,7 +222,7 @@ extension on _RecorderPageState {
           decoration: BoxDecoration(
             color: reason == null
                 ? scheme.surfaceContainerHighest
-                : Palette.amberTint,
+                : context.palette.amberTint,
             borderRadius: BorderRadius.circular(Corners.note),
           ),
           child: Text(
@@ -232,7 +232,9 @@ extension on _RecorderPageState {
                     ? '实际按 ${effective.label} 录制。'
                     : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
                         '$reason',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: reason == null ? null : Palette.amber),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: reason == null ? null : context.palette.amber,
+            ),
           ),
         ),
       ],
@@ -572,7 +574,7 @@ extension on _RecorderPageState {
   /// 而这次没开，或者反过来以为「我关了它就永久关了」。
   Widget _acceptanceCard() {
     return Card(
-      color: Palette.amberTint,
+      color: context.palette.amberTint,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -625,7 +627,7 @@ extension on _RecorderPageState {
     final working = _coordinator?.isWorking ?? false;
 
     return Card(
-      color: working ? Palette.amberTint : null,
+      color: working ? context.palette.amberTint : null,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Text(

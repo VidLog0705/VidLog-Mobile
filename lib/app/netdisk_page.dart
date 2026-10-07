@@ -356,7 +356,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
           ],
           if (_note != null) ...[
             Card(
-              color: Palette.amberTint,
+              color: context.palette.amberTint,
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: Text(
@@ -433,7 +433,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
                 style: Theme.of(context)
                     .textTheme
                     .labelSmall
-                    ?.copyWith(color: Palette.muted),
+                    ?.copyWith(color: context.palette.muted),
               ),
             ],
             if (!connected) ...[

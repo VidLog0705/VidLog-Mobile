@@ -194,7 +194,7 @@ extension on _RecorderPageState {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Palette.blueTint,
+        color: context.palette.blueTint,
         borderRadius: BorderRadius.circular(Corners.header),
       ),
       child: Row(
@@ -203,7 +203,9 @@ extension on _RecorderPageState {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: Palette.primary,
+              // ⚠️ 实心蓝块读 `primarySolid`，不是 `primary` —— 后者在暗色下是
+              // 一支**浅蓝**（它要在暗底上当字用），压白字等于看不见。
+              color: context.palette.primarySolid,
               borderRadius: BorderRadius.circular(Corners.card),
             ),
             child: const Icon(Icons.settings, color: Palette.onDark, size: 26),
@@ -247,7 +249,7 @@ extension on _RecorderPageState {
                   width: 34,
                   height: 34,
                   decoration: BoxDecoration(
-                    color: Palette.primary,
+                    color: context.palette.primarySolid,
                     borderRadius: BorderRadius.circular(Corners.iconBox),
                   ),
                   child: Icon(icon, color: Palette.onDark, size: 20),

@@ -154,7 +154,10 @@ extension on _RecorderPageState {
                 icon: Icon(working ? Icons.stop : Icons.play_arrow),
                 label: Text(working ? '结束' : '开始'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: working ? Palette.danger : Palette.green,
+                  // ⚠️ 这是本仓自己画的**实心**按钮，字是白的（`onDark`），
+                  // 所以读 `*Solid` 那一组 —— 它们在两套主题下都够深。
+                  backgroundColor:
+                      working ? context.palette.dangerSolid : context.palette.greenSolid,
                   foregroundColor: Palette.onDark,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
@@ -292,7 +295,7 @@ extension on _RecorderPageState {
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Palette.amberTint,
+        color: context.palette.amberTint,
         borderRadius: BorderRadius.circular(Corners.card),
       ),
       child: Column(

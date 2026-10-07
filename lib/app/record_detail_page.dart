@@ -137,7 +137,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
     final type = businessType;
     // 与列表上那支色**同源**。`businessTypeLook` 吃 `null`（给的是灰），
     // 所以这里不用先判空。
-    final typeLook = businessTypeLook(type);
+    final typeLook = businessTypeLook(context.palette, type);
 
     return Scaffold(
       appBar: AppBar(title: const Text('录像详情')),
@@ -170,7 +170,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
                 _pill(context, type.displayName, typeLook.color, typeLook.tint),
               _pill(context, uploadText, uploadColor, uploadTint),
               if (_locked)
-                _pill(context, '已锁定', Palette.primary, Palette.blueTint),
+                _pill(context, '已锁定', context.palette.primary, context.palette.blueTint),
             ],
           ),
           const SizedBox(height: 16),
@@ -212,7 +212,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
             onPressed: () => _delete(context),
             icon: const Icon(Icons.delete_outline),
             label: const Text('删除这一条'),
-            style: OutlinedButton.styleFrom(foregroundColor: Palette.danger),
+            style: OutlinedButton.styleFrom(foregroundColor: context.palette.danger),
           ),
           const SizedBox(height: 8),
           Text(
@@ -223,7 +223,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
             style: Theme.of(context)
                 .textTheme
                 .labelSmall
-                ?.copyWith(color: Palette.muted),
+                ?.copyWith(color: context.palette.muted),
           ),
         ],
       ),
@@ -244,7 +244,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            Container(color: Palette.hairline, child: preview),
+            Container(color: context.palette.hairline, child: preview),
             if (onPlay != null)
               Material(
                 color: Colors.transparent,
@@ -293,7 +293,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
                 style: Theme.of(context)
                     .textTheme
                     .bodyMedium
-                    ?.copyWith(color: Palette.muted),
+                    ?.copyWith(color: context.palette.muted),
               ),
             ),
             Expanded(

@@ -48,48 +48,64 @@ class VidLogApp extends StatelessWidget {
   ///
   /// 写成 `static final` 而不是在 `build` 里构造：守卫测试
   /// （`test/palette_test.dart`）直接读它，不必 pump 一个 widget。
-  static final theme = ThemeData(
-    colorScheme: const ColorScheme(
-      brightness: Brightness.light,
+  ///
+  /// ⚠️ 2026-10-07（改造清单「暗色」）起，它**不再是常量**：改成 [_buildTheme]
+  /// 按一份 [Palette] 现算 —— 同一个函数喂 [Palette.light] 就是这一份。
+  /// **一份色盘只走一个函数**：两套主题各写一遍的话，「亮色改了、暗色忘了改」
+  /// 是迟早的事，而且忘了改的那一处不会有任何测试喊。
+  static final theme = _buildTheme(Palette.light);
 
-      primary: Palette.primary,
-      onPrimary: Palette.onDark,
-      primaryContainer: Palette.blueTint,
-      onPrimaryContainer: Palette.primary,
+  /// 把一份色盘铺成一份主题。
+  ///
+  /// ⚠️ 这里的 `const` 全去掉了（原来整棵主题是 `const`）—— 色盘的值是
+  /// **实例字段**，不是编译期常量。这不是笔误，也别想用 `const` 塞回去。
+  static ThemeData _buildTheme(Palette p) => ThemeData(
+    colorScheme: ColorScheme(
+      brightness: p.brightness,
+
+      primary: p.primary,
+      onPrimary: p.onAccent,
+      primaryContainer: p.blueTint,
+      onPrimaryContainer: p.primary,
 
       // secondary 这一族在现代 M3 里只剩三个读者：`FilledButton.tonal` 的底、
       // `NavigationBar` 选中态的指示器、`SegmentedButton` 选中项的底 ——
       // 三样在草图里都是**浅蓝底 + 蓝字**。
-      secondary: Palette.primary,
-      onSecondary: Palette.onDark,
-      secondaryContainer: Palette.blueTint,
-      onSecondaryContainer: Palette.primary,
+      secondary: p.primary,
+      onSecondary: p.onAccent,
+      secondaryContainer: p.blueTint,
+      onSecondaryContainer: p.primary,
 
-      error: Palette.danger,
-      onError: Palette.onDark,
+      error: p.danger,
+      onError: p.onAccent,
 
       // 页面底色。`Scaffold` 与 `AppBar` 的默认底都取它。
-      surface: Palette.page,
-      onSurface: Palette.ink,
+      surface: p.page,
+      onSurface: p.ink,
 
       // Card / Dialog / NavigationBar 各读一个 container 档
       // （`card.dart` / `dialog.dart` / `navigation_bar.dart`）——
       // 三样在草图里都是「近白浮在浅蓝页面上」，所以三档同值。
       // 钉在这里是**三行覆盖三样**；写成三个组件主题要写三遍。
-      surfaceContainerLow: Palette.card,
-      surfaceContainer: Palette.card,
-      surfaceContainerHigh: Palette.card,
+      surfaceContainerLow: p.card,
+      surfaceContainer: p.card,
+      surfaceContainerHigh: p.card,
       // 设置页那两块说明底（`scheme.surfaceContainerHighest`）用浅蓝。
-      surfaceContainerHighest: Palette.blueTint,
+      surfaceContainerHighest: p.blueTint,
 
-      onSurfaceVariant: Palette.muted,
+      onSurfaceVariant: p.muted,
       // 输入框的常态边框取 outline；Chip 的边框、Divider 取 outlineVariant。
-      outline: Palette.faint,
-      outlineVariant: Palette.hairline,
+      outline: p.faint,
+      outlineVariant: p.hairline,
 
       // 卡片的投影色。草图上的卡片是「软投影」，不是硬边。
       shadow: Color(0x1A1E2738),
     ),
+
+    // ⚠️ **把这一份色盘塞进主题。** 界面里 `context.palette` 取的就是它
+    // （`palette.dart` 末尾的 `PaletteOf`）。漏了这一行不会有编译错 ——
+    // 只会在第一次取色时抛「空值上的 `!`」。
+    extensions: <ThemeExtension<dynamic>>[p],
 
     // ── 下面这几个是**色角色盖不住**的地方，逐个点名 ──
 
@@ -100,9 +116,7 @@ class VidLogApp extends StatelessWidget {
       labelTextStyle: WidgetStateProperty.resolveWith(
         (states) => TextStyle(
           fontSize: 12,
-          color: states.contains(WidgetState.selected)
-              ? Palette.primary
-              : Palette.muted,
+          color: states.contains(WidgetState.selected) ? p.primary : p.muted,
           fontWeight: states.contains(WidgetState.selected)
               ? FontWeight.w600
               : FontWeight.w400,
@@ -116,32 +130,33 @@ class VidLogApp extends StatelessWidget {
     // 两个筛选胶囊（来源 / 日期）。它们**一个颜色字面量都没有**，全靠主题 ——
     // 不钉这里的话 Chip 的底会落到 `canvasColor`（= 页面底色），
     // 在页面背景上等于看不见（`chip.dart` 里 `_ChipDefaultsM3` 没有底）。
-    chipTheme: const ChipThemeData(
-      backgroundColor: Palette.blueTint,
+    chipTheme: ChipThemeData(
+      backgroundColor: p.blueTint,
       // 有底就不要描边了 —— 浅蓝底 + 灰描边在草图上是两个东西叠在一起。
       side: BorderSide.none,
-      labelStyle: TextStyle(color: Palette.primary),
-      deleteIconColor: Palette.primary,
-      iconTheme: IconThemeData(color: Palette.primary, size: 18),
+      labelStyle: TextStyle(color: p.primary),
+      deleteIconColor: p.primary,
+      iconTheme: IconThemeData(color: p.primary, size: 18),
       shape: RoundedRectangleBorder(
-        // ⚠️ 写成 `BorderRadius.all(...)` 而不是 `circular(...)`：这一段在
-        // `const ChipThemeData` 里（整棵主题都是 const），而 `BorderRadius.circular`
-        // **不是** const 构造器 —— 值完全一样（`circular` 内部就是 `all`），
-        // 但换成 `circular` 立刻编译不过（2026-10-07 迁 P1 时踩到的）。
+        // ⚠️ 用 `BorderRadius.all(...)` 而不是 `circular(...)`。原来这里写的
+        // 理由是「整棵主题是 `const`，而 `circular` 不是 const 构造器」——
+        // **那个前提 2026-10-07 已经不成立了**（主题改成按色盘现算，`const` 全去掉）。
+        // 这里**没有跟着换成 `circular`**：两者同值（`circular` 内部就是 `all`），
+        // 换了只是徒增一次改动。
         borderRadius: BorderRadius.all(Radius.circular(Corners.pill)),
       ),
     ),
 
     // AppBar 的底已经是 surface（页面色）、字已经是 onSurface，只有一处要改：
     // 内容滚到它下面时它会**抬起来**加一道投影，而这一页该是平的。
-    appBarTheme: const AppBarThemeData(
+    appBarTheme: AppBarThemeData(
       scrolledUnderElevation: 0,
       surfaceTintColor: Colors.transparent,
     ),
 
     // 让没写颜色的图标也落在调色板上（默认是 `kDefaultIconDarkColor`，
     // 一个与配色无关的固定黑）。
-    iconTheme: const IconThemeData(color: Palette.ink),
+    iconTheme: IconThemeData(color: p.ink),
 
     // ⚠️ **不写 `cardTheme`。** Card 的 M3 默认（面纱透明、elevation 1、
     // margin `EdgeInsets.all(4)`、圆角 12）**正是要的**，要换的只有颜色，
@@ -156,6 +171,12 @@ class VidLogApp extends StatelessWidget {
     return MaterialApp(
       title: 'VidLog',
       theme: theme,
+      // ⚠️ **主题切换是硬切。** 默认值（`kThemeAnimationDuration` = 200ms）会让
+      // `ColorScheme` 与 `ThemeData` 那几百个属性在两种配色之间插值 ——
+      // 而 `Palette` 的 `lerp` 是**过半才换**（见 `palette.dart`）⇒
+      // 那 200ms 里界面是一半在飘、一半已经切完的**谁也没验过的中间态**。
+      // 亮暗之间没有中间态；电脑端那份实现同样是硬切。
+      themeAnimationDuration: Duration.zero,
       home: const RecorderPage(),
     );
   }

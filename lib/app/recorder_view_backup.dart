@@ -98,7 +98,11 @@ extension on _RecorderPageState {
                   IconButton(
                     tooltip: '改本机名',
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.edit_outlined, size: 15, color: Palette.faint),
+                    icon: Icon(
+                      Icons.edit_outlined,
+                      size: 15,
+                      color: context.palette.faint,
+                    ),
                     onPressed: identity == null ? null : _editDeviceName,
                   ),
                 ],
@@ -109,21 +113,21 @@ extension on _RecorderPageState {
                     width: 7,
                     height: 7,
                     decoration: BoxDecoration(
-                      color: ip == null ? Palette.faint : Palette.green,
+                      color: ip == null ? context.palette.faint : context.palette.green,
                       shape: BoxShape.circle,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Text(
                     ip ?? '未连局域网',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Palette.muted),
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(color: context.palette.muted),
                   ),
                 ],
               ),
               const SizedBox(height: 2),
               Text(
                 '电商发货 / 退货视频取证系统',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
               ),
             ],
           ),
@@ -159,8 +163,8 @@ extension on _RecorderPageState {
     // 只有「在线」是绿的，其余三种（未连接 / 探测中 / 离线）是同一支灰。
     // 改版前这里写了 `grey` 两次、`green` 一次，底还要各自再兑一次透明度。
     final (fg, bg) = (!hasHost || !paired || _probingHost || !online)
-        ? (Palette.muted, Palette.hairline)
-        : (Palette.green, Palette.greenTint);
+        ? (context.palette.muted, context.palette.hairline)
+        : (context.palette.green, context.palette.greenTint);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -213,8 +217,8 @@ extension on _RecorderPageState {
           Expanded(
             child: _statCard(
               icon: Icons.videocam_outlined,
-              tint: Palette.primary,
-              tintBg: Palette.blueTint,
+              tint: context.palette.primary,
+              tintBg: context.palette.blueTint,
               value: '$_todayCount',
               label: '本机今日',
             ),
@@ -223,8 +227,8 @@ extension on _RecorderPageState {
           Expanded(
             child: _statCard(
               icon: Icons.layers_outlined,
-              tint: Palette.primary,
-              tintBg: Palette.blueTint,
+              tint: context.palette.primary,
+              tintBg: context.palette.blueTint,
               value: '${_sessions.length}',
               label: '本机全部',
             ),
@@ -233,8 +237,8 @@ extension on _RecorderPageState {
           Expanded(
             child: _statCard(
               icon: Icons.storage_outlined,
-              tint: Palette.violet,
-              tintBg: Palette.violetTint,
+              tint: context.palette.violet,
+              tintBg: context.palette.violetTint,
               value: used.value,
               unit: used.unit,
               label: '总占用',
@@ -297,7 +301,7 @@ extension on _RecorderPageState {
                   const SizedBox(width: 2),
                   Text(
                     unit,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
                   ),
                 ],
               ],
@@ -307,14 +311,14 @@ extension on _RecorderPageState {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
             ),
             if (note != null)
               Text(
                 note,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Palette.muted),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(color: context.palette.muted),
               ),
           ],
         ),
@@ -394,8 +398,9 @@ extension on _RecorderPageState {
                 Container(
                   width: 34,
                   height: 34,
-                  decoration: const BoxDecoration(
-                    color: Palette.primary,
+                  decoration: BoxDecoration(
+                    // ⚠️ 同 `_settingCard`：实心块读 `primarySolid`。
+                    color: context.palette.primarySolid,
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(Icons.monitor, size: 19, color: Palette.onDark),
@@ -419,7 +424,7 @@ extension on _RecorderPageState {
                     : '${_sessions.length} 个都已经备份到电脑端了。',
                 style: 
                   // 加大加粗：整页最要紧的一句话，原来它是这一块最小的字。
-                  Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400, color: pending > 0 ? Palette.ink : Palette.green),
+                  Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: pending > 0 ? FontWeight.w600 : FontWeight.w400, color: pending > 0 ? context.palette.ink : context.palette.green),
               ),
             ],
             const SizedBox(height: 4),
@@ -427,12 +432,12 @@ extension on _RecorderPageState {
               hasHost
                   ? '${name.isEmpty ? '电脑端' : name} · $address'
                   : '还没填电脑端地址。',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
             ),
             if (_nextRetryAt != null)
               Text(
                 '下次自动重试 ${_stamp(_nextRetryAt!)}',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
               ),
             const SizedBox(height: 10),
             // 主按钮**通栏**（照草图）：这一页上用户最常做的一件事就是
@@ -501,7 +506,7 @@ extension on _RecorderPageState {
             Text(
               '手机连不上电脑端时，用【改电脑端地址】把二维码里那串地址改成对的，再重扫一次。'
               '（一台电脑可能同时插着有线、无线和虚拟网卡，它挑出来的地址不一定是你能连上的那个。）',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Palette.muted),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(color: context.palette.muted),
             ),
           ],
         ),
@@ -521,8 +526,8 @@ extension on _RecorderPageState {
   Widget _pairedPill({required bool hasHost, required bool paired}) {
     final text = paired ? '已配对' : '未配对';
     final (fg, bg) = paired
-        ? (Palette.green, Palette.greenTint)
-        : (Palette.muted, Palette.hairline);
+        ? (context.palette.green, context.palette.greenTint)
+        : (context.palette.muted, context.palette.hairline);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -554,7 +559,7 @@ extension on _RecorderPageState {
       // 鼠标停上去（真机上是长按）必须看到它到底删的是什么。
       tooltip: '断开配对',
       visualDensity: VisualDensity.compact,
-      icon: const Icon(Icons.delete_outline, size: 20, color: Palette.faint),
+      icon: Icon(Icons.delete_outline, size: 20, color: context.palette.faint),
       onPressed: _forgetHost,
     );
   }

@@ -106,7 +106,7 @@ class _CleanupLogPageState extends State<CleanupLogPage> {
           style: Theme.of(context)
               .textTheme
               .labelSmall
-              ?.copyWith(color: Palette.muted),
+              ?.copyWith(color: context.palette.muted),
         ),
         const SizedBox(height: 12),
         if (rows.isEmpty)
@@ -116,7 +116,7 @@ class _CleanupLogPageState extends State<CleanupLogPage> {
             style: Theme.of(context)
                 .textTheme
                 .bodyMedium
-                ?.copyWith(color: Palette.muted),
+                ?.copyWith(color: context.palette.muted),
           )
         else
           for (final row in rows) _row(context, row),
@@ -131,7 +131,7 @@ class _CleanupLogPageState extends State<CleanupLogPage> {
             style: Theme.of(context)
                 .textTheme
                 .labelSmall
-                ?.copyWith(color: Palette.danger),
+                ?.copyWith(color: context.palette.danger),
           ),
         ],
       ],
@@ -139,7 +139,7 @@ class _CleanupLogPageState extends State<CleanupLogPage> {
   }
 
   Widget _row(BuildContext context, CleanupLogRow row) {
-    final look = cleanupActionLook(row.action);
+    final look = cleanupActionLook(context.palette, row.action);
 
     return Card(
       key: Key('cleanup-log-${row.evidenceId}-${row.action}'),
@@ -172,7 +172,7 @@ class _CleanupLogPageState extends State<CleanupLogPage> {
               style: Theme.of(context)
                   .textTheme
                   .labelSmall
-                  ?.copyWith(color: Palette.muted),
+                  ?.copyWith(color: context.palette.muted),
             ),
           ],
         ),

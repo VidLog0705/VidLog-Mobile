@@ -284,7 +284,7 @@ void main() {
     test('★ 五种结局各有各的一对色', () {
       final pairs = [
         for (final action in ['deleted', 'refused', 'deleting', 'failed', '???'])
-          cleanupActionLook(action),
+          cleanupActionLook(Palette.light, action),
       ];
 
       expect(pairs.map((p) => p.color).toSet(), hasLength(5));
@@ -294,8 +294,11 @@ void main() {
       // ⚠️ `Palette.faint` 是**描边色**（压 `hairline` 只有 3.08:1），
       // 拿它写字就掉到 4.5:1 以下 —— 而 `businessTypeLook` 里明写着同一条规矩。
       // 这条钉的就是「别照着那一支抄」。
-      expect(cleanupActionLook('???').color, Palette.muted);
-      expect(cleanupActionLook('???').color, isNot(Palette.faint));
+      expect(cleanupActionLook(Palette.light, '???').color, Palette.light.muted);
+      expect(
+        cleanupActionLook(Palette.light, '???').color,
+        isNot(Palette.light.faint),
+      );
     });
   });
 }

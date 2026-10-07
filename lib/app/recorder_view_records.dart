@@ -62,7 +62,7 @@ extension on _RecorderPageState {
         // 「这一条我不知道是哪一类」，不是「它属于第三类」。
         decoration: BoxDecoration(
           border: Border(
-            left: BorderSide(color: businessTypeLook(type).color, width: 3),
+            left: BorderSide(color: businessTypeLook(context.palette, type).color, width: 3),
           ),
         ),
         padding: const EdgeInsets.fromLTRB(8, 8, 4, 8),
@@ -110,7 +110,7 @@ extension on _RecorderPageState {
                       if (type != null) _typeBadge(type),
                       Text(
                         '${_stamp(session.startedAt)} · ${_durationLabel(session.duration)}',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
                       ),
                     ],
                   ),
@@ -124,7 +124,7 @@ extension on _RecorderPageState {
             // 这一页上保留下来的每一个 `›` 都是这样 —— 一个点不动的箭头
             // 正是踩坑 #13 说的那种「让用户猜」。
             if (!_managing)
-              const Icon(Icons.chevron_right, size: 18, color: Palette.faint),
+              Icon(Icons.chevron_right, size: 18, color: context.palette.faint),
           ],
         ),
       ),
@@ -152,7 +152,7 @@ extension on _RecorderPageState {
   /// 详情页那颗胶囊、这一页的行首竖条读的都是它。改版前这一页自己写了一个
   /// `_typeColor`、详情页又各写了一遍，于是列表上是一个橙、点进去是另一个橙。
   Widget _typeBadge(BusinessType type) {
-    final look = businessTypeLook(type);
+    final look = businessTypeLook(context.palette, type);
     final returning = type == BusinessType.returning;
 
     return Container(
@@ -199,8 +199,12 @@ extension on _RecorderPageState {
 
         if (path == null) {
           return Container(
-            color: Palette.hairline,
-            child: const Icon(Icons.movie_outlined, size: 22, color: Palette.faint),
+            color: context.palette.hairline,
+            child: Icon(
+              Icons.movie_outlined,
+              size: 22,
+              color: context.palette.faint,
+            ),
           );
         }
 
@@ -330,29 +334,29 @@ extension on _RecorderPageState {
       switch (state) {
         UploadState.archived => (
             text: '已备份',
-            color: Palette.green,
-            tint: Palette.greenTint,
+            color: context.palette.green,
+            tint: context.palette.greenTint,
           ),
         UploadState.uploading => (
             text: '备份中…',
-            color: Palette.primary,
-            tint: Palette.blueTint,
+            color: context.palette.primary,
+            tint: context.palette.blueTint,
           ),
         UploadState.backoff => (
             text: '待重试',
-            color: Palette.amber,
-            tint: Palette.amberTint,
+            color: context.palette.amber,
+            tint: context.palette.amberTint,
           ),
         // 草图里没有失败态 —— 红是规格要求的语义色，全应用只有这一支。
         UploadState.failed => (
             text: '备份失败',
-            color: Palette.danger,
-            tint: Palette.hairline,
+            color: context.palette.danger,
+            tint: context.palette.hairline,
           ),
         UploadState.pending => (
             text: '未备份',
-            color: Palette.muted,
-            tint: Palette.hairline,
+            color: context.palette.muted,
+            tint: context.palette.hairline,
           ),
       };
 
@@ -486,7 +490,7 @@ extension on _RecorderPageState {
                     : (_recordsDay == null && _recordsSource == null
                         ? '本机还没有收尾入库的录像。'
                         : '现在这个筛选下没有录像。点上面那两个胶囊，选「全部」就都在了。'),
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Palette.muted),
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(color: context.palette.muted),
               ),
             )
           else
@@ -500,7 +504,7 @@ extension on _RecorderPageState {
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Row(
               children: [
-                Text('每页', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted)),
+                Text('每页', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted)),
                 const SizedBox(width: 8),
                 DropdownButton<int>(
                   value: _recordsPageSize,
@@ -680,7 +684,7 @@ extension on _RecorderPageState {
                       (_settingsReady && _selected.isNotEmpty) ? _runBatchDelete : null,
                   icon: const Icon(Icons.delete_outline, size: 18),
                   label: const Text('批量删除'),
-                  style: OutlinedButton.styleFrom(foregroundColor: Palette.danger),
+                  style: OutlinedButton.styleFrom(foregroundColor: context.palette.danger),
                 ),
               ),
             ],

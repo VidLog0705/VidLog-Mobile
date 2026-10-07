@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/app/cleanup_log_page.dart';
+import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/primitives.dart';
 import 'package:vidlog_mobile/recording/cleanup_audit.dart';
 import 'package:vidlog_mobile/recording/recording_totals.dart';
@@ -47,6 +48,9 @@ Future<void> open(
   });
 
   await tester.pumpWidget(MaterialApp(
+    // ⚠️ 同 `record_detail_page_test`：这一页读 `context.palette`，
+    // 那个入口从 `ThemeData.extensions` 取色，裸 `MaterialApp` 会当场抛空值。
+    theme: VidLogApp.theme,
     home: CleanupLogPage(rootPath: root.path, sessions: sessions),
   ));
 

@@ -48,7 +48,7 @@ void main() {
     );
     expect(
       overlay.colorScheme.primary,
-      isNot(Palette.primary),
+      isNot(Palette.light.primary),
       reason: '同上，且这样写更直白：浮层的主色不该是新配色那支蓝',
     );
   });

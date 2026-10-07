@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:vidlog_mobile/app/palette.dart';
 import 'package:vidlog_mobile/app/record_detail_page.dart';
+import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/recording/business_type.dart';
 
 /// 录像详情页（需求方 2026-09-27 照备份页草图定的）。
@@ -48,6 +49,11 @@ void main() {
     addTearDown(tester.view.reset);
 
     await tester.pumpWidget(MaterialApp(
+      // ⚠️ 必须挂**真主题**：这一页（以及它下面那些胶囊）读的是
+      // `context.palette`，而那个入口是从 `ThemeData.extensions` 里取的
+      // （`palette.dart` 末尾的 `PaletteOf`）—— 不给主题，它当场抛空值。
+      // 顺带也钉住了「这一页在真配色下长什么样」，不是在一棵裸 `MaterialApp` 下。
+      theme: VidLogApp.theme,
       home: Builder(
         builder: (context) => Scaffold(
           body: Center(
@@ -60,8 +66,8 @@ void main() {
                     uploadText: '已备份',
                     // 与 `_uploadLook(UploadState.archived)` 那一对**同值** ——
                     // 夹具自己编一套颜色的话，这一页改配色时测试还是绿的。
-                    uploadColor: Palette.green,
-                    uploadTint: Palette.greenTint,
+                    uploadColor: Palette.light.green,
+                    uploadTint: Palette.light.greenTint,
                     timeText: '9月16日 17:32',
                     durationText: '00:48',
                     sizeText: '12.3 MB',
@@ -177,7 +183,10 @@ void main() {
 
     final pill = tester.widget<Text>(find.text(BusinessType.returning.displayName));
 
-    expect(pill.style?.color, businessTypeLook(BusinessType.returning).color);
+    expect(
+      pill.style?.color,
+      businessTypeLook(Palette.light, BusinessType.returning).color,
+    );
     expect(
       pill.style?.color,
       isNot(Colors.deepOrange),

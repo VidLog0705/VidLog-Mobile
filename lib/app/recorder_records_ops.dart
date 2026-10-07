@@ -644,7 +644,9 @@ extension on _RecorderPageState {
                   child: Text(
                     '$width / $maxDeviceNameWidth 格（汉字算 2 格）${full ? '，已满' : ''}',
                     textAlign: TextAlign.right,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: full ? Palette.amber : Palette.muted),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: full ? context.palette.amber : context.palette.muted,
+                    ),
                   ),
                 );
               },

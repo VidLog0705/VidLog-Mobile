@@ -184,7 +184,7 @@ extension on _RecorderPageState {
             const SizedBox(height: 4),
             Text(
               '手机上的原文件还在，不会因为传不上去就没了。',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Palette.muted),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
             ),
           ],
         ),

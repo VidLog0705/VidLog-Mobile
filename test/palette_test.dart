@@ -23,13 +23,18 @@ import 'package:vidlog_mobile/recording/business_type.dart';
 /// 5. **每个前景色对每个底色都达标** —— 改造清单 T2 的那条绊线
 /// 6. **媒体层那一族对纯黑够看** —— T3 加的那一档，门槛与理由都不同，见那条
 ///
+/// ⚠️ 2026-10-07（改造清单「暗色」）起，`Palette` **不再是一组常量**
+/// （见 `palette.dart`）⇒ 这里每一处都要写明**量的是哪一套**（`Palette.light`）。
+/// **漏写 `Palette.light` 是编译错，不是静默的**，所以这个改动不会让哪条断言
+/// 悄悄量到另一套上去。
+///
 /// 「`lib/` 里不许有裸色」那条不在这个文件，在 `wiring_test.dart` ——
 /// 它要遍历整个 `lib/`，和那边「不许 print」是同一种写法。
 void main() {
   test('★ 主题主色是草图采样那支蓝，不是 fromSeed 算出来的', () {
     final scheme = VidLogApp.theme.colorScheme;
 
-    expect(scheme.primary, Palette.primary);
+    expect(scheme.primary, Palette.light.primary);
 
     // ⚠️ 这条挡的是「把 `ThemeData(colorScheme: ColorScheme.fromSeed(...))`
     // 写回来」。fromSeed 从种子跑出来的 primary 与**种子本身不相等**
@@ -44,10 +49,10 @@ void main() {
   test('★ 卡片是近白、页面是浅蓝 —— 两个不能是同一个色', () {
     final scheme = VidLogApp.theme.colorScheme;
 
-    expect(scheme.surface, Palette.page);
+    expect(scheme.surface, Palette.light.page);
     expect(
       scheme.surfaceContainerLow,
-      Palette.card,
+      Palette.light.card,
       reason: 'Card 的底取的就是 surfaceContainerLow（card.dart）',
     );
     expect(
@@ -77,21 +82,39 @@ void main() {
     // 列表上的小标、详情页那颗胶囊读的都是这个函数。改版前详情页自己抄了
     // 一遍 `returning ? Colors.deepOrange : Colors.blue`，于是列表上是一个橙、
     // 点进去是另一个橙。`record_detail_page_test` 那边还有一条对着它。
-    expect(businessTypeLook(BusinessType.outbound).color, Palette.primary);
-    expect(businessTypeLook(BusinessType.returning).color, Palette.amber);
-    expect(businessTypeLook(null).color, Palette.faint);
-
-    expect(businessTypeLook(BusinessType.outbound).color, isNot(Colors.blue));
-    expect(businessTypeLook(BusinessType.returning).color, isNot(Colors.deepOrange));
     expect(
-      businessTypeLook(null).color,
-      isNot(businessTypeLook(BusinessType.outbound).color),
+      businessTypeLook(Palette.light, BusinessType.outbound).color,
+      Palette.light.primary,
+    );
+    expect(
+      businessTypeLook(Palette.light, BusinessType.returning).color,
+      Palette.light.amber,
+    );
+    expect(businessTypeLook(Palette.light, null).color, Palette.light.faint);
+
+    expect(
+      businessTypeLook(Palette.light, BusinessType.outbound).color,
+      isNot(Colors.blue),
+    );
+    expect(
+      businessTypeLook(Palette.light, BusinessType.returning).color,
+      isNot(Colors.deepOrange),
+    );
+    expect(
+      businessTypeLook(Palette.light, null).color,
+      isNot(businessTypeLook(Palette.light, BusinessType.outbound).color),
       reason: '「判不出来」不能和某一类同色 —— 那等于给它猜了一个类别',
     );
 
     // 底也要是**成对给的那个**，不是「主色兑 12% 透明」兑出来的。
-    expect(businessTypeLook(BusinessType.returning).tint, Palette.amberTint);
-    expect(businessTypeLook(BusinessType.outbound).tint, Palette.blueTint);
+    expect(
+      businessTypeLook(Palette.light, BusinessType.returning).tint,
+      Palette.light.amberTint,
+    );
+    expect(
+      businessTypeLook(Palette.light, BusinessType.outbound).tint,
+      Palette.light.blueTint,
+    );
   });
 
   test('★ 每个前景色对每个底色都达标 —— 文字 4.5:1、描边 3:1', () {
@@ -116,14 +139,14 @@ void main() {
     );
 
     // 画**字**的：正文 AA，4.5:1。
-    const textColors = <String, Color>{
-      'primary': Palette.primary,
-      'green': Palette.green,
-      'amber': Palette.amber,
-      'violet': Palette.violet,
-      'ink': Palette.ink,
-      'muted': Palette.muted,
-      'danger': Palette.danger,
+    final textColors = <String, Color>{
+      'primary': Palette.light.primary,
+      'green': Palette.light.green,
+      'amber': Palette.light.amber,
+      'violet': Palette.light.violet,
+      'ink': Palette.light.ink,
+      'muted': Palette.light.muted,
+      'danger': Palette.light.danger,
     };
 
     // 画**线 / 图标**的：非文字 AA（WCAG 1.4.11），3:1。
@@ -132,28 +155,31 @@ void main() {
     // 也就是全应用输入框的常态边框。把它按 4.5:1 压下去的话，每一道边框都会
     // 变成深灰线，而且会和 `muted` 撞成同一个色（两者都要对最亮的底达标 ⇒
     // 明度被钉死在同一处，色相再怎么分也分不出层次）。
-    const strokeColors = <String, Color>{'faint': Palette.faint};
+    final strokeColors = <String, Color>{'faint': Palette.light.faint};
 
-    // 会被垫在字底下的那些。`hairline` 也在内 —— 缩略图占位那块就是它。
-    const backgrounds = <String, Color>{
-      'page': Palette.page,
-      'card': Palette.card,
-      'blueTint': Palette.blueTint,
-      'greenTint': Palette.greenTint,
-      'amberTint': Palette.amberTint,
-      'violetTint': Palette.violetTint,
-      'hairline': Palette.hairline,
+    // 会被垫在字底下的那些。`hairline` 也在内 —— 缩略图占位、`_hostPill` /
+    // `_pairedPill` 的底、清理流水「失败 / 认不出」那两对的底，都是它。
+    final backgrounds = <String, Color>{
+      'page': Palette.light.page,
+      'card': Palette.light.card,
+      'blueTint': Palette.light.blueTint,
+      'greenTint': Palette.light.greenTint,
+      'amberTint': Palette.light.amberTint,
+      'violetTint': Palette.light.violetTint,
+      'hairline': Palette.light.hairline,
     };
 
     // 量的是**全组合**，不是「实际用到的那几对」。后者要在测试里维护一张
     // 配对表，而哪天有人把某个色挪到一个新底上，那张表不会跟着动 ——
     // 绊线就恰好在这时候瞎掉。全组合偏严一点，代价只是明度再低几个点。
     final failures = <String>[];
+    var pairs = 0;
 
     void check(Map<String, Color> colors, double floor, String kind,
         {Map<String, Color>? on}) {
       for (final fg in colors.entries) {
         for (final bg in (on ?? backgrounds).entries) {
+          pairs++;
           final r = ratio(fg.value, bg.value);
           if (r < floor) {
             failures.add('$kind ${fg.key} 压在 ${bg.key} 上只有 '
@@ -190,17 +216,45 @@ void main() {
       on: const {'backdrop': Palette.backdrop},
     );
 
-    // `onDark` 另外还压在**实心色块**上：主色方块里的图标、
-    // 【开始】/【结束】那两个按钮的字。这三支是它会遇到的**最亮**的底。
+    // `onDark` 另外还压在**本仓自己画的实心色块**上：设置页那两个齿轮方块、
+    // 备份页「电脑备份」那颗圆、以及【开始】/【结束】那两个按钮。
+    //
+    // ⚠️ 这三支读的是 `*Solid`，**不是** `primary` / `green` / `danger` ——
+    // 后者是「暗底上的字」，暗色下会变浅，白字压上去根本看不见。
+    // 这条断言就是那次拆分的凭据：把 `*Solid` 换回 `primary` 那一组，
+    // 亮色下照样绿（两组同值），**暗色那一半才是它会响的地方**。
     check(
       const <String, Color>{'onDark': Palette.onDark},
       4.5,
       '压实心按钮',
-      on: const {
-        'primary': Palette.primary,
-        'green': Palette.green,
-        'danger': Palette.danger,
+      on: <String, Color>{
+        'primarySolid': Palette.light.primarySolid,
+        'greenSolid': Palette.light.greenSolid,
+        'dangerSolid': Palette.light.dangerSolid,
       },
+    );
+
+    // `ColorScheme` 那三个实心角色（`primary` / `secondary` / `error`）上面压的
+    // 是 `onAccent`，**不是** `onDark` —— 它们的底跟主题走，暗色下是**浅色**。
+    // `secondary` 与 `primary` 同值，量一次就够。
+    check(
+      <String, Color>{'onAccent': Palette.light.onAccent},
+      4.5,
+      '压主题实心',
+      on: <String, Color>{
+        'primary': Palette.light.primary,
+        'danger': Palette.light.danger,
+      },
+    );
+
+    // ⚠️ **扫了多少对也要断言。** 上面那几张名单哪天被谁清空或改名，循环
+    // 一次都不跑，这条绊线会一声不响地全绿 —— 与「先 commit 再跑预检 = 扫个空集」
+    // 是同一个坑（`precheck-ps1-vacuous-green` 那次）。
+    // 7 字 × 7 底 = 49，1 描边 × 7 = 7，6 媒体 × 1 = 6，3 实心，2 主题实心，共 67。
+    expect(
+      pairs,
+      greaterThanOrEqualTo(67),
+      reason: '只量了 $pairs 对 —— 颜色或底色的名单八成被动过，这条绊线正在空转',
     );
 
     expect(
