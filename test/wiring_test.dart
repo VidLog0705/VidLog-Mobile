@@ -142,6 +142,96 @@ void main() {
     );
   });
 
+  test('★ lib/ 里一个写死的圆角都不许有 —— 全部走 Corners', () {
+    // 改造清单 P1（需求方 2026-10-07 拍板：**只补圆角、迁到零裸值**）。
+    // 迁移前 `lib/` 下 16 处圆角全是裸数字、7 个不同数值。
+    //
+    // ⚠️ **规则是「圆角必须来自 `Corners`」，不是「不许出现某个数」** ——
+    // 后者漏得掉 `BorderRadius.vertical(top: Radius.circular(12))` 这种写法。
+    // 所以这里抓的是**构造器**，再看它的实参里有没有 `Corners.`。
+    //
+    // ⚠️ **没有白名单。** 唯一允许写裸值的地方是令牌自己
+    // （`lib/app/corners.dart`）—— 与 T3 裸色、T7 字号同一个收尾方式。
+    // 真需要第八支，就加进 `corners.dart` 并起个角色的名字，别在这儿开口子。
+    //
+    // ⚠️ 注释行跳过（这一条自己就在提这些构造器），与 `print` / `Colors.` 两条同理。
+    const tokenFile = 'lib/app/corners.dart';
+    final offenders = <String>[];
+    final pattern = RegExp(
+      r'BorderRadius\.(?:circular|all|only|vertical|horizontal)\(|Radius\.circular\(',
+    );
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+      if (entity.path.replaceAll(r'\', '/') == tokenFile) continue;
+
+      final lines = entity.readAsLinesSync();
+      for (var index = 0; index < lines.length; index++) {
+        if (lines[index].trimLeft().startsWith('//')) continue;
+
+        for (final hit in pattern.allMatches(lines[index])) {
+          final rest = lines[index].substring(hit.end);
+          final close = rest.indexOf(')');
+          final args = close < 0 ? rest : rest.substring(0, close);
+          if (args.contains('Corners.')) continue;
+          offenders.add(
+            '${entity.path}:${index + 1} → '
+            '${lines[index].substring(hit.start).trim()}',
+          );
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些圆角是写死的（该走 `lib/app/corners.dart`）：\n  '
+          '${offenders.join('\n  ')}\n'
+          '挑一支的办法看名字（pill / card / note / thumb / tag / '
+          'tagLarge / header / iconBox）；都不合适就在 `corners.dart` '
+          '里补一支**按角色命名**的，别在调用点写数字。',
+    );
+  });
+
+  test('★ 每一支圆角都真的有人用 —— 没人用的那支是纯装饰', () {
+    // ⚠️ 这一条是**反向**的，专门盯「令牌层变摆设」。
+    //
+    // 桌面 T4 那三支是被 `Theme.xaml` 自己吃掉的（定义即使用）；手机端没这个待遇
+    // —— `ThemeData` 只吃一处圆角。所以这一层唯一的用处就是「调用点来读它」，
+    // 一支没人读的常量就是纯装饰，正是 T4 当初拒绝做 spacing 令牌的那个理由。
+    //
+    // ⚠️ 迁移刚做完时**四支各只有一个用户**（`header` / `iconBox` / `tag` /
+    // `tagLarge`），所以这条现在就能红：删掉任何一支的**唯一**那个调用点，
+    // 它立刻从「只有一个用户」掉到零。
+    final tokens = RegExp(r'static const (\w+) =')
+        .allMatches(File('lib/app/corners.dart').readAsStringSync())
+        .map((m) => m.group(1)!)
+        .toList();
+    expect(tokens, isNotEmpty, reason: '`corners.dart` 里一支令牌都没解析出来？');
+
+    final unused = <String>[];
+    for (final token in tokens) {
+      final pattern = RegExp('Corners\\.$token\\b');
+      final used = Directory('lib').listSync(recursive: true).any(
+            (entity) =>
+                entity is File &&
+                entity.path.endsWith('.dart') &&
+                entity.path.replaceAll(r'\', '/') != 'lib/app/corners.dart' &&
+                entity
+                    .readAsLinesSync()
+                    .any((line) => pattern.hasMatch(line)),
+          );
+      if (!used) unused.add(token);
+    }
+
+    expect(
+      unused,
+      isEmpty,
+      reason: '这几支令牌没有任何调用点，等于摆设：$unused\n'
+          '要么把调用点迁过来，要么把这支删掉 —— 别留着「以后可能用得上」的常量。',
+    );
+  });
+
   test('★ 用户可见的文案里不许出现 markdown —— `**` 会原样印在屏幕上', () {
     // 电脑端 `docs/实现决策.md` §58.9 / §66.6。那一端踩过一次：界面上
     // **真的印出了字面的 `**`** —— 因为 `**加粗**` 在 WPF 的 TextBlock 里

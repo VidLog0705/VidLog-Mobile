@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'app/corners.dart';
 import 'app/palette.dart';
 import 'app/recorder_page.dart';
 import 'diagnostics/app_log.dart';
@@ -123,7 +124,11 @@ class VidLogApp extends StatelessWidget {
       deleteIconColor: Palette.primary,
       iconTheme: IconThemeData(color: Palette.primary, size: 18),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.all(Radius.circular(20)),
+        // ⚠️ 写成 `BorderRadius.all(...)` 而不是 `circular(...)`：这一段在
+        // `const ChipThemeData` 里（整棵主题都是 const），而 `BorderRadius.circular`
+        // **不是** const 构造器 —— 值完全一样（`circular` 内部就是 `all`），
+        // 但换成 `circular` 立刻编译不过（2026-10-07 迁 P1 时踩到的）。
+        borderRadius: BorderRadius.all(Radius.circular(Corners.pill)),
       ),
     ),
 

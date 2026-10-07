@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../recording/business_type.dart';
+import 'corners.dart';
 import 'palette.dart';
 
 /// 一条录像的详情（需求方 2026-09-27 照备份页草图定的）。
@@ -237,7 +238,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
 
   Widget _preview(BuildContext context) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(Corners.card),
       child: AspectRatio(
         aspectRatio: 16 / 9,
         child: Stack(
@@ -267,7 +268,7 @@ class _RecordDetailPageState extends State<RecordDetailPage> {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
           color: tint,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(Corners.tagLarge),
         ),
         child: Text(
           text,

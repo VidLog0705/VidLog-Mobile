@@ -193,10 +193,10 @@ extension on _RecorderPageState {
         child: Material(
           color: open ? Palette.backdrop.withValues(alpha: 0.55)
                       : Palette.backdrop.withValues(alpha: 0.3),
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(Corners.note),
           child: InkWell(
             key: const Key('recorder-focus-button'),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(Corners.note),
             // 收起时把三个字段一起清掉（见 `_closeDial` 的说明）。
             // 摊开时不清：那样每次点开都从「没响过」开始，第一下滑动必定响一声，
             // 而用户只是把面板收了又开。
@@ -293,7 +293,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Palette.amberTint,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(Corners.card),
       ),
       child: Column(
         children: [
@@ -381,7 +381,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(Corners.card),
       ),
       child: child,
     );

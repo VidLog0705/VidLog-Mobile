@@ -110,7 +110,7 @@ extension on _RecorderPageState {
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(Corners.note),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -223,7 +223,7 @@ extension on _RecorderPageState {
             color: reason == null
                 ? scheme.surfaceContainerHighest
                 : Palette.amberTint,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(Corners.note),
           ),
           child: Text(
             effective == null

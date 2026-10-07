@@ -161,7 +161,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: look.tint,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(Corners.tag),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -233,7 +233,7 @@ extension on _RecorderPageState {
           fit: StackFit.expand,
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(Corners.thumb),
               child: _thumbImage(session),
             ),
             const Center(

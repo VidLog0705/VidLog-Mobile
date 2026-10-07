@@ -166,7 +166,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(Corners.pill),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -528,7 +528,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(Corners.pill),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,

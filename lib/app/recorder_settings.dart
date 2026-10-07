@@ -193,7 +193,7 @@ extension on _RecorderPageState {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Palette.blueTint,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(Corners.header),
       ),
       child: Row(
         children: [
@@ -202,7 +202,7 @@ extension on _RecorderPageState {
             height: 44,
             decoration: BoxDecoration(
               color: Palette.primary,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(Corners.card),
             ),
             child: const Icon(Icons.settings, color: Palette.onDark, size: 26),
           ),
@@ -246,7 +246,7 @@ extension on _RecorderPageState {
                   height: 34,
                   decoration: BoxDecoration(
                     color: Palette.primary,
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(Corners.iconBox),
                   ),
                   child: Icon(icon, color: Palette.onDark, size: 20),
                 ),
