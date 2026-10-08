@@ -127,7 +127,7 @@ extension on _RecorderPageState {
               const SizedBox(height: 2),
               Text(
                 '电商发货 / 退货视频取证系统',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: context.palette.muted),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: context.palette.muted),
               ),
             ],
           ),

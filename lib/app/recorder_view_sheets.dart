@@ -406,8 +406,7 @@ extension on _RecorderPageState {
             style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         Text(
-          '规格 §3.2.2：框内始终识别不到时，用户必须能手动输入单号兜底，'
-          '且不打断当前录制。',
+          '框里一直认不出来时，直接手动输单号就行 —— 不会打断正在录的。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),

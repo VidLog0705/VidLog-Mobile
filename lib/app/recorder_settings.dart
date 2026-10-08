@@ -217,7 +217,7 @@ extension on _RecorderPageState {
               Text('设置',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
               SizedBox(height: 2),
-              Text('系统配置与功能管理', style: Theme.of(context).textTheme.bodySmall),
+              Text('系统配置与功能管理', style: Theme.of(context).textTheme.bodyMedium),
             ],
           ),
         ],
@@ -356,9 +356,8 @@ extension on _RecorderPageState {
         ),
         const SizedBox(height: 6),
         Text(
-          '管的是这台手机现在出不出声：扫到不是同一件的包裹时出声提醒'
-          '（规格 §3.3.2 错码保护），表盘滑过刻度时的「咔哒」声也归它。'
-          '旁边有人、或者嫌吵时关掉。',
+          '管的是这台手机现在出不出声：扫到不是同一件的包裹时出声提醒，'
+          '表盘滑过刻度时的「咔哒」声也归它。旁边有人、或者嫌吵时关掉。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 4),

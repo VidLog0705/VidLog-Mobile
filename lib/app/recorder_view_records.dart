@@ -587,7 +587,7 @@ extension on _RecorderPageState {
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         label: Text(
           '${selected == null ? '全部来源' : selected.displayName} ▾',
-          style: Theme.of(context).textTheme.bodySmall,
+          style: Theme.of(context).textTheme.labelLarge,
         ),
       ),
     );
@@ -607,7 +607,7 @@ extension on _RecorderPageState {
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       label: Text(
         '${day == null ? '全部日期' : dayStamp(day)} ▾',
-        style: Theme.of(context).textTheme.bodySmall,
+        style: Theme.of(context).textTheme.labelLarge,
       ),
       onPressed: _pickDay,
       onDeleted: day == null ? null : () => _applyFilter(() => _recordsDay = null),

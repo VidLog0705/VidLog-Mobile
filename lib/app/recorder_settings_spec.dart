@@ -264,7 +264,7 @@ extension on _RecorderPageState {
         ),
         const SizedBox(height: 8),
         Text(
-          '水印随录像变换，成片始终位于视觉右上角并保持正向可读。',
+          '水印跟着画面一起转，始终落在右上角、看得清。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
@@ -322,8 +322,7 @@ extension on _RecorderPageState {
         ),
         const SizedBox(height: 6),
         Text(
-          '画面一直不动、够这个时长就停（§3.3.3）。这条不出声 —— '
-          '收尾时用户多半已经走开，补一句只会像设备在自言自语。',
+          '画面一直不动、够这个时长就自动停。这一条不会出声提醒。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
@@ -394,8 +393,7 @@ extension on _RecorderPageState {
         const SizedBox(height: 6),
         Text(
           '⚠️ 这一栏永不自动删：还没备份上去的录像在手机上是唯一一份，'
-          '删了就永久没了（不变量 I2）。它到期的动作只有提醒 —— '
-          '列表标红 + 顶部催上传。',
+          '删了就永久没了。它到期只提醒 —— 列表标红 + 顶部催上传。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
 
@@ -592,8 +590,7 @@ extension on _RecorderPageState {
               ),
             ),
             Text(
-              '重启 App 自动归位（关）—— 它不写进配置。'
-              '所以做完验收记得自己也关掉：开着它，真实录制会在开录 20 秒后就被问一次。',
+              '重启 App 自动归位（关）—— 它不写进配置。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -647,8 +644,8 @@ extension on _RecorderPageState {
                   '在点「开始工作」时生效。'
                   '改完直接去发货栏开始工作就行，不用退出去重进。\n'
                   '【语音提示】是立刻生效的。\n'
-                  '【归档后的本地保留期】落在盘上就算数，但它今天还没有执行者 ——'
-                  '要等清理执行层接通（M6），在那之前任何文件都不会被删。',
+                  '【归档后的本地保留期】落在盘上就算数，但它现在还没有执行者 ——'
+                  '在那之前任何文件都不会被删。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
       ),
@@ -667,7 +664,7 @@ extension on _RecorderPageState {
         const Text('启动时收尾的孤儿分段', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         Text(
-          '这些是上次没录完就被中断的会话。它们已经封文件、算哈希、写进索引。',
+          '这些是上次没录完就被中断的会话。它们已经收好尾、存好了。',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 8),
