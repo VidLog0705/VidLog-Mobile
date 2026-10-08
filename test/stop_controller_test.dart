@@ -528,6 +528,57 @@ void main() {
       expect(stops(controller.handle(Heartbeat(t0 + 3 * minute))), hasLength(1));
     });
 
+    test('★ 封顶：开录那一刻的心跳（差 0）不该停', () {
+      // 判据是 `nowMs - _lastMotionAtMs >= 静止时长`。开录时把 `_lastMotionAtMs`
+      // 置成开录时刻，于是**差 0 秒**这一下必须落在「还没到」那一侧 ——
+      // 这一条钉的就是那个 `>=` 的边界。
+      final controller = isolated(staticStop: StaticStopSetting.minutes3);
+      controller.handle(SceneSampled(t0 - 30 * minute, isStatic: true));
+      start(controller);
+
+      expect(controller.handle(Heartbeat(t0)), isEmpty, reason: '差 0 秒 —— 不该停');
+      expect(controller.isRecording, isTrue);
+    });
+
+    test('★ 扫码静止停录：门槛没开时静止整个不生效，开了之后那 2 秒从头数', () {
+      // 这一个模式**自己固定 2 秒**（不读档位），而且它的静止判定还多一道门槛：
+      // 包裹得先离手、再回来（`staticStopRequiresPackageReturn`）。
+      //
+      // ⚠️ 两件事连在一起才看得出来：那 2 秒是**从包裹回来那一刻**起算的 ——
+      // 开录前那 30 分钟的静止既不被算进去、门槛没开时更是压根不判。
+      final controller = isolated(
+          mode: WorkMode.scanThenStaticStop, staticStop: StaticStopSetting.off);
+
+      controller.handle(SceneSampled(t0 - 30 * minute, isStatic: true));
+      start(controller);
+
+      expect(controller.handle(Heartbeat(t0 + 30 * minute)), isEmpty,
+          reason: '包裹还没离手又回来，静止判定整个不生效 —— 静止再久也不停');
+
+      controller.handle(TrackedPackageLeft(t0 + 30 * minute));
+      controller.handle(TrackedPackageEntered(t0 + 30 * minute + second));
+
+      expect(controller.handle(Heartbeat(t0 + 30 * minute + 2 * second)), isEmpty,
+          reason: '回来才 1 秒，不该停');
+      expect(stops(controller.handle(Heartbeat(t0 + 30 * minute + 3 * second))),
+          hasLength(1));
+    });
+
+    test('★ 静止与时长兜底同时开着：谁先到谁停', () {
+      // 二者是**两条独立判据**（§3.3.3 / §3.3.4），会同时生效。
+      // 这里静止 3 分钟、兜底 4 分钟 ⇒ 静止先到，触发原因必须是静止那个。
+      final controller = full(
+        config: const RecorderConfig(
+          staticStop: StaticStopSetting.minutes3,
+          durationFallback: DurationFallbackSetting.minutes4,
+        ),
+      );
+      start(controller);
+
+      expect(stops(controller.handle(Heartbeat(t0 + 3 * minute))).single.trigger,
+          StopTrigger.sceneStatic);
+    });
+
     test('中途有活动则静止时钟重置', () {
       final controller = isolated(staticStop: StaticStopSetting.minutes3);
       start(controller);
