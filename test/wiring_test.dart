@@ -459,4 +459,77 @@ void main() {
           '${offenders.join('\n  ')}',
     );
   });
+
+  // ────────────────────────────────────────────────────────────
+  // T26③ 的**验收绊线**：拆干净了没有，以及拆完会不会又长回去
+  //
+  // 为什么值得钉：`recorder_page.dart` 一度 **6407 行**，而 `AGENTS.md` §5
+  // 写着「超过 800 行**建议**拆、超过 1500 行**必须**拆」。那条规矩当时
+  // **没有能失败的检查** —— 于是它超了 8 倍也没人知道（与 `precheck.ps1`
+  // 第 1 节的教训同源：规矩没有检查 = 没有规矩）。
+  // ────────────────────────────────────────────────────────────
+
+  /// **建议线**。已经超了的这三支是**待拆**，不是豁免。
+  ///
+  /// ⚠️ 这份名单**只许变短** —— 下面第二条盯着这件事。不销账的话它会慢慢
+  /// 变成一张「本来就没事」的免死金牌，而每行是为什么在上面的就没人记得了。
+  /// 所以每一行都带上「为什么轮到它 / 卡在哪一步」。
+  const softAllowlist = <String, String>{
+    // 1108 行。编排器：状态机 + 事件派发 + 收尾。第 3 轮（抽类）的活。
+    'lib/recording/recording_coordinator.dart': '第 3 轮',
+    // 1019 行。上传器：队列 / 退避 / 分片。
+    'lib/upload/uploader.dart': '第 3 轮',
+    // 822 行。第 2 轮拆剩的壳 —— 就差这一点点。
+    'lib/app/recorder_page.dart': '第 3 轮',
+  };
+
+  Map<String, int> libLineCounts() {
+    final counts = <String, int>{};
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+      counts[entity.path.replaceAll(r'\', '/')] = entity.readAsLinesSync().length;
+    }
+    return counts;
+  }
+
+  test('★ 超过 800 行的文件只有白名单里那三支', () {
+    final counts = libLineCounts();
+    expect(counts, isNotEmpty, reason: '一个 .dart 都没数到？扫描起点不对');
+
+    final over = {
+      for (final entry in counts.entries)
+        if (entry.value > 800) entry.key,
+    };
+
+    final unexpected = over.difference(softAllowlist.keys.toSet());
+    expect(
+      unexpected,
+      isEmpty,
+      reason: '这几支超过了 §5 的建议线（800 行），而且不在待拆名单里：\n  '
+          '${[for (final path in unexpected) '$path → ${counts[path]} 行'].join('\n  ')}\n'
+          '要么拆掉，要么它是**真有理由**地超 —— 那就写进 `softAllowlist`，'
+          '并把理由一起写上（§5 的硬线是 1500，不是 800）。',
+    );
+  });
+
+  test('★ 待拆名单里没有已经拆到 800 以下的 —— 拆完要销账', () {
+    // ⚠️ 这条是**反向**的，与「每一支圆角都真的有人用」同一个路数：
+    // 正着盯「有没有新的超」，这一条盯「老的拆完了有没有销账」。
+    final counts = libLineCounts();
+
+    final stale = [
+      for (final path in softAllowlist.keys)
+        if (!counts.containsKey(path))
+          '$path → 文件没了'
+        else if (counts[path]! <= 800)
+          '$path → 已经只剩 ${counts[path]} 行了',
+    ];
+
+    expect(
+      stale,
+      isEmpty,
+      reason: '这几支已经够到 800 行了 —— 从 `softAllowlist` 里划掉：\n  '
+          '${stale.join('\n  ')}',
+    );
+  });
 }
