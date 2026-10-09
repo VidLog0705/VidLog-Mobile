@@ -136,17 +136,13 @@ extension on _RecorderPageState {
   RecordingSpec _requestedSpec() =>
       _settings?.requestedSpec ?? RecordingSpec.standard;
 
-  /// 设置页：工作模式 → 两个兜底档位 → 验收工具。
+  /// 设置页：工作模式 → 两个兜底档位 → 什么时候生效。
   ///
-  /// ## 这一页的两条规矩
+  /// ## 这一页的规矩
   ///
-  /// ① **改了立刻落盘。** 落盘之前这些值只活在内存里，重启就回默认档位 ——
-  ///    而「时长兜底档位交给用户自己选」是需求方 2026-09-21 特意要的，
-  ///    每次开 App 都抹掉等于没做。
-  ///
-  /// ② **验收工具必须长得不像产品设置。** 「时长兜底加速」会把**真实录制**的
-  ///    首次询问压到 20 秒。它要是和别的开关长一样，验收完忘了关，
-  ///    正常录 4 分钟的活 20 秒就被问一次「是否停止」。
+  /// **改了立刻落盘。** 落盘之前这些值只活在内存里，重启就回默认档位 ——
+  /// 而「时长兜底档位交给用户自己选」是需求方 2026-09-21 特意要的，
+  /// 每次开 App 都抹掉等于没做。
   Widget _settingsPage() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -176,8 +172,6 @@ extension on _RecorderPageState {
         _netdiskCard(),
         const SizedBox(height: 12),
         _aboutCard(),
-        const SizedBox(height: 12),
-        _acceptanceCard(),
         const SizedBox(height: 12),
         _whenCard(),
       ],

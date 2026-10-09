@@ -253,13 +253,6 @@ class _RecorderPageState extends State<RecorderPage>
   VideoResolution _resolution = VideoResolution.fallback;
   RecordingOrientation _orientation = RecordingOrientation.fallback;
 
-  /// 把时长兜底的首次询问时机缩短，好让验收不必真的等 4 分钟。
-  /// **只压首次询问时机**，不动档位本身，也不碰静止档位。
-  ///
-  /// ⚠️ **故意不落盘。** 它是验收工具，不是产品设置：一旦存下来，验收完
-  /// 忘了关，真实录制就会在开录 20 秒后被问「是否停止」，而用户看着它像正常功能。
-  bool _accelerated = false;
-
   final _waybillController = TextEditingController();
 
   /// 切后台时刷日志的那个监听器（见 `initState`）。
@@ -506,7 +499,8 @@ class _RecorderPageState extends State<RecorderPage>
   }
 
   RecorderConfig get _config => RecorderConfig(
-        // 两个档位都**原样保留用户的选择** —— 加速只压时长兜底的首次询问时机。
+        // 两个档位都**原样保留用户的选择**（2026-10-09 前这里还有一个
+        // 「验收加速」把时长兜底的首次询问压到 20 秒，随验收工具卡一起删了）。
         staticStop: _staticStop,
         durationFallback: _durationFallback,
         waybillMinLength: _waybillMinLength,
@@ -514,11 +508,8 @@ class _RecorderPageState extends State<RecorderPage>
         // 实时共享（规格 §3.8）：**开会话时读一次**，与录音同一条规矩 ——
         // 推流那一路是会话的第二路输出，中途补不上（补 = 断录制）。
         liveShare: _liveShareOn,
-        promptAfterOverride: _accelerated ? const Duration(seconds: 20) : null,
-        durationPromptRepeatEvery:
-            _accelerated ? const Duration(seconds: 30) : const Duration(minutes: 5),
-        durationPromptGrace:
-            _accelerated ? const Duration(seconds: 10) : const Duration(minutes: 1),
+        // 时长兜底的两条时机走 `RecorderConfig` 的默认值（问一次 5 分钟、
+        // 宽限 1 分钟）—— 与删除加速开关之前的**生产行为逐字相同**。
       );
 
   /// 按设置与相机状态**对齐**推流那一路。

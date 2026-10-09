@@ -603,6 +603,8 @@ void main() {
     // 5200 是 2026-09-28 照需求方那张图重排之后的高度（**13 张卡**，
     // 原来是 7 张）。再加卡片就要跟着往上调，否则红的是 `find`
     // 而不是真正想验的那条守卫。
+    // ⚠️ 2026-10-09 删掉「验收工具卡」之后只剩 **12 张**，这个高度**没往下调**：
+    // 富余一点只会让列表更长，不会让 `find` 变松。
     tester.view.physicalSize = const Size(400, 5200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -616,9 +618,8 @@ void main() {
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
 
-    // 十三张卡一张都不能少（2026-09-28 照图重排）。
-    // 验收工具那块缺了 M4 的「时长兜底」验收没法跑；生效时机那块缺了，
-    // 用户改完没反应只会以为开关坏了。
+    // 十二张卡一张都不能少（2026-09-28 照图重排，2026-10-09 减去验收工具那张）。
+    // 生效时机那块缺了，用户改完没反应只会以为开关坏了。
     for (final title in const [
       '工作模式',
       '发货录像清理',
@@ -634,7 +635,12 @@ void main() {
     ]) {
       expect(find.text(title), findsOneWidget, reason: '设置页少了「$title」那张卡');
     }
-    expect(find.textContaining('时长兜底加速'), findsOneWidget);
+    // ⚠️ **「验收工具卡」不许再回到设置页上**（需求方 2026-10-09：「给需求方看的
+    // 东西或者开发测试时用的功能，去掉」）。反向钉住：那张卡的标题、那个开关的
+    // key，一个都不许再出现。
+    expect(find.textContaining('时长兜底加速'), findsNothing);
+    expect(find.byKey(const Key('settings-accelerated-switch')), findsNothing);
+    expect(find.textContaining('验收用，不是产品设置'), findsNothing);
     expect(find.textContaining('不用退出去重进'), findsOneWidget);
 
     // ⚠️ **「实时共享」这一整块不许再出现在设置页上**（需求方 2026-10-03）。
@@ -710,8 +716,9 @@ void main() {
     Switch switchAt(String key) =>
         tester.widget<Switch>(find.byKey(Key(key)));
 
-    // 验收开关**不落盘**，所以它不依赖盘上的设置读没读出来 —— 一直是可用的。
-    expect(switchTileAt('settings-accelerated-switch').onChanged, isNotNull);
+    // ⚠️ 2026-10-09 删掉了「验收开关」那一条：它**不落盘**，所以是这页上唯一
+    // 不受「设置读出来没有」影响的开关，正好当了这条守卫的反例。它没了之后，
+    // **本页所有开关都落盘、都必须禁用** —— 反例消失，守卫反而更严了。
 
     // ⚠️ 语音提示开关是**落盘**的，所以它跟着一起禁用。
     // 它同时是唯一「立刻生效」的一项设置：关它的人是因为现在就吵，

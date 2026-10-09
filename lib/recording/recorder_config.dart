@@ -183,7 +183,6 @@ class RecorderConfig {
     this.waybillMinLength = WaybillMinLength.fallback,
     this.recordAudio = true,
     this.liveShare = false,
-    this.promptAfterOverride,
     this.durationPromptRepeatEvery = const Duration(minutes: 5),
     this.durationPromptGrace = const Duration(minutes: 1),
     // 资源告警的三个阈值（规格 §3.1.1）。⚠️ **这是本地硬兜底值** ——
@@ -225,16 +224,13 @@ class RecorderConfig {
   /// **改了等下次「开始工作」**（设置页那张「什么时候生效」的卡上点着名）。
   final bool liveShare;
 
-  /// 首次询问时机的**覆盖值**。
+  /// 首次询问的时机 —— **就是用户选的那一档**。
   ///
-  /// **只给真机验收用** —— 真的等 4 分钟会让「时长兜底」那条验收变成苦差事。
-  /// 非 null 且 [durationFallback] 已启用时，它取代档位里配的分钟数。
-  /// 产品行为由 [durationFallback] 决定，这里只是让验收跑得动。
-  final Duration? promptAfterOverride;
-
-  /// 首次询问的时机。
-  Duration get effectivePromptAfter =>
-      promptAfterOverride ?? durationFallback.duration;
+  /// ⚠️ 2026-10-09 之前这里还能被一个「验收加速」覆盖（`promptAfterOverride`
+  /// 把 4 分钟压到 20 秒，好让真机验收不必干等）。那个开关只在设置页上露过面，
+  /// 需求方 2026-10-09 要求把给需求方看/开发测试用的东西去掉，就随卡片一起删了。
+  /// 现在没有第二条路径能改它。
+  Duration get effectivePromptAfter => durationFallback.duration;
 
   /// 点了「继续」之后，隔多久再问一次。
   final Duration durationPromptRepeatEvery;

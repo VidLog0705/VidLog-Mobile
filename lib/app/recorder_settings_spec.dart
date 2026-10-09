@@ -563,43 +563,7 @@ extension on _RecorderPageState {
     return result;
   }
 
-  // ── ③ 验收工具 ───────────────────────────────
-
-  /// 真机验收用的开关。**故意做成一眼能看出不是产品设置的样子**：
-  /// 琥珀底 + ⚠️ 标题 + 明说「不落盘」。
-  ///
-  /// 它不落盘这件事要在界面上说出来 —— 否则验收的人会以为「我上次开了」
-  /// 而这次没开，或者反过来以为「我关了它就永久关了」。
-  Widget _acceptanceCard() {
-    return Card(
-      color: context.palette.amberTint,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SwitchListTile(
-              key: const Key('settings-accelerated-switch'),
-              contentPadding: EdgeInsets.zero,
-              value: _accelerated,
-              onChanged: (value) => setState(() => _accelerated = value),
-              title: const Text('⚠️ 时长兜底加速（验收用，不是产品设置）'),
-              subtitle: const Text(
-                '把时长兜底的首次询问压到 20 秒、宽限 10 秒，免得验收真的等 4 分钟。'
-                '只压询问时机，不动档位本身，也不碰静止停录。',
-              ),
-            ),
-            Text(
-              '重启 App 自动归位（关）—— 它不写进配置。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── ④ 什么时候生效 ───────────────────────────
+  // ── ③ 什么时候生效 ───────────────────────────
 
   /// 说清「现在改的东西什么时候起作用」。
   ///
