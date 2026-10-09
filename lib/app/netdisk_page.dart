@@ -390,7 +390,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('网盘账号', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('网盘账号', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
             Text(
               connected
@@ -486,7 +486,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
           children: [
             Row(
               children: [
-                const Text('网盘容量', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text('网盘容量', style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 TextButton(
                   key: const Key('netdisk-quota-refresh'),
@@ -524,7 +524,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('查录像', style: TextStyle(fontWeight: FontWeight.bold)),
+              Text('查录像', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(
                 '填单号的后 6 位，或者拿扫码枪扫面单上的单号。',
@@ -579,7 +579,7 @@ class _NetdiskPageState extends State<NetdiskPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('查到的录像', style: TextStyle(fontWeight: FontWeight.bold)),
+            Text('查到的录像', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             if (results.isEmpty)
               Text('这一条没查到。', style: Theme.of(context).textTheme.bodySmall)

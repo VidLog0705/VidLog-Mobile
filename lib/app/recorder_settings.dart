@@ -259,8 +259,14 @@ extension on _RecorderPageState {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ⚠️ 卡片标题走 `titleMedium`（字号与 `bold` 都在
+                      // `app/text_scale.dart` 那份里）。改前这里是一句裸
+                      // `TextStyle(fontWeight: FontWeight.bold)` —— 它继承
+                      // 环境字号（`bodyMedium`，14），而备份页那张卡与记录卡头
+                      // 早就是 `titleMedium`(16)：同一个角色两个大小，
+                      // 全靠这一支收拢。
                       Text(title,
-                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                          style: Theme.of(context).textTheme.titleMedium),
                       if (blurb != null) ...[
                         const SizedBox(height: 2),
                         Text(blurb, style: Theme.of(context).textTheme.bodySmall),

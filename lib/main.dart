@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'app/corners.dart';
 import 'app/palette.dart';
 import 'app/recorder_page.dart';
+import 'app/text_scale.dart';
 import 'diagnostics/app_log.dart';
 import 'diagnostics/error_handlers.dart';
 
@@ -119,6 +120,18 @@ class VidLogApp extends StatelessWidget {
     // （`palette.dart` 末尾的 `PaletteOf`）。漏了这一行不会有编译错 ——
     // 只会在第一次取色时抛「空值上的 `!`」。
     extensions: <ThemeExtension<dynamic>>[p],
+
+    // ── 字号阶梯 ──
+    //
+    // ⚠️ **定义那份在 `app/text_scale.dart`，这里只是接线。** 2026-10-09 之前
+    // 这里**没有 `textTheme`**：全应用字号 = Flutter 默认 M3，于是「说明句」
+    // 就落在 M3 的 `bodySmall`(12)、「小标」落在 `labelSmall`(11) —— 档位是
+    // 框架给的，不是有人选过的。改动的理由与只改哪三档，全在那一份的注释里。
+    //
+    // ⚠️ 这一句传进去的是**按字段合并**的部分表，没列的档照旧走默认。
+    // 别在这里就地改字号：`test/wiring_test.dart` 冻结的是**本文件**（底栏那支
+    // 标签样式），而档位值只许有一个定义处。
+    textTheme: TextScale.theme,
 
     // ── 下面这几个是**色角色盖不住**的地方，逐个点名 ──
 

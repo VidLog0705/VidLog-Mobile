@@ -50,6 +50,7 @@ import 'palette.dart';
 import 'record_detail_page.dart';
 import 'scan_connect_page.dart';
 import 'scan_waybill_page.dart';
+import 'text_scale.dart';
 import 'video_player_page.dart';
 import 'zoom_dial.dart';
 
@@ -118,8 +119,18 @@ enum _WorkSheet { manual, events, diagnostics }
 ///
 /// ⚠️ `#1565C0` 是改版前 `main.dart` 里那个种子色，**故意写成另一个常量**、
 /// 不去引用 `Palette` —— 它不是配色的一部分，是一份**历史值**。
-final _cameraOverlayTheme =
-    ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF1565C0)));
+///
+/// ⚠️ **这一层冻的是配色，不是字号**（2026-10-09 起）。字号读 `TextScale`
+/// —— 全应用唯一那一份定义。它包的是**整个工作页**（`recorder_view_work.dart`
+/// 的 `_workPage`，`Theme(data: _cameraOverlayTheme, ...)`），所以工作页上
+/// 每一句说明、每一个小标都在这一层里；不跟着读的话，同一句说明在设置页
+/// 是 13、在采集页还是 12。
+/// 这里读进去的**只有字号与字重**（那一份只定义了这两样），字色仍由这一层
+/// 自己的亮色默认给 —— 所以暗色下不会变成白字压白底。
+final _cameraOverlayTheme = ThemeData(
+  colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF1565C0)),
+  textTheme: TextScale.theme,
+);
 
 /// 切到 [tab] 时要播报哪一句；不该播报就返回 null。
 ///

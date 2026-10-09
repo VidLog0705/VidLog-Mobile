@@ -300,9 +300,9 @@ extension on _RecorderPageState {
       ),
       child: Column(
         children: [
-          const Text(
+          Text(
             '录制时间即将超时，是否需要停止录制？',
-            style: TextStyle(fontWeight: FontWeight.bold),
+            style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 8),
           Row(
@@ -402,8 +402,8 @@ extension on _RecorderPageState {
       child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('手动输入（扫码失灵时的兜底）',
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        Text('手动输入（扫码失灵时的兜底）',
+            style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         Text(
           '框里一直认不出来时，直接手动输单号就行 —— 不会打断正在录的。',

@@ -116,7 +116,7 @@ extension on _RecorderPageState {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(_modeTitle(_mode),
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                  style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(_modeBlurb(_mode), style: Theme.of(context).textTheme.bodySmall),
             ],
@@ -661,7 +661,8 @@ extension on _RecorderPageState {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('启动时收尾的孤儿分段', style: TextStyle(fontWeight: FontWeight.bold)),
+        Text('启动时收尾的孤儿分段',
+            style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         Text(
           '这些是上次没录完就被中断的会话。它们已经收好尾、存好了。',
