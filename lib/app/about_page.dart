@@ -13,7 +13,7 @@ import 'package:flutter/material.dart';
 /// 只有采集页那两处（启动日志、诊断包抬头）用它，而采集页**本来就要 import
 /// 这个文件**拿 [AboutPage] —— 单开一个文件只会多一行 import 和一次跳转。
 /// 真出现第三个消费方再拆。
-const String appVersion = '1.0.0+7';
+const String appVersion = '1.0.0+8';
 
 /// 「关于我们」二级页。
 ///

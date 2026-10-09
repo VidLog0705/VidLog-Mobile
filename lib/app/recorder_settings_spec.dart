@@ -86,7 +86,7 @@ extension on _RecorderPageState {
     return _settingCard(
       icon: Icons.check_box_outlined,
       title: '工作模式',
-      blurb: '决定这一件什么时候算录完（规格 §3.3.1）。',
+      blurb: '起录与停止规则',
       children: [
         SegmentedButton<WorkMode>(
           segments: const [
@@ -160,13 +160,15 @@ extension on _RecorderPageState {
   ///    以为是两种不同的编码）。
   /// ② 帧率**没有选项**：规格是「上限 30、不提供选择」，所以每个档位的说明里
   ///    只把它写成一句话。摆一个只有一个选项的下拉是骗人的。
-  /// ③ **实际用哪一档必须说出来**（规格：**回落必须可见**、**不得静默回落**），
-  ///    见 [_resolutionCard] 底下那一块。
+  /// ③ **回落必须可见**（规格 §3.1.7）—— ⚠️ 2026-10-09 需求方把 [_resolutionCard]
+  ///    底下那块「实际按 X 录制」删掉了（理由在那边）⇒ 界面上这一面没有了，
+  ///    「可见」只剩**日志**那一面（`recording_spec_probe.dart` 里跟着回落
+  ///    一起记的那句 `规格回落：X → Y`）。**不是取消这条规矩。**
   Widget _codecCard() {
     return _settingCard(
       icon: Icons.code,
       title: '录像编码',
-      blurb: '兼容优先，还是体积优先 —— 按播放环境和存储空间选。',
+      blurb: '兼容还是省空间',
       children: [
         SegmentedButton<VideoCodec>(
           key: const Key('settings-codec'),
@@ -185,15 +187,34 @@ extension on _RecorderPageState {
     );
   }
 
+  /// 分辨率三档 + 一句评价。
+  ///
+  /// ## ⚠️ 2026-10-09 删掉了底下那块「实际按 X 录制」
+  ///
+  /// 需求方报的是：「无论选 4K / 1080P / 720P，底部永远写着**实际按 H264 4K
+  /// 竖屏录制**」，要求查清原因并删掉。
+  ///
+  /// **查出来的原因**（不是推断，是拿一个一次性探针跑出来的）：那一块读的是
+  /// `_coordinator.effectiveSpec` —— 它**只在建编排器那一刻**算一次
+  /// （启动、按【开始工作】、换模式各一次），而**点这三个分段按钮不会重建
+  /// 编排器**（模式与档位是 `RecordingCoordinator` 的构造参数，没有 setter，
+  /// 这是有意的：工作中途换编排器会把相机会话和界面状态拆开）。探针实测：
+  /// 只点 4K / 1080p / 720p，那一行**一个字都不变**；按一次【开始工作】才变。
+  /// 所以它显示的**永远是上一次开始工作时那一档**（用户盘上存着 4K 时就是
+  /// 4K）—— 而不是「选了没用」。
+  ///
+  /// 坏的地方在第二半：`reason != null` 时它会拿**当前选择**去跟**过期旧值**比，
+  /// 喷出一句假警告「⚠️ 实际按 H.264 4K 竖屏 录制 —— 你选的是 H.264 720P
+  /// 竖屏」—— 而用户根本没开始工作。**删掉是对的。**
+  ///
+  /// ⚠️ 删它**不等于**取消 §3.1.7 的「回落必须可见」：回落从第一天起就同时
+  /// 记着一条日志（`recording_spec_probe.dart` 的 `规格回落：X → Y`），
+  /// 那一面还在，且已由 `recording_coordinator_test.dart` 钉住。
   Widget _resolutionCard() {
-    final scheme = Theme.of(context).colorScheme;
-    final effective = _coordinator?.effectiveSpec;
-    final reason = _coordinator?.specFallbackReason;
-
     return _settingCard(
       icon: Icons.hd_outlined,
       title: '录像规格',
-      blurb: '越大越清楚、也越占地方。清理时的容量预告按这一档算。',
+      blurb: '越清楚越占地方',
       children: [
         SegmentedButton<VideoResolution>(
           key: const Key('settings-resolution'),
@@ -209,34 +230,6 @@ extension on _RecorderPageState {
         ),
         const SizedBox(height: 8),
         Text(_resolutionBlurb(_resolution), style: Theme.of(context).textTheme.bodySmall),
-
-        const SizedBox(height: 16),
-
-        // 「实际按 X 录制」—— 规格那句「不得静默回落」的落点。
-        // ⚠️ 它说的是**整档规格**（编码 + 分辨率 + 方向），不只是分辨率 ——
-        // 但它挂在三张卡里名字最对得上的这一张上。
-        Container(
-          key: const Key('settings-effective-spec'),
-          width: double.infinity,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: reason == null
-                ? scheme.surfaceContainerHighest
-                : context.palette.amberTint,
-            borderRadius: BorderRadius.circular(Corners.note),
-          ),
-          child: Text(
-            effective == null
-                ? '实际用哪一档还没检查过。点【开始工作】时会真开一次相机试。'
-                : reason == null
-                    ? '实际按 ${effective.label} 录制。'
-                    : '⚠️ 实际按 ${effective.label} 录制 —— 你选的是 ${_requestedSpec().label}。'
-                        '$reason',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: reason == null ? null : context.palette.amber,
-            ),
-          ),
-        ),
       ],
     );
   }
@@ -245,7 +238,7 @@ extension on _RecorderPageState {
     return _settingCard(
       icon: Icons.screen_rotation_outlined,
       title: '录像方向',
-      blurb: '手机怎么拿就选哪个 —— 取景框和画面比例都跟着它走。',
+      blurb: '画面方向随手机',
       children: [
         SegmentedButton<RecordingOrientation>(
           key: const Key('settings-orientation'),
@@ -281,7 +274,7 @@ extension on _RecorderPageState {
     return _settingCard(
       icon: Icons.timer_off_outlined,
       title: '忘记停止录制时的自动兜底',
-      blurb: '两个兜底互相独立：关掉一个不影响另一个。任何一个到点，录制就停。',
+      blurb: '两个兜底互相独立',
       children: [
         _settingRow(
           '最长录制时长',
@@ -367,7 +360,7 @@ extension on _RecorderPageState {
           ? Icons.local_shipping_outlined
           : Icons.assignment_return_outlined,
       title: '$side录像清理',
-      blurb: '$side那批在手机上留多久。两个数互相独立 —— 改一个不动另一个。',
+      blurb: '$side在手机留多久',
       trailing: IconButton(
         key: const Key('settings-retention-help'),
         tooltip: '保留期说明',

@@ -597,15 +597,10 @@ void main() {
 
   testWidgets('★ 设置页：盘上的设置没读出来之前，档位控件必须是禁用的',
       (WidgetTester tester) async {
-    // ⚠️ 先把视口拉高。设置页是 `ListView`，**屏幕外的卡片根本没建** ——
-    // 默认的 800×600 下第三、四块不在树里，`find` 会找不到它们。
-    //
-    // 5200 是 2026-09-28 照需求方那张图重排之后的高度（**13 张卡**，
-    // 原来是 7 张）。再加卡片就要跟着往上调，否则红的是 `find`
-    // 而不是真正想验的那条守卫。
-    // ⚠️ 2026-10-09 删掉「验收工具卡」之后只剩 **12 张**，这个高度**没往下调**：
-    // 富余一点只会让列表更长，不会让 `find` 变松。
-    tester.view.physicalSize = const Size(400, 5200);
+    // ⚠️ 先把视口拉高。两级结构下每一页都是 `ListView`，
+    // **屏幕外的卡片根本没建** —— 默认的 800×600 下后面的卡不在树里，
+    // `find` 会找不到它们。3000 够放下最长的那一页（录像清理，两张保留期卡）。
+    tester.view.physicalSize = const Size(400, 3000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
 
@@ -618,29 +613,41 @@ void main() {
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
 
-    // 十二张卡一张都不能少（2026-09-28 照图重排，2026-10-09 减去验收工具那张）。
-    // 生效时机那块缺了，用户改完没反应只会以为开关坏了。
-    for (final title in const [
-      '工作模式',
-      '发货录像清理',
-      '退货录像清理',
-      '录像编码',
-      '录像规格',
-      '录像方向',
-      '录制声音',
-      '忘记停止录制时的自动兜底',
-      '语音提示',
-      '网盘视频',
-      '关于我们',
-    ]) {
-      expect(find.text(title), findsOneWidget, reason: '设置页少了「$title」那张卡');
+    // ── 一、一级页：七张入口卡 + 每张一句 ≤10 个汉字的功能描述 ──
+    //
+    // ⚠️ 2026-10-09 照 PackingProof 手机端设置页重写：原来是「一页十二张卡」，
+    // 现在那十二张按主题收进四个二级页，另有三张本来就是独立页的入口
+    // （网盘 / 关于 / 清理流水 —— 清理流水摆进了「录像清理」里）。
+    // **卡一张没少，只是不再并排躺在一页上** —— 下面第二节把每一页都点进去核过。
+    const entries = <String, String>{
+      '录像设置': '画面与声音',
+      '工作模式': '起录与停止规则',
+      '自动停止': '忘了停也会自动停',
+      '录像清理': '留多久、清过什么',
+      '语音提示': '提示音开关与试听',
+      '网盘视频': '按单号查回录像',
+      '关于我们': '版本与导出日志',
+    };
+    for (final entry in entries.entries) {
+      expect(find.text(entry.key), findsOneWidget,
+          reason: '设置页少了「${entry.key}」这张入口卡');
+      // 功能描述（那行小字）—— 需求方 2026-10-09 写死**不超过 10 个汉字**。
+      // 断言里写死一句一句的文案，不是去数长度：文案改了就该来这儿改一次，
+      // 顺手看一眼它超没超。
+      expect(find.text(entry.value), findsOneWidget,
+          reason: '「${entry.key}」的功能描述不是「${entry.value}」');
+      expect(entry.value.runes.length, lessThanOrEqualTo(10),
+          reason: '「${entry.key}」的功能描述超过 10 个汉字了');
     }
+
     // ⚠️ **「验收工具卡」不许再回到设置页上**（需求方 2026-10-09：「给需求方看的
     // 东西或者开发测试时用的功能，去掉」）。反向钉住：那张卡的标题、那个开关的
     // key，一个都不许再出现。
     expect(find.textContaining('时长兜底加速'), findsNothing);
     expect(find.byKey(const Key('settings-accelerated-switch')), findsNothing);
     expect(find.textContaining('验收用，不是产品设置'), findsNothing);
+
+    // 生效时机那块缺了，用户改完没反应只会以为开关坏了。它留在**一级页**上。
     expect(find.textContaining('不用退出去重进'), findsOneWidget);
 
     // ⚠️ **「实时共享」这一整块不许再出现在设置页上**（需求方 2026-10-03）。
@@ -650,6 +657,8 @@ void main() {
     expect(find.text('实时共享'), findsNothing,
         reason: '设置页那块「实时共享」该删了 —— 开关和说明都在采集页右上角');
 
+    // ── 二、二级页：每一页里的控件同样必须是禁用的 ──
+    //
     // ⚠️ 下面这一整段是实质的。`_settings` 是 `_bootstrap` 里异步读出来的，
     // 读出来之前改设置会被随后读到盘上值直接覆盖 —— 用户看到的是
     // 「开关点了没反应」，而且下一次打开发现改的没了。
@@ -657,17 +666,29 @@ void main() {
     //
     // widget 测试里没有平台通道，`_bootstrap` 必然失败 → `_settings` 恒为 null，
     // 正好就是这个状态。把 `_settingsReady` 那道守卫去掉，这段会红。
-    expect(
-      tester
-          .widget<SegmentedButton<WorkMode>>(find.byType(SegmentedButton<WorkMode>))
-          .onSelectionChanged,
-      isNull,
-      reason: '设置还没读出来就允许改 → 改完被盘上值覆盖，用户以为开关坏了',
-    );
+    //
+    // ⚠️ 2026-10-09 起**遍历每一个二级页**，而不是只看第一页：
+    // 控件现在散在四个页面里，哪一页漏套 `_settingsReady`，那一项在真机上
+    // 就是「改了没反应」，而且是静默的 —— 控件看起来能点。
+    Future<void> openSub(String title) async {
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+      expect(find.byType(BackButton), findsOneWidget,
+          reason: '「$title」二级页没有返回箭头 —— 进去出不来');
+    }
 
-    // 录制规格那三行单选同理（规格 §3.1.7）。三行**都要**验 ——
-    // 少套一行的 `_settingsReady`，那一项在真机上就是「改了没反应」，
-    // 而且是静默的：控件看起来能点。
+    Future<void> back() async {
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+    }
+
+    DropdownButton<Object?> dropdownAt(String key) =>
+        tester.widget<DropdownButton<Object?>>(find.byKey(Key(key)));
+
+    // ① 录像设置：编码 / 规格 / 方向三个分段选择器 + 录制声音那个开关。
+    // 三行**都要**验 —— 少套一行的 `_settingsReady`，那一项在真机上就是
+    // 「改了没反应」，而且是静默的：控件看起来能点。
+    await openSub('录像设置');
     expect(
       tester
           .widget<SegmentedButton<VideoCodec>>(
@@ -689,49 +710,69 @@ void main() {
           .onSelectionChanged,
       isNull,
     );
+    // 录制声音同样是落盘的（2026-09-28 新增），同样禁用。
+    // 它同时钉住了另一件事：「设置没读出来时按开算」—— 取证视频带声音是
+    // 更完整的一份证据。
+    final audio = find.byKey(const Key('settings-record-audio-switch'));
+    expect(tester.widget<SwitchListTile>(audio).onChanged, isNull);
+    expect(tester.widget<SwitchListTile>(audio).value, isTrue,
+        reason: '设置没读出来时按开算 —— 取证视频带声音是更完整的一份证据');
 
-    // 下拉项：保留期四个（规格 §3.5.2.1）+ 两个兜底档位（§3.3.3 / §3.3.4）
-    // + 条码最短长度（2026-09-28 新增）。**每一个都各验一遍** ——
-    // 少套一个的 `_settingsReady`，那一格在真机上就是「改了没反应」，
-    // 而且是静默的：下拉看起来能点。
+    // ⚠️ **「实际按 X 录制」那行不许再回来**（需求方 2026-10-09）。
+    // 它读的是**建编排器那一刻**的值：只点这三个分段按钮，它一个字都不会变 ——
+    // 于是它显示的是旧值，却拿**当前选择**去跟旧值比，能喷出一句假警告
+    // 「⚠️ 实际按 H.264 4K 竖屏 录制 —— 你选的是 H.264 720P 竖屏」。
+    // ⚠️ 删掉它**不是取消「回落必须可见」那条规格**（§3.1.7）：界面上这一面
+    // 没有了，但回落从第一天起就**同时**记着一条日志
+    // （`recording_spec_probe.dart` 的 `规格回落：X → Y`）—— 那一面还在，
+    // 钉它的是 `recording_coordinator_test.dart`「开工前先做可用性检查」那条。
+    expect(find.byKey(const Key('settings-effective-spec')), findsNothing);
+    expect(find.textContaining('实际按'), findsNothing,
+        reason: '那行会显示过期的旧值，还会跟当前选择比出一句假警告');
+    await back();
+
+    // ② 工作模式：那三选胶囊 + 条码最短长度那个下拉（2026-09-28 新增）。
+    await openSub('工作模式');
+    expect(
+      tester
+          .widget<SegmentedButton<WorkMode>>(find.byType(SegmentedButton<WorkMode>))
+          .onSelectionChanged,
+      isNull,
+      reason: '设置还没读出来就允许改 → 改完被盘上值覆盖，用户以为开关坏了',
+    );
+    expect(dropdownAt('settings-waybill-min-length').onChanged, isNull);
+    await back();
+
+    // ③ 自动停止：两个兜底档位（§3.3.3 / §3.3.4）。
+    await openSub('自动停止');
+    for (final key in const ['settings-duration-fallback', 'settings-static-stop']) {
+      expect(dropdownAt(key).onChanged, isNull,
+          reason: '「$key」在设置读出来之前必须禁用');
+    }
+    await back();
+
+    // ④ 录像清理：保留期四个（规格 §3.5.2.1）。
+    await openSub('录像清理');
     for (final key in const [
       'settings-retention-archived-outbound',
       'settings-retention-archived-return',
       'settings-retention-unarchived-outbound',
       'settings-retention-unarchived-return',
-      'settings-static-stop',
-      'settings-duration-fallback',
-      'settings-waybill-min-length',
     ]) {
-      expect(
-        tester.widget<DropdownButton<Object?>>(find.byKey(Key(key))).onChanged,
-        isNull,
-        reason: '「$key」在设置读出来之前必须禁用',
-      );
+      expect(dropdownAt(key).onChanged, isNull,
+          reason: '「$key」在设置读出来之前必须禁用');
     }
+    await back();
 
-    // 页上的开关，靠 key 取 —— 这也顺带把「哪个开关是哪个」钉住了。
-    SwitchListTile switchTileAt(String key) =>
-        tester.widget<SwitchListTile>(find.byKey(Key(key)));
-    Switch switchAt(String key) =>
-        tester.widget<Switch>(find.byKey(Key(key)));
-
-    // ⚠️ 2026-10-09 删掉了「验收开关」那一条：它**不落盘**，所以是这页上唯一
-    // 不受「设置读出来没有」影响的开关，正好当了这条守卫的反例。它没了之后，
-    // **本页所有开关都落盘、都必须禁用** —— 反例消失，守卫反而更严了。
-
+    // ⑤ 语音提示：那个开关。
     // ⚠️ 语音提示开关是**落盘**的，所以它跟着一起禁用。
     // 它同时是唯一「立刻生效」的一项设置：关它的人是因为现在就吵，
     // 让他「先结束工作再开始」是不合理的（`实现决策.md` §17.3）。
-    expect(switchAt('settings-voice-switch').onChanged, isNull);
-    expect(switchAt('settings-voice-switch').value, isTrue,
+    await openSub('语音提示');
+    final voice = find.byKey(const Key('settings-voice-switch'));
+    expect(tester.widget<Switch>(voice).onChanged, isNull);
+    expect(tester.widget<Switch>(voice).value, isTrue,
         reason: '设置没读出来时按开算 —— 不该静默把提示功能关掉');
-
-    // 录制声音同样是落盘的（2026-09-28 新增），同样禁用。
-    expect(switchTileAt('settings-record-audio-switch').onChanged, isNull);
-    expect(switchTileAt('settings-record-audio-switch').value, isTrue,
-        reason: '设置没读出来时按开算 —— 取证视频带声音是更完整的一份证据');
-
     // ⚠️ 试听在这是**灰的**，但原因不是设置没读出来，而是**还没有编排器**
     // （语音通道要等第一次「开始工作」才接上）。这条同时钉住了另一件事：
     // 试听没有 bypass 那个唯一的 `voiceEnabled` 闸 —— 它是 `speak()` 的调用者，
@@ -743,8 +784,10 @@ void main() {
       isNull,
       reason: '没有编排器时试听必须按不动 —— 按了不发声就是「改了没反应的开关」',
     );
+    await back();
 
-    // 最小的真机宽度（360dp）下，最宽的那个固定宽度控件不能横着溢出。
+    // ── 三、最小的真机宽度（360dp）下，最宽的那个固定宽度控件不能横着溢出 ──
+    //
     // ⚠️ 现在这一页的下拉**全都套在 `_settingRow` 的 `Expanded` 里**，
     // 结构上溢不出来；唯一宽度由内容决定的是模式那个三选胶囊
     // （`连续扫码` / `同码停录` / `扫码静止停录`，三段都是长词）。
@@ -754,10 +797,10 @@ void main() {
     // （溢出是 paint 阶段报的）—— 所以这里只认矩形。
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.reset);
     await tester.pumpAndSettle();
 
     // ⚠️ **屏矮了之后必须先滚过去。** `ListView` 只建屏幕内的孩子。
+    await openSub('工作模式');
     await tester.scrollUntilVisible(
       find.byType(SegmentedButton<WorkMode>),
       200,

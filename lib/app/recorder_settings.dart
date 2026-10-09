@@ -89,6 +89,10 @@ extension on _RecorderPageState {
       settings.codec = _codec;
       settings.resolution = _resolution;
       settings.orientation = _orientation;
+
+      // 二级页不在这一页的子树上（它是 `Navigator.push` 上去的），
+      // 上面那句 `setState` 刷不到它 —— 见 [_settingsTick]。
+      _settingsTick.value++;
     });
 
     // ⚠️ **播报是唯一立刻生效的一项。**
@@ -136,7 +140,21 @@ extension on _RecorderPageState {
   RecordingSpec _requestedSpec() =>
       _settings?.requestedSpec ?? RecordingSpec.standard;
 
-  /// 设置页：工作模式 → 两个兜底档位 → 什么时候生效。
+  /// 设置页：**一张入口列表**，每一项推开一个二级页。
+  ///
+  /// ## ⚠️ 2026-10-09 改的：从「一页十二张卡」改成「入口列表 + 二级页」
+  ///
+  /// 需求方 2026-10-09 点名照 PackingProof 手机端设置页的**结构**重写
+  /// （只看仓里的源码，一行没抄），并要求**每张入口卡的功能描述 ≤10 个汉字**。
+  /// 在这之前十二张卡全铺在一页上，说明文字也都是长句，一路划下来找不到东西。
+  ///
+  /// 改法只动**摆法**，没动任何设置项：所有 `Key`（`settings-codec` /
+  /// `settings-resolution` / 四个保留期 / 三个档位 / 两个开关）一个没改，
+  /// 卡片本身（`_settingCard`）也一字没动 —— 它们现在只是从「列表的兄弟」
+  /// 变成「二级页的兄弟」。
+  ///
+  /// ⚠️ 二级页用 `Navigator.push`（照本页已有的先例：网盘 / 关于 / 清理流水），
+  /// 所以它**盖住底栏**，返回靠 AppBar 上那颗箭头。
   ///
   /// ## 这一页的规矩
   ///
@@ -149,32 +167,141 @@ extension on _RecorderPageState {
       children: [
         _settingsHeader(),
         const SizedBox(height: 16),
-        _modeCard(),
+        _settingsEntryCard(
+          key: 'recording',
+          icon: Icons.videocam_outlined,
+          title: '录像设置',
+          blurb: '画面与声音',
+          onTap: () => _openSubjectPage('录像设置', () => [
+                _codecCard(),
+                const SizedBox(height: 12),
+                _resolutionCard(),
+                const SizedBox(height: 12),
+                _orientationCard(),
+                const SizedBox(height: 12),
+                _recordAudioCard(),
+              ]),
+        ),
         const SizedBox(height: 12),
-        _retentionCard(outbound: true),
+        _settingsEntryCard(
+          key: 'mode',
+          icon: Icons.check_box_outlined,
+          title: '工作模式',
+          blurb: '起录与停止规则',
+          onTap: () => _openSubjectPage('工作模式', () => [
+                _modeCard(),
+              ]),
+        ),
         const SizedBox(height: 12),
-        _retentionCard(outbound: false),
+        _settingsEntryCard(
+          key: 'stop',
+          icon: Icons.timer_off_outlined,
+          title: '自动停止',
+          blurb: '忘了停也会自动停',
+          onTap: () => _openSubjectPage('自动停止', () => [
+                _fallbackCard(),
+              ]),
+        ),
         const SizedBox(height: 12),
-        _cleanupLogCard(),
+        _settingsEntryCard(
+          key: 'cleanup',
+          icon: Icons.cleaning_services_outlined,
+          title: '录像清理',
+          blurb: '留多久、清过什么',
+          onTap: () => _openSubjectPage('录像清理', () => [
+                _retentionCard(outbound: true),
+                const SizedBox(height: 12),
+                _retentionCard(outbound: false),
+                const SizedBox(height: 12),
+                _cleanupLogCard(),
+              ]),
+        ),
         const SizedBox(height: 12),
-        _codecCard(),
+        _settingsEntryCard(
+          key: 'voice',
+          icon: Icons.volume_up_outlined,
+          title: '语音提示',
+          blurb: '提示音开关与试听',
+          onTap: () => _openSubjectPage('语音提示', () => [
+                _voiceCard(),
+              ]),
+        ),
         const SizedBox(height: 12),
-        _resolutionCard(),
+        _settingsEntryCard(
+          key: 'netdisk',
+          icon: Icons.cloud_outlined,
+          title: '网盘视频',
+          blurb: '按单号查回录像',
+          onTap: _openNetdiskPage,
+        ),
         const SizedBox(height: 12),
-        _orientationCard(),
-        const SizedBox(height: 12),
-        _recordAudioCard(),
-        const SizedBox(height: 12),
-        _fallbackCard(),
-        const SizedBox(height: 12),
-        _voiceCard(),
-        const SizedBox(height: 12),
-        _netdiskCard(),
-        const SizedBox(height: 12),
-        _aboutCard(),
-        const SizedBox(height: 12),
+        _settingsEntryCard(
+          key: 'about',
+          icon: Icons.info_outline,
+          title: '关于我们',
+          blurb: '版本与导出日志',
+          onTap: _openAboutPage,
+        ),
+        const SizedBox(height: 16),
         _whenCard(),
       ],
+    );
+  }
+
+  // ── 设置页的两级结构（2026-10-09）─────────────
+
+  /// 入口卡：一行，右边一颗箭头 —— 点开是二级页。
+  ///
+  /// 照 PackingProof 手机端设置页那张入口卡的写法：**`Material` 铺
+  /// `surfaceContainer`（= 本仓的 `card`）+ `ListTile`**。
+  /// ⚠️ 它与二级页里的 `_settingCard`（`Card` + 圆角方块图标 + 说明）
+  /// **故意不是一套**：一级页要的是「一眼扫过去能挑」，二级页要的是
+  /// 「这一块在讲什么」。
+  ///
+  /// `blurb` 是**功能描述**，需求方 2026-10-09 写死**不超过 10 个汉字**。
+  Widget _settingsEntryCard({
+    required String key,
+    required IconData icon,
+    required String title,
+    required String blurb,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(Corners.card),
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        key: Key('settings-entry-$key'),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        leading: Icon(icon),
+        title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+        subtitle: Text(blurb, style: Theme.of(context).textTheme.bodySmall),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  /// 推开一个二级页：`AppBar`（带返回箭头）+ 一列卡片。
+  ///
+  /// ⚠️ `body` 是个**闭包**，不是现成的一列 widget：页面上的卡片读的是
+  /// 本 State 的字段（`_codec` / `_resolution` …），改动时靠 [_settingsTick]
+  /// 把这一层重新跑一遍。传一列现成的 widget 进去，点了分段按钮
+  /// 这一页不会变 —— 而 `setState` 只刷得到 `_settingsPage` 自己那棵树。
+  void _openSubjectPage(String title, List<Widget> Function() body) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => AnimatedBuilder(
+          animation: _settingsTick,
+          builder: (_, _) => Scaffold(
+            appBar: AppBar(title: Text(title)),
+            body: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+              children: body(),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -333,7 +460,7 @@ extension on _RecorderPageState {
     return _settingCard(
       icon: Icons.volume_up_outlined,
       title: '语音提示',
-      blurb: '离线自动使用系统语音 —— 不联网、不带音频素材（规格 §3.3.6）。',
+      blurb: '这台手机出不出声',
       children: [
         Row(
           children: [
@@ -408,7 +535,7 @@ extension on _RecorderPageState {
     return _settingCard(
       icon: Icons.mic_none,
       title: '录制声音',
-      blurb: '关闭后录像不带声音。',
+      blurb: '关闭后录像没声音',
       children: [
         SwitchListTile(
           key: const Key('settings-record-audio-switch'),
@@ -454,26 +581,12 @@ extension on _RecorderPageState {
     );
   }
 
-  Widget _netdiskCard() => _linkCard(
-        icon: Icons.cloud_outlined,
-        title: '网盘视频',
-        blurb: '把录像上传到网盘之后，按单号查回来播放。',
-        onTap: _openNetdiskPage,
-      );
-
-  Widget _aboutCard() => _linkCard(
-        icon: Icons.info_outline,
-        title: '关于我们',
-        blurb: '版本号、一句话介绍，以及把日志导出来发给我们。',
-        onTap: _openAboutPage,
-      );
-
   /// 清理流水（T24）—— 紧挨着上面那两条保留期：**「清什么」和「清过什么」
   /// 是同一件事的两面**，隔开摆的话用户找不到。
   Widget _cleanupLogCard() => _linkCard(
         icon: Icons.receipt_long_outlined,
         title: '清理流水',
-        blurb: '清掉的和没清掉的每一条，都记着时间和原因。',
+        blurb: '清过的都记在这',
         onTap: _openCleanupLogPage,
       );
 

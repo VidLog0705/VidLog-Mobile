@@ -360,7 +360,8 @@ extension on _RecorderPageState {
       // 录制规格也在这里交给编排器（规格 §3.1.7：**录制前可选、录制中不可改**）。
       // 它会先做一次真实的可用性检查，跑不通就回落到真能跑的那一档 ——
       // 结论落在 `_coordinator.effectiveSpec` / `specFallbackReason` 上，
-      // 界面照它显示，**不静默回落**。
+      // 回落**当场记一条日志**（`recording_spec_probe.dart`），**不静默回落**
+      // —— 2026-10-09 设置页那行显示删掉之后，日志就是剩下的那一面。
       await _coordinator!.startWorking(
         sourceDeviceId: _identity!.deviceId,
         spec: _requestedSpec(),

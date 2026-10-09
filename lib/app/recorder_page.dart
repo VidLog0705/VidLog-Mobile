@@ -211,6 +211,15 @@ class _RecorderPageState extends State<RecorderPage>
   /// 也不符合「同一时刻只有一段录制」的前提。
   int _tab = 0;
 
+  /// 设置被改过一次，就 +1。
+  ///
+  /// **只给二级页用**：2026-10-09 把设置页改成「入口列表 + 二级页」之后，
+  /// 二级页是 `Navigator.push` 上去的 —— 它**不在** `_settingsPage` 的子树里，
+  /// 所以 `_updateSettings` 里那句 `setState` 刷不到它，点了分段按钮自己
+  /// 不会变（「改了没反应」，踩坑 #13 的同款）。二级页拿它当 `Listenable`
+  /// 重建自己。值本身没有含义。
+  final ValueNotifier<int> _settingsTick = ValueNotifier<int>(0);
+
   /// 采集页当前属于哪一栏：1 = 发货，2 = 退货。
   ///
   /// **只在进入采集栏时更新，切走不动。** 工作中切到备份或设置栏看一眼再回来，

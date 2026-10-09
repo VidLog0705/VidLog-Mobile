@@ -477,10 +477,13 @@ class RecordingCoordinator {
   /// 用户选的那一档（**不一定是实际用的那一档**）。
   RecordingSpec _requestedSpec;
 
-  /// **实际**在用的那一档 —— 界面显示它、索引记它、容量按它估。
+  /// **实际**在用的那一档 —— 索引记它、容量按它估、取景框按它算。
   ///
   /// ⚠️ 与 [_requestedSpec] 可能不一样：跑不通就回落（规格 §3.1.7），
   /// 而**回落必须可见**。所以这两个值都要留得住，不能只留一个。
+  /// ⚠️ 2026-10-09 需求方把设置页那行「实际按 X 录制」删掉了 ⇒ 界面这一面
+  /// 没有了，「可见」只剩**日志**那一面（`recording_spec_probe.dart` 的
+  /// `规格回落：X → Y`，与回落同生共死的那一条）。
   RecordingSpec _effectiveSpec;
 
   /// 相机**实际开着**用的那一档。用来判断「规格改了要不要重开相机」。
@@ -503,7 +506,7 @@ class RecordingCoordinator {
 
   RecordingSpec get requestedSpec => _requestedSpec;
 
-  /// 实际在用的规格。界面「实际按 X 录制」那一行读的就是它。
+  /// 实际在用的规格。取景框比例、索引、容量预告读的都是它。
   RecordingSpec get effectiveSpec => _effectiveSpec;
 
   /// 相机**实际上**是按哪一套开的。给「重建编排器时把会话继承过去」用 ——
@@ -531,6 +534,12 @@ class RecordingCoordinator {
 
     _effectiveSpec = selection.spec;
     _specFallbackReason = selection.reason;
+
+    // ⚠️ 这里**不再补一条日志** —— 回落那件事 `selectRecordingSpec` 里已经记了
+    // （`recording_spec_probe.dart` 那句 `规格回落：X → Y`，warn 级），
+    // 而且它记的比我这儿能记的还全（问不出来、原生给越界下标那两条路它也各记一条）。
+    // 2026-10-09 我往这儿加过一条 `info`，随后证伪时才发现上一条已经在响 ——
+    // 加第二处只会让同一件事在日志里出现两遍。
 
     // 取景框要跟着规格走（规格 §3.2.2 的连带项）：画面比例变了，
     // 框的归一化坐标就得重算 —— 否则「画出来的框」和「实际判定的范围」

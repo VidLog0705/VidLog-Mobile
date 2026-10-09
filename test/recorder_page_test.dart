@@ -7,6 +7,7 @@ import 'package:vidlog_mobile/diagnostics/app_log.dart';
 import 'package:vidlog_mobile/recording/device_identity.dart';
 import 'package:vidlog_mobile/main.dart';
 import 'package:vidlog_mobile/primitives.dart';
+import 'package:vidlog_mobile/recording/recording_spec.dart';
 import 'package:vidlog_mobile/recording/recorder_gateway.dart';
 import 'package:vidlog_mobile/recording/recording_index.dart';
 import 'package:vidlog_mobile/recording/work_mode.dart';
@@ -417,6 +418,11 @@ void main() {
     await tester.tap(find.text('设置').last);
     await tester.pump(const Duration(milliseconds: 400));
 
+    // ⚠️ 2026-10-09 起设置页是「入口列表 + 二级页」，那个三选胶囊在
+    // 【工作模式】那一页里 —— 先点进去。
+    await tester.tap(find.text('工作模式'));
+    await tester.pumpAndSettle();
+
     final chip = find.byType(SegmentedButton<WorkMode>);
     await tester.scrollUntilVisible(
       chip,
@@ -429,6 +435,44 @@ void main() {
       isNotNull,
       reason: '设置读出来了控件还是禁用的 —— 设置页整个是灰的，一个都点不动',
     );
+  });
+
+  /// ★ **二级页改了设置，二级页自己当场跟着变。**
+  ///
+  /// ⚠️ 这条钉的是两层结构（2026-10-09）里**最容易漏的那一件事**：
+  /// 二级页是 `Navigator.push` 上去的，**不在** `_settingsPage` 那棵子树里 ——
+  /// `_updateSettings` 里那句 `setState` 刷不到它。
+  /// 少了 `_settingsTick`（或者 `_updateSettings` 里忘了 `value++`）的话，
+  /// 用户点了分段按钮**界面纹丝不动**，而盘上其实已经改了 ——
+  /// 比「没保存」更坏：它看起来像没生效，用户会再点一次。
+  ///
+  /// 反证：把 `_updateSettings` 里 `_settingsTick.value++;` 那一行删掉 ⇒ 红在
+  /// 「点了 720p 这一页没跟着变」（实测）。
+  testWidgets('★ 二级页改一项设置：这一页当场跟着变', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await pumpApp(tester);
+    await switchTab(tester, Icons.settings_outlined);
+    await tester.tap(find.text('录像设置'));
+    await tester.pumpAndSettle();
+
+    final seg = find.byKey(const Key('settings-resolution'));
+    expect(tester.widget<SegmentedButton<VideoResolution>>(seg).selected,
+        <VideoResolution>{VideoResolution.p1080},
+        reason: '新盘上默认档不是 1080p 了 —— 下面那条会变成空断言');
+
+    await tester.tap(find.text('720p'));
+    await tester.pumpAndSettle();
+
+    // 两处都断：① 分段按钮自己选中了没有；② 同一张卡底下那句说明换了没有。
+    // 只断一处的话，「按钮换了但说明没换」这种半吊子重建照样绿。
+    expect(tester.widget<SegmentedButton<VideoResolution>>(seg).selected,
+        <VideoResolution>{VideoResolution.p720},
+        reason: '点了 720p 这一页没跟着变 —— 用户会以为点了没生效');
+    expect(find.text('1280 × 720 · 30 帧 · 更省空间、更流畅。'), findsOneWidget,
+        reason: '说明还停在旧档位上 —— 这一页只重建了一半');
+    expect(find.text('1920 × 1080 · 30 帧 · 清楚与体积之间的折中。'), findsNothing);
+
+    await finishApp(tester);
   });
 
   /// ★ **从列表点进详情页** —— 解掉 `record_detail_page_test.dart` 文件头
@@ -695,16 +739,24 @@ void main() {
 
     final file = File('${documents.path}/vidlog/settings.json');
 
+    // ⚠️ 2026-10-09 起设置页是「入口列表 + 二级页」，这个开关在
+    // 【录像设置】那一页里 —— 先点进去。
+    await tester.tap(find.text('录像设置'));
+    await tester.pumpAndSettle();
+
     final box = find.byKey(const Key('settings-record-audio-switch'));
     // ⚠️ 两句都要，缺一不可：
     //   · `scrollUntilVisible` 只滚到**目标进 widget 树**（列表是懒加载的，
     //     进 cacheExtent 就算数）—— 卡片这时可能还在视口**外面**；
     //   · `ensureVisible` 才管**滚进视口**。
-    // T7 第二步把 13 号字升到 14 之后，这个开关中心点落到 y=1418，而测试窗口
-    // 只有 1400 高 ⇒ 只靠前一句的话差 18px 露不出来，`tap` 落空（报
-    // 「would not hit test」），设置没改、`settings.json` 也没建。
-    // 反过来说，只留后一句也不行：卡片压根还没进树，`ensureVisible` 会
-    // `Bad state: No element`。（两条都是 2026-10-06 实测到的。）
+    // 这个开关现在在二级页（2026-10-09 改的结构），1400 高的窗口里它本来就
+    // 露得出来；两句照旧都留着 —— 结构与字号以后还会动，而两条**各自**
+    // 盖的是不同的病：
+    // 早先「一页十二张卡」那一版里，T7 第二步把 13 号字升到 14 之后这个开关
+    // 中心点落到 y=1418，而测试窗口只有 1400 高 ⇒ 只靠前一句的话差 18px
+    // 露不出来，`tap` 落空（报「would not hit test」），设置没改、
+    // `settings.json` 也没建。反过来说，只留后一句也不行：卡片压根还没进树，
+    // `ensureVisible` 会 `Bad state: No element`。（两条都是 2026-10-06 实测到的。）
     await tester.scrollUntilVisible(box, 200,
         scrollable: find.byType(Scrollable).first);
     await tester.ensureVisible(box);

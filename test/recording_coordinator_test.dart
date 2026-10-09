@@ -220,6 +220,10 @@ void main() {
 
   group('录制规格', () {
     test('★ 开工前先做可用性检查，跑不通就用回落那一档', () async {
+      // 先清空 `tail`：下面那句断言量的是**这一次回落**记没记，
+      // 前面别的用例留下的行会让它变成空断言。
+      await AppLog.instance.resetForTesting();
+
       final coordinator = make();
 
       // 这台「手机」只跑得通 720P + H.264。
@@ -237,8 +241,27 @@ void main() {
       expect(coordinator.specFallbackReason, isNotNull,
           reason: '规格：「不得静默回落」—— 回落了就必须有话说给用户听');
 
+      // ⚠️ 2026-10-09：设置页那行「实际按 X 录制」被需求方删掉了（它读的是
+      // 建编排器那一刻的值，只点分段按钮一个字都不会变，还会拿新选择和旧值
+      // 比出一句假警告）。**删掉之后界面这一面就没了** —— 要是连日志也没有，
+      // §3.1.7 那句「不得静默回落」就一个落点都不剩：用户以为在录 4K、
+      // 盘上其实是 720p，而没有任何地方说得出为什么。
+      //
+      // 记它的是 `recording_spec_probe.dart` 里跟着回落一起写的那一句
+      // （`规格回落：X → Y`，warn 级）。这条断言钉的就是**它还在**。
+      // ⚠️ 别把它挪进 `RecordingCoordinator` 再记一遍：2026-10-09 试过，
+      // 结果是同一件事在日志里出现两遍，被证伪当场照出来了。
+      expect(
+        AppLog.instance.tail.value.join('\n'),
+        contains('规格回落'),
+        reason: '回落了却一个字都不记 —— 删掉那行界面之后，这就是静默回落',
+      );
+
       // 相机是按**生效**那一档开的，不是按用户选的那一档。
       expect(gateway.openedSpec, coordinator.effectiveSpec);
+
+      await coordinator.dispose();
+      await AppLog.instance.resetForTesting();
     });
 
     test('★ 规格改了要重开相机 —— 不然是「改了没反应的开关」', () async {
