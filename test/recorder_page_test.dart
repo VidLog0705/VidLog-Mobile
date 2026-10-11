@@ -475,6 +475,46 @@ void main() {
     await finishApp(tester);
   });
 
+  /// ★ **改一项设置会在日志里留痕**（`AGENTS.md` §6：配置变更要记差量）。
+  ///
+  /// 这一条补的是一个**既有缺口**（2026-10-11）：`_updateSettings` 从第一天起
+  /// 改配置**一个字都不记日志** —— 于是「这台机器的设置什么时候、被谁改过」
+  /// 事后一个字都查不到。电脑端一直有（`SettingsStore.DescribeChanges`），
+  /// 手机端缺了。
+  ///
+  /// 反证：把 `_updateSettings` 里那句 `AppLog.instance.info('设置', …)` 删掉 ⇒ 红。
+  testWidgets('★ 改一项设置会在日志里留痕', (WidgetTester tester) async {
+    useTallWindow(tester);
+    await pumpApp(tester);
+    await switchTab(tester, Icons.settings_outlined);
+    await tester.tap(find.text('录像设置'));
+    await tester.pumpAndSettle();
+
+    // 阴性对照：还没动设置，日志里不该先有变更行 —— 少了它，下面那条
+    // 「有留痕」可能只是**别处**恰好在同一句里记过。
+    expect(
+      AppLog.instance.tail.value.where((line) => line.contains('设置已变更')),
+      isEmpty,
+      reason: '还没动设置，日志里先有了变更行',
+    );
+
+    await tester.tap(find.text('720p'));
+    await tester.pumpAndSettle();
+
+    expect(
+      AppLog.instance.tail.value.where((line) => line.contains('设置已变更')),
+      isNotEmpty,
+      reason: '改了设置却没留痕 —— 事后查不到「什么时候改的」',
+    );
+    expect(
+      AppLog.instance.tail.value.any((line) => line.contains('分辨率: 1080P → 720P')),
+      isTrue,
+      reason: '留痕那句话里没有「从哪一档到哪一档」',
+    );
+
+    await finishApp(tester);
+  });
+
   /// ★ **从列表点进详情页** —— 解掉 `record_detail_page_test.dart` 文件头
   /// 写着的那半天花板。
   ///

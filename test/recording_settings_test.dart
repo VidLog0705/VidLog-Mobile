@@ -523,4 +523,46 @@ void main() {
       expect(WorkMode.fromConfig(<String>[]), WorkMode.fallback);
     });
   });
+
+  group('配置变更留痕（describeSettingsChanges）', () {
+    // 与电脑端 `SettingsStore.DescribeChanges` 同一套口径：只写真的变了的项，
+    // 写成「名称: 旧 → 新」。这一条补的是 2026-10-11 查出的既有缺口 ——
+    // 手机端改配置从前**一个字都不记日志**。
+
+    test('只写真的变了的项，没变的不写', () {
+      expect(
+        describeSettingsChanges([
+          ('分辨率', '1080P', '720P'),
+          ('录像编码', 'H.264', 'H.264'),
+        ]),
+        ['分辨率: 1080P → 720P'],
+      );
+    });
+
+    test('一项都没变 ⇒ 空表（调用处据此**不记日志**）', () {
+      // ⚠️ 这条是防「没变也记」的：少了它，用户动一下控件就刷出一串假变更，
+      // 而被刷满的日志等于没有日志。
+      expect(
+        describeSettingsChanges([
+          ('工作模式', '连续扫码', '连续扫码'),
+          ('语音播报', '开', '开'),
+        ]),
+        isEmpty,
+      );
+    });
+
+    test('多项变更按传入顺序成行', () {
+      expect(
+        describeSettingsChanges([
+          ('语音播报', '开', '关'),
+          ('实时共享', '关', '开'),
+        ]),
+        ['语音播报: 开 → 关', '实时共享: 关 → 开'],
+      );
+    });
+
+    test('值是 null 也念得出来', () {
+      expect(describeSettingsChanges([('X', null, 'a')]), ['X: （无） → a']);
+    });
+  });
 }

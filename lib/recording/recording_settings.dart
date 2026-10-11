@@ -263,3 +263,27 @@ class RecordingSettings {
     );
   }
 }
+
+/// 算出两组设置之间**哪些项变了**，供变更留痕（`AGENTS.md` §6：配置变更要记差量）。
+///
+/// 与电脑端 `SettingsStore.DescribeChanges` 同一套口径：每项写成
+/// 「名称: 旧值 → 新值」，**相等的项跳过**。
+///
+/// ⚠️ **返回空表 = 什么都没变**，调用处据此**不记日志** ——
+/// 少了这一条，用户动一下控件就会刷出一串没变化的行，
+/// 而被刷满的日志等于没有日志（§6.1 同一条规矩）。
+///
+/// 参数是「名称 / 旧值 / 新值」三元组；旧值要取**赋值之前**的那一份。
+/// 名称与值的念法由调用处给（那一层才知道每个枚举的中文名）。
+List<String> describeSettingsChanges(
+    Iterable<(String label, Object? from, Object? to)> items) {
+  final lines = <String>[];
+  for (final (label, from, to) in items) {
+    if (from == to) continue;
+    lines.add('$label: ${_showSettingValue(from)} → ${_showSettingValue(to)}');
+  }
+  return lines;
+}
+
+/// 设置项的值怎么念。各项都有默认值，null 理论上到不了，照「（无）」念。
+String _showSettingValue(Object? value) => value == null ? '（无）' : '$value';

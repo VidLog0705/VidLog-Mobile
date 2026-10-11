@@ -52,6 +52,47 @@ extension on _RecorderPageState {
     final settings = _settings;
     if (settings == null) return;
 
+    // ⚠️ **变更留痕（`AGENTS.md` §6）** —— 必须在 `setState` **之前**算：
+    // 里面一赋值，这里读到的「旧值」就没了（电脑端同一处也是这个顺序，
+    // 见 `AppHost` 里 `DescribeChanges` 那一段的注释）。
+    // 只记真的变了的；一项都没变 ⇒ 空表 ⇒ 不记日志（见 `describeSettingsChanges`）。
+    String onOff(bool value) => value ? '开' : '关';
+    final changes = describeSettingsChanges([
+      if (mode != null) ('工作模式', _modeLabel(_mode), _modeLabel(mode)),
+      if (staticStop != null) ('静止停录', _staticStop.label, staticStop.label),
+      if (durationFallback != null)
+        ('时长兜底', _durationFallback.label, durationFallback.label),
+      if (voiceEnabled != null)
+        ('语音播报', onOff(settings.voiceEnabled), onOff(voiceEnabled)),
+      if (retentionArchivedOutbound != null)
+        ('发货·备份后保留', _retentionArchivedOutbound.label,
+            retentionArchivedOutbound.label),
+      if (retentionArchivedReturn != null)
+        ('退货·备份后保留', _retentionArchivedReturn.label,
+            retentionArchivedReturn.label),
+      if (retentionUnarchivedOutbound != null)
+        ('发货·未备份保留', _retentionUnarchivedOutbound.label,
+            retentionUnarchivedOutbound.label),
+      if (retentionUnarchivedReturn != null)
+        ('退货·未备份保留', _retentionUnarchivedReturn.label,
+            retentionUnarchivedReturn.label),
+      if (codec != null)
+        ('录像编码', RecordingSpec(codec: _codec).codecLabel,
+            RecordingSpec(codec: codec).codecLabel),
+      if (resolution != null)
+        ('分辨率', RecordingSpec(resolution: _resolution).resolutionLabel,
+            RecordingSpec(resolution: resolution).resolutionLabel),
+      if (orientation != null)
+        ('录像方向', RecordingSpec(orientation: _orientation).orientationLabel,
+            RecordingSpec(orientation: orientation).orientationLabel),
+      if (waybillMinLength != null)
+        ('面单条码最短长度', settings.waybillMinLength.label, waybillMinLength.label),
+      if (recordAudio != null)
+        ('录制声音', onOff(settings.recordAudio), onOff(recordAudio)),
+      if (liveShareEnabled != null)
+        ('实时共享', onOff(settings.liveShareEnabled), onOff(liveShareEnabled)),
+    ]);
+
     setState(() {
       if (mode != null) _mode = mode;
       if (staticStop != null) _staticStop = staticStop;
@@ -94,6 +135,13 @@ extension on _RecorderPageState {
       // 上面那句 `setState` 刷不到它 —— 见 [_settingsTick]。
       _settingsTick.value++;
     });
+
+    // §6：配置变更要留痕 —— 一条，记「哪几项、从什么变成什么」。
+    // ⚠️ 一项都没变时 `changes` 是空的，那就**不记**（见 `describeSettingsChanges`）。
+    // ⚠️ 与电脑端同一套字（`设置` / `设置已变更`），两端读同一份诊断包时对得上。
+    if (changes.isNotEmpty) {
+      AppLog.instance.info('设置', '设置已变更：${changes.join('；')}');
+    }
 
     // ⚠️ **播报是唯一立刻生效的一项。**
     // 它不参与任何判定（只出声），而人是嫌吵才关的 ——
