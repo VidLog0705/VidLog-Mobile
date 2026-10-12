@@ -95,17 +95,25 @@ Object describeNetdiskError(Object error) =>
 
 /// 文件名里那一段**单号**。
 ///
-/// 电脑端的落点是 `<单号>_<会话>_<序号>.mp4`（`BaiduPanLayout`），
-/// 所以第一段就是单号。
+/// 电脑端 2026-10-12 起一场录制合成一个文件，落点是 `<单号>.mp4`
+/// （撞名时 `<单号>_2.mp4`）。所以：**有下划线**就取第一段（既覆盖老形状
+/// `<单号>_<会话>_<序号>.mp4`，也顺带把 `_2` 那个后缀切掉），
+/// **没有下划线**就剥掉扩展名。
+///
+/// ⚠️ 老形状那一条**不能删**：网盘上已经躺着按老形状传上去的录像，
+/// 删掉的话用户在手机上搜单号一条都搜不出来（而它们好好地在那儿）。
 String waybillOf(String fileName) {
   final cut = fileName.indexOf('_');
-  return cut < 0 ? fileName : fileName.substring(0, cut);
+  if (cut >= 0) return fileName.substring(0, cut);
+
+  final dot = fileName.lastIndexOf('.');
+  return dot <= 0 ? fileName : fileName.substring(0, dot);
 }
 
 /// 用户输的那几位数字，匹配不匹配这一条。
 ///
 /// ⚠️ **比的是「单号那一段」的末尾，不是整个文件名包含它。**
-/// 整个文件名里还有会话号与序号，纯 `contains` 会让「123456」命中到会话号上 ——
+/// 老形状的文件名里跟着会话号与序号，纯 `contains` 会让「123456」命中到会话号上 ——
 /// 搜一个单号出来一堆。而用户说的是「单号的**后** 6 位」。
 bool tailMatches(String fileName, String digits) {
   final wanted = digits.trim();
