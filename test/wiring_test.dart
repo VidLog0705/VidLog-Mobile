@@ -279,6 +279,84 @@ void main() {
     );
   });
 
+  test('★ catch 块不许静默吞掉 —— 空的必须写一句为什么', () {
+    // AGENTS.md §6.1 的表里，`catch` 那一行写的是「**不许静默吞掉**：
+    // 要么记一条，要么交给一个用户可见的通道」。而 §6.1.1 自己承认这条规矩
+    // **漏过三轮** —— 原话：「根因不是『忘了』，是**这条规矩没有能失败的
+    // 检查**」。本仓真被执行的规矩都有绊线钉着（L8、踩坑 #13、版本号），
+    // 只有它没有。这一条就是那条绊线。
+    //
+    // ⚠️ 判据**刻意只认最窄的那一类**：块体为空、而块内一句 `//` 都没有。
+    // 宽判据试过，不行 —— 全仓 117 个 catch / on-X 块，把「logger / throw /
+    // 界面通道」都算作「有交代」之后还剩 21 个，其中绝大多数是
+    // `setState(() => _status = '…失败：$error')` 这种**合规**的用户可见通道。
+    // 为它们挂 21 条白名单不值当，宁可漏报。
+    //
+    // ponytail: 已知上限 —— **管不了「非空但仍吞掉」**（`catch (e) { return null; }`
+    // 这种放行）。升级路径：真被这一类咬到，再照「字号只许从主题来」那条的
+    // 形态把判据放宽，并逐条登记白名单。
+    final offenders = <String>[];
+
+    // 块的开头都落在同一行上：`catch (e) {` / `} on Object {` /
+    // `} on FileSystemException catch (e) {`。
+    final head = RegExp(r'\bcatch\b|^\}?\s*on\s+[A-Za-z_]');
+    final inlineEmpty = RegExp(r'\{\s*\}\s*$');
+
+    for (final entity in Directory('lib').listSync(recursive: true)) {
+      if (entity is! File || !entity.path.endsWith('.dart')) continue;
+
+      final lines = entity.readAsLinesSync();
+
+      for (var i = 0; i < lines.length; i++) {
+        final line = lines[i].trim();
+
+        // 注释里提到 catch 的不算 —— 这一条自己就在提。
+        if (line.startsWith('//')) continue;
+        if (!head.hasMatch(line)) continue;
+        if (!line.endsWith('{') && !inlineEmpty.hasMatch(line)) continue;
+
+        // 单行空块：`} on Object {}`
+        if (inlineEmpty.hasMatch(line)) {
+          offenders.add('${entity.path}:${i + 1}');
+          continue;
+        }
+
+        // 多行：往后扫到配对的 `}`，看中间有没有代码或注释。
+        // ⚠️ 用**花括号差值**算深度，不按「以 `}` 开头」判 —— 嵌套 catch 那一行的
+        // `} on X {` 是先闭后开的，按行首判会把深度算反。
+        var depth = 1;
+        var hasContent = false;
+        var hasComment = false;
+
+        for (var j = i + 1; j < lines.length; j++) {
+          final t = lines[j].trim();
+          if (t.startsWith('//')) {
+            hasComment = true;
+            continue;
+          }
+          if (t.isEmpty) continue;
+
+          if (t.replaceAll(RegExp(r'[{}\s]'), '').isNotEmpty) hasContent = true;
+
+          depth += '{'.allMatches(t).length - '}'.allMatches(t).length;
+          if (depth <= 0) break;
+        }
+
+        if (!hasContent && !hasComment) {
+          offenders.add('${entity.path}:${i + 1}');
+        }
+      }
+    }
+
+    expect(
+      offenders,
+      isEmpty,
+      reason: '这些 catch 块是空的、又没写一句为什么 —— 等于把异常悄悄吞了：\n  '
+          '${offenders.join('\n  ')}\n'
+          '要吞可以，但必须在块里写清为什么（全仓现有那 7 处空块都写了）。',
+    );
+  });
+
   test('★ 字号只许从主题来 —— 白名单只剩两处定义处', () {
     // 改造清单 T7。改版前全仓散着 **105 处 `fontSize:`**，其中 57 处是 12、
     // 19 处是 13 —— 同一个角色在不同页面是不同字号，而主题里那份定义
