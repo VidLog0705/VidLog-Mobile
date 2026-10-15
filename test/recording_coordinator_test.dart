@@ -1136,6 +1136,41 @@ void main() {
 
       await coordinator.dispose();
     });
+
+    test('★ T27：收尾成功之后，索引指着的那段录像还在盘上', () async {
+      // 索引里的 `location` 是相对 `root` 的路径（`session_finalizer.dart`
+      // 的 `relativeLocation` 只剥前缀），而分段实际落在 `root/work/<会话>/`。
+      // 收尾成功后 `_workspace.discardSessionDirectory` 会把
+      // `work/<会话>/` **整个递归删掉** —— 如果那之后没人把它搬进归档，
+      // 这一条就会红：**证据被自己删了**。
+      //
+      // ⚠️ 真出这个错**不会崩、不会报**：界面侧有 `dropGoneSegments`，
+      // 文件不在盘上的条目会被**静默**从列表里剔除（`delivery_copy_exclusion_test`
+      // 那条「这条还在不在只能问盘」说的是同一件事）。所以它表现成
+      // 「录完的东西自己消失了」，而不是一条错误。
+      final coordinator = make();
+
+      nowMs = 1000;
+      await begin(coordinator);
+      final sessionId = coordinator.sessionId!;
+      await closeSegment(coordinator,
+          sessionId: sessionId, sequence: 0, startMs: 0, endMs: 30000);
+
+      await coordinator.onManualStop();
+      await coordinator.waitForPendingEvents();
+
+      final entry = (await index.loadAll()).single;
+      final path = '$root/${entry.location.value}';
+
+      expect(
+        File(path).existsSync(),
+        isTrue,
+        reason: '索引里的 location 是 "${entry.location.value}"，'
+            '收尾成功之后这个文件必须在盘上 —— 它是这段录像唯一的本地副本',
+      );
+
+      await coordinator.dispose();
+    });
   });
 
   // ─────────────────────────────────────────────
@@ -1786,17 +1821,19 @@ void main() {
       expect(coordinator.sessionId, isNotNull);
       expect(coordinator.sessionId, isNot(firstSession));
 
-      // 盘上只剩**一个**会话目录，而且必须是新开的那一个 ——
-      // 一件包裹一段录像，不是一个会话装两件。
-      // ⚠️ 上一段的目录这时候已经不在了：收尾成功 ⇒ T21 把 `work/` 里那份丢掉了
-      // （成品已经落进归档，源分段只剩占地方）。所以这里换成
-      // 「剩下那一个 `==` 新会话」—— 比 containsAll 更贴它要守的那件事。
+      // 盘上是**两个**会话目录：上一段的、和新开的这一个。
+      // 守的还是原来那件事 —— **一件包裹一个会话，不是一个会话装两件**
+      // （所以断言的是「两个不同的目录」，不是「只剩一个」）。
+      //
+      // ⚠️ 原来这里断言的是 `{新会话}` —— 那假设「上一段收尾成功之后目录就被
+      // 删了」。2026-10-15 翻过来（T27）：那个假设的依据「成品已经落进归档」
+      // 全仓没有实现，删掉的正是索引 `location` 指着的那份唯一副本。
       final dirs = Directory('$root/work')
           .listSync()
           .whereType<Directory>()
           .map((d) => d.path.split(RegExp(r'[\\/]')).last)
           .toSet();
-      expect(dirs, {coordinator.sessionId!});
+      expect(dirs, {firstSession, coordinator.sessionId!});
 
       await coordinator.dispose();
     });

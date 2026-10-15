@@ -864,9 +864,23 @@ class RecordingCoordinator {
         // 只有成功的才打标记；失败的保持孤儿身份，下次启动重试。
         await _workspace.markFinalized(sessionId);
 
-        // ★ T21：成品已经落进本机归档了 ⇒ `work/` 里那份源分段只剩一个身份：占地方。
-        // 清理层只清归档里的成品、从来不碰 `work/`，留着它就是无界增长。
-        await _workspace.discardSessionDirectory(sessionId);
+        // ⚠️ **不删会话目录**（2026-10-15，T27）。
+        //
+        // 原来这里调 `discardSessionDirectory`，理由是「成品已经落进本机归档」
+        // —— 而**全仓没有任何地方建过 `<root>/archive` 目录**。索引里的
+        // `location` 就是 `<root>/work/<会话>/segment-NNN.mp4`，删除层也是
+        // 按它删的（`manual_delete.dart` 的 `File('$rootDirectory/$location')`）。
+        // 所以那一下删掉的正是**这段录像唯一的本地副本**，而 `location`
+        // 还指着它 —— 界面侧 `dropGoneSegments` 会把它**静默**从列表里剔除，
+        // 表现成「录完的东西自己消失了」，不报错也不算失败。
+        //
+        // 复现钉在 `test/recording_coordinator_test.dart` 的
+        // 「★ T27：收尾成功之后，索引指着的那段录像还在盘上」。
+        //
+        // ⚠️ **代价（已知上限）**：`work/` 里的分段现在不会再被收尾清掉，
+        // 而保留期的**执行层还没做**（`lifecycle.dart` 文件末尾那条），
+        // 所以它们会一直占着地方，直到用户手动删或执行层落地。
+        // 这与本仓其它数据**同一个处境** —— 现在没有任何东西会自动删录像。
       }
 
       // ⚠️ **只在会话号还是我们收的那一个时才清**（2026-09-22 加）。

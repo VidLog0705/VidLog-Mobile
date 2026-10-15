@@ -753,7 +753,16 @@ void main() {
   });
 
   // ─────────────────────────────────────────────
-  // T21：`work/` 里的东西不会越积越多
+  // T21：清掉**收不了尾的空壳**目录
+  //
+  // ⚠️ 2026-10-15 收窄（T27）：这一组原来叫「`work/` 里的东西不会越积越多」，
+  // 那说的是**收尾成功后把会话目录删掉** —— 而那正是 T27 那个 bug
+  // （删的是索引 `location` 指着的那份唯一副本）。现在这一组只管
+  // **空壳**：起录后一段都没封闭就被杀的那些目录。
+  //
+  // ponytail: 收尾成功的会话目录现在**不删**，所以 `work/` 会一直涨，
+  // 直到保留期的执行层落地（`lifecycle.dart` 文件末尾那条）。
+  // 这与本仓其它数据同一个处境 —— 现在没有任何东西会自动删录像。
   // ─────────────────────────────────────────────
 
   group('T21 工作目录', () {
@@ -778,15 +787,24 @@ void main() {
       return workspace;
     }
 
-    test('★ 孤儿收尾成功之后，work 里那份就丢掉了', () async {
+    test('★ 孤儿收尾成功之后，work 里那份**还在** —— 它就是证据', () async {
+      // ⚠️ **2026-10-15 把这一条翻过来了（T27）。** 它原来叫
+      // 「…work 里那份就丢掉了」，理由是「成品已经落进本机归档」——
+      // 而**全仓没有任何地方建过 `<root>/archive`**（grep 零命中）：
+      // 索引里的 `location` 就指着 `work/<会话>/` 里的分段，删除层
+      // （`manual_delete.dart` 的 `File('$rootDirectory/$location')`）
+      // 也是按它删的。原来那一下删掉的正是**这段录像唯一的本地副本**。
       final workspace = await killedSession('s-killed');
       final (finalizer, _) = makeFinalizer();
 
       await OrphanRecovery(workspace: workspace, finalizer: finalizer).recover();
 
-      // 成品已经落进本机归档 ⇒ 源分段只剩占地方。
-      // 清理层只清归档里的成品、从来不碰 `work/`，留着它就是无界增长。
-      expect(Directory(workspace.sessionDirectory('s-killed')).existsSync(), isFalse);
+      expect(
+        File('${workspace.sessionDirectory('s-killed')}/segment-000.mp4')
+            .existsSync(),
+        isTrue,
+        reason: '收尾成功说明它已经是证据了 —— 谁也不许删它',
+      );
     });
 
     test('★ 收尾失败时工作目录留着（下次启动还要重试）', () async {

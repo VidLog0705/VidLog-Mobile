@@ -327,9 +327,9 @@ class OrphanRecovery {
       if (outcome.succeeded) {
         await workspace.markFinalized(orphan.sessionId);
 
-        // ★ T21：与正常停录那边同一条判据 —— 否则这份源分段会一直留在
-        // `work/` 里，再也没人碰它。
-        await workspace.discardSessionDirectory(orphan.sessionId);
+        // ⚠️ **不删会话目录**（2026-10-15，T27）：与正常停录那边同一条判据 ——
+        // 索引里的 `location` 指的就是这个目录里的分段，删了它证据就没了。
+        // 详见 `recording_coordinator.dart` 里停录那一处的注释。
       }
 
       outcomes.add(outcome);
